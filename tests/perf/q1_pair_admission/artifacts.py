@@ -15,6 +15,11 @@ from typing import Any
 
 from .common import array, canonical_sha256, fail, file_sha256, inside, integer, load_json, load_jsonl, number, obj, sha256, string, utc
 from .contract import (
+    ADAPTER_IDENTITY_STATUS,
+    ADAPTER_SELECTION_CLASS,
+    CANONICAL_ADAPTER_SCHEMA,
+    CANONICAL_SUPPORTED_LIMIT_NAMES,
+    CANONICAL_SUPPORTED_LIMITS_SCHEMA,
     COMMON_ENVIRONMENT_FIELDS,
     HEIGHT,
     IMAGE_SCHEMA,
@@ -26,6 +31,7 @@ from .contract import (
     TRUCK,
     WARMUP,
     WIDTH,
+    WEBGPU_ENVIRONMENT_SCHEMA,
     validate_terminal,
 )
 
@@ -362,13 +368,150 @@ def _build(
     }
 
 
-def _environment(manifest: dict[str, Any], context: str) -> dict[str, Any]:
+def _limits(value: Any, context: str, *, canonical: bool = False) -> dict[str, int]:
+    if not isinstance(value, dict) or not value:
+        fail(f"{context} must be a non-empty object")
+    result: dict[str, int] = {}
+    for name in sorted(value):
+        limit = value[name]
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit < 0
+        ):
+            fail(f"{context}.{name} must be a non-negative integer")
+        result[name] = limit
+    missing = [name for name in CANONICAL_SUPPORTED_LIMIT_NAMES if result.get(name, 0) <= 0]
+    if missing:
+        fail(f"{context} lacks canonical supported limits: {', '.join(missing)}")
+    if canonical and tuple(result) != CANONICAL_SUPPORTED_LIMIT_NAMES:
+        fail(f"{context} must contain exactly the wgpu-28 direct WebGPU limit map")
+    return result
+
+
+def _webgpu_environment_receipt(
+    source: dict[str, Any], endpoint: str, context: str
+) -> dict[str, Any]:
+    receipt = obj(source, "webgpu_device_environment_receipt", context)
+    if receipt.get("schema") != WEBGPU_ENVIRONMENT_SCHEMA or receipt.get("endpoint") != endpoint:
+        fail(f"{context}.webgpu_device_environment_receipt identity mismatch")
+    selected_adapter = obj(receipt, "selected_adapter", f"{context}.webgpu_device_environment_receipt")
+    selected_device = obj(receipt, "selected_device", f"{context}.webgpu_device_environment_receipt")
+    expected_provenance = {
+        "playcanvas": (
+            "playcanvas_graphicsDevice.gpuAdapter",
+            "playcanvas_graphicsDevice.wgpu",
+        ),
+        "gsplat_rs": (
+            "gsplat_surface_session.wgpu_adapter",
+            "gsplat_surface_session.wgpu_device",
+        ),
+    }[endpoint]
+    if (
+        selected_adapter.get("provenance") != expected_provenance[0]
+        or selected_device.get("provenance") != expected_provenance[1]
+    ):
+        fail(f"{context}.webgpu_device_environment_receipt provenance mismatch")
+    expected_info_status = {
+        "playcanvas": {"browser_exposed", "browser_redacted"},
+        "gsplat_rs": {"unavailable_wgpu28_browser_backend"},
+    }[endpoint]
+    if selected_adapter.get("info_status") not in expected_info_status:
+        fail(f"{context}.webgpu_device_environment_receipt adapter info status mismatch")
+    adapter_info = obj(
+        selected_adapter,
+        "info",
+        f"{context}.webgpu_device_environment_receipt.selected_adapter",
+    )
+    if endpoint == "playcanvas" and set(adapter_info) != {
+        "vendor", "architecture", "device", "description", "subgroupMinSize", "subgroupMaxSize"
+    }:
+        fail(f"{context}.webgpu_device_environment_receipt PlayCanvas adapter info is incomplete")
+    if endpoint == "playcanvas":
+        for field in ("vendor", "architecture", "device", "description"):
+            if adapter_info[field] is not None and not isinstance(adapter_info[field], str):
+                fail(f"{context}.webgpu_device_environment_receipt PlayCanvas adapter info {field} is invalid")
+        exposed = any(
+            (isinstance(value, str) and bool(value.strip()))
+            or (isinstance(value, int) and not isinstance(value, bool))
+            for value in adapter_info.values()
+        )
+        if (selected_adapter.get("info_status") == "browser_exposed") != exposed:
+            fail(f"{context}.webgpu_device_environment_receipt PlayCanvas adapter info status is inconsistent")
+        for field in ("subgroupMinSize", "subgroupMaxSize"):
+            value = adapter_info[field]
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                fail(f"{context}.webgpu_device_environment_receipt PlayCanvas adapter info {field} is invalid")
+    if endpoint == "gsplat_rs" and adapter_info != {
+        "name": "",
+        "vendor_id": 0,
+        "device_id": 0,
+        "device_type": "Other",
+        "driver": "",
+        "driver_info": "",
+        "backend": "BrowserWebGpu",
+    }:
+        fail(f"{context}.webgpu_device_environment_receipt wgpu adapter info is not the declared opaque BrowserWebGpu receipt")
+    adapter_limits = _limits(
+        selected_adapter.get("supported_limits"),
+        f"{context}.webgpu_device_environment_receipt.selected_adapter.supported_limits",
+    )
+    device_limits = _limits(
+        selected_device.get("effective_limits"),
+        f"{context}.webgpu_device_environment_receipt.selected_device.effective_limits",
+    )
+    canonical = obj(receipt, "canonical_adapter", f"{context}.webgpu_device_environment_receipt")
+    expected_canonical = {
+        "schema": CANONICAL_ADAPTER_SCHEMA,
+        "selection_class": ADAPTER_SELECTION_CLASS,
+        "backend_class": "browser_webgpu",
+        "hardware_identity_status": ADAPTER_IDENTITY_STATUS,
+        "supported_limits_schema": CANONICAL_SUPPORTED_LIMITS_SCHEMA,
+    }
+    if set(canonical) != {*expected_canonical, "supported_limits"}:
+        fail(f"{context}.webgpu_device_environment_receipt canonical adapter fields are not exact")
+    for field, expected in expected_canonical.items():
+        if canonical.get(field) != expected:
+            fail(f"{context}.webgpu_device_environment_receipt.canonical_adapter.{field} mismatch")
+    canonical_limits = _limits(
+        canonical.get("supported_limits"),
+        f"{context}.webgpu_device_environment_receipt.canonical_adapter.supported_limits",
+        canonical=True,
+    )
+    if any(canonical_limits[name] != adapter_limits[name] for name in CANONICAL_SUPPORTED_LIMIT_NAMES):
+        fail(f"{context}.webgpu_device_environment_receipt canonical limits are not selected-adapter data")
+    expected_hashes = {
+        "canonical_adapter_supported_limits_sha256": canonical_sha256(canonical_limits),
+        "adapter_supported_limits_sha256": canonical_sha256(adapter_limits),
+        "device_effective_limits_sha256": canonical_sha256(device_limits),
+    }
+    for field, expected in expected_hashes.items():
+        if sha256(source.get(field), f"{context}.environment.{field}") != expected:
+            fail(f"{context}.environment.{field} does not match the actual selected object")
+    return {
+        "canonical_limits_sha256": expected_hashes["canonical_adapter_supported_limits_sha256"],
+        "endpoint_receipt_sha256": canonical_sha256(receipt),
+        "adapter_supported_limits_sha256": expected_hashes["adapter_supported_limits_sha256"],
+        "device_effective_limits_sha256": expected_hashes["device_effective_limits_sha256"],
+    }
+
+
+def _environment(manifest: dict[str, Any], endpoint: str, context: str) -> dict[str, Any]:
     source = obj(manifest, "environment", context)
     identity: dict[str, Any] = {}
     for field in COMMON_ENVIRONMENT_FIELDS:
         identity[field] = string(source, field, f"{context}.environment")
         if field.endswith("sha256"):
             sha256(identity[field], f"{context}.environment.{field}")
+    if identity["adapter"] != ADAPTER_SELECTION_CLASS or identity["adapter_identity_status"] != ADAPTER_IDENTITY_STATUS:
+        fail(f"{context}.environment canonical adapter identity is invalid")
+    webgpu = _webgpu_environment_receipt(source, endpoint, context)
+    if identity["canonical_adapter_supported_limits_sha256"] != webgpu["canonical_limits_sha256"]:
+        fail(f"{context}.environment canonical adapter hash mismatch")
     process_args = obj(
         source, "browser_launch_args_receipt", f"{context}.environment"
     )
@@ -460,7 +603,17 @@ def _environment(manifest: dict[str, Any], context: str) -> dict[str, Any]:
         fail(f"{context}.environment.thermal.admitted must be true")
     thermal_identity["admitted"] = True
     identity["thermal_source"] = thermal_identity["source"]
-    return {"identity": identity, "thermal": thermal_identity}
+    endpoint_identity = {
+        **identity,
+        "webgpu_device_environment_receipt_sha256": webgpu["endpoint_receipt_sha256"],
+        "adapter_supported_limits_sha256": webgpu["adapter_supported_limits_sha256"],
+        "device_effective_limits_sha256": webgpu["device_effective_limits_sha256"],
+    }
+    return {
+        "identity": endpoint_identity,
+        "cross_identity": identity,
+        "thermal": thermal_identity,
+    }
 
 
 def _renderer(manifest: dict[str, Any], endpoint: str, context: str) -> None:
@@ -847,7 +1000,7 @@ def artifact(
     _common(manifest, context)
     _renderer(manifest, endpoint, context)
     commit, build_artifacts = _build(root, manifest, endpoint, context)
-    environment = _environment(manifest, context)
+    environment = _environment(manifest, endpoint, context)
     pairing = obj(manifest, "pairing", context)
     expected_pairing = {"series_id": series_id, "schedule_sha256": schedule_sha, "pair_id": pair_id, "run_order": order, "position": position, "fresh_output": True, "automatic_retry": False}
     for key, value in expected_pairing.items():

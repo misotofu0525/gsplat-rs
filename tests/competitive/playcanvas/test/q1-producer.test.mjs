@@ -18,11 +18,59 @@ import {
   validateQ1ProducerRequest,
   verifyQ1BuildArtifacts
 } from '../scripts/q1-producer.mjs';
+import {
+  Q1_ADAPTER_IDENTITY_STATUS,
+  Q1_ADAPTER_SELECTION_CLASS,
+  Q1_CANONICAL_ADAPTER_SCHEMA,
+  Q1_CANONICAL_SUPPORTED_LIMIT_NAMES,
+  Q1_CANONICAL_SUPPORTED_LIMITS_SCHEMA,
+  Q1_WEBGPU_ENVIRONMENT_SCHEMA
+} from '../public/webgpu-environment-receipt.js';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
 const SHA_C = 'c'.repeat(64);
 const SHA_D = 'd'.repeat(64);
+
+function supportedLimits(offset = 0) {
+  return Object.fromEntries(
+    Q1_CANONICAL_SUPPORTED_LIMIT_NAMES.map((name, index) => [name, 1000 + index + offset])
+  );
+}
+
+function adapterReceipt(overrides = {}) {
+  const limits = supportedLimits();
+  return {
+    schema: Q1_WEBGPU_ENVIRONMENT_SCHEMA,
+    endpoint: 'playcanvas',
+    selected_adapter: {
+      provenance: 'playcanvas_graphicsDevice.gpuAdapter',
+      info_status: 'browser_exposed',
+      info: {
+        vendor: 'Apple',
+        architecture: 'apple8',
+        device: 'M4',
+        description: 'Metal',
+        subgroupMinSize: 4,
+        subgroupMaxSize: 32
+      },
+      supported_limits: limits
+    },
+    selected_device: {
+      provenance: 'playcanvas_graphicsDevice.wgpu',
+      effective_limits: supportedLimits(-100)
+    },
+    canonical_adapter: {
+      schema: Q1_CANONICAL_ADAPTER_SCHEMA,
+      selection_class: Q1_ADAPTER_SELECTION_CLASS,
+      backend_class: 'browser_webgpu',
+      hardware_identity_status: Q1_ADAPTER_IDENTITY_STATUS,
+      supported_limits_schema: Q1_CANONICAL_SUPPORTED_LIMITS_SCHEMA,
+      supported_limits: limits
+    },
+    ...overrides
+  };
+}
 
 function request(role, overrides = {}) {
   const base = {
@@ -286,14 +334,7 @@ test('environment receipt uses observed adapter, limits, host and thermal eviden
     requiredArgs: ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist']
   });
   const environment = q1EnvironmentFields(config, {
-    adapterReceipt: {
-      schema: 'gsplat-playcanvas-webgpu-environment/v1',
-      adapter: 'Apple / apple8 / M4',
-      driver: null,
-      driver_status: 'not_exposed_by_webgpu',
-      adapter_info: { vendor: 'Apple', architecture: 'apple8', device: 'M4' },
-      limits: { maxBufferSize: 4294967292, maxTextureDimension2D: 16384 }
-    },
+    adapterReceipt: adapterReceipt(),
     browserExecutableSha256: SHA_A,
     browserProcessArgsReceipt: processArgs,
     powerSource: 'ac_power',
@@ -304,19 +345,32 @@ test('environment receipt uses observed adapter, limits, host and thermal eviden
     },
     thermal: { source: 'macos_pmset_thermal_warning_level', pre: 'nominal', post: 'fair', admitted: true }
   });
-  assert.deepEqual({ ...environment, adapter_limits_sha256: '<observed>' }, {
-    adapter: 'Apple / apple8 / M4',
+  assert.deepEqual({
+    ...environment,
+    canonical_adapter_supported_limits_sha256: '<canonical>',
+    adapter_supported_limits_sha256: '<adapter>',
+    device_effective_limits_sha256: '<device>',
+    webgpu_device_environment_receipt: '<receipt>'
+  }, {
+    adapter: Q1_ADAPTER_SELECTION_CLASS,
+    adapter_identity_status: Q1_ADAPTER_IDENTITY_STATUS,
     driver: 'apple_metal_os_build:25A1',
     driver_source: 'macos_sw_vers_buildVersion',
     browser_executable_sha256: SHA_A,
     browser_launch_args_sha256: processArgs.normalized_sha256,
     browser_launch_args_receipt: processArgs,
-    adapter_limits_sha256: '<observed>',
+    canonical_adapter_supported_limits_sha256: '<canonical>',
+    adapter_supported_limits_sha256: '<adapter>',
+    device_effective_limits_sha256: '<device>',
+    webgpu_device_environment_receipt: '<receipt>',
     power_source: 'ac_power',
     collection_session_id: 'm4-chrome-session-001',
     thermal: { source: 'macos_pmset_thermal_warning_level', pre: 'nominal', post: 'fair', admitted: true }
   });
-  assert.match(environment.adapter_limits_sha256, /^[0-9a-f]{64}$/);
+  assert.match(environment.canonical_adapter_supported_limits_sha256, /^[0-9a-f]{64}$/);
+  assert.match(environment.adapter_supported_limits_sha256, /^[0-9a-f]{64}$/);
+  assert.match(environment.device_effective_limits_sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(environment.webgpu_device_environment_receipt, adapterReceipt());
   assert.throws(
     () => q1EnvironmentFields(config, {
       adapterReceipt: { schema: 'wrong' },
@@ -326,14 +380,15 @@ test('environment receipt uses observed adapter, limits, host and thermal eviden
   );
   assert.throws(
     () => q1EnvironmentFields(config, {
-      adapterReceipt: {
-        schema: 'gsplat-playcanvas-webgpu-environment/v1',
-        adapter: 'webgpu_adapter_identity_redacted_by_browser',
-        driver: null,
-        driver_status: 'not_exposed_by_webgpu',
-        adapter_info: {},
-        limits: { maxBufferSize: 1 }
-      },
+      adapterReceipt: adapterReceipt({
+        canonical_adapter: {
+          ...adapterReceipt().canonical_adapter,
+          supported_limits: {
+            ...adapterReceipt().canonical_adapter.supported_limits,
+            maxBufferSize: 9999
+          }
+        }
+      }),
       browserExecutableSha256: SHA_A,
       browserProcessArgsReceipt: processArgs,
       powerSource: 'ac_power',
@@ -344,18 +399,11 @@ test('environment receipt uses observed adapter, limits, host and thermal eviden
       },
       thermal: { source: 'observed', pre: 'nominal', post: 'nominal', admitted: true }
     }),
-    /redacted adapter identity/
+    /canonical adapter supported limit maxBufferSize is not selected-adapter data/
   );
   assert.throws(
     () => q1EnvironmentFields(config, {
-      adapterReceipt: {
-        schema: 'gsplat-playcanvas-webgpu-environment/v1',
-        adapter: 'adapter',
-        driver: null,
-        driver_status: 'not_exposed_by_webgpu',
-        adapter_info: {},
-        limits: { maxBufferSize: 1 }
-      },
+      adapterReceipt: adapterReceipt(),
       browserExecutableSha256: SHA_A,
       browserProcessArgsReceipt: processArgs,
       powerSource: 'ac_power',
@@ -370,11 +418,7 @@ test('environment receipt uses observed adapter, limits, host and thermal eviden
   );
   assert.throws(
     () => q1EnvironmentFields(config, {
-      adapterReceipt: {
-        schema: 'gsplat-playcanvas-webgpu-environment/v1',
-        adapter: 'adapter',
-        limits: { maxBufferSize: 1 }
-      },
+      adapterReceipt: adapterReceipt(),
       driverStack: {
         source: 'macos_sw_vers_buildVersion',
         pre: '25A1',

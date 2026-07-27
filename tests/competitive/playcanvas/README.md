@@ -203,7 +203,12 @@ Both roles are locked to complete Truck SH3, the two-frame sequence, 20 warmup
 plus 80 measured frames, local Chrome/WebGPU and an exact 1920x1080 backing.
 They record the actual browser executable and normalized child-process argv,
 including a content receipt that redacts only the ephemeral profile path and
-CDP port. WebGPU supplies the renderer-selected adapter/device limits; macOS
+CDP port. The actual `graphicsDevice.gpuAdapter` supplies the complete adapter
+supported limits and `graphicsDevice.wgpu` supplies the complete effective
+GPUDevice limits; the harness never issues a second `requestAdapter()` for
+evidence. Only the wgpu-28 direct WebGPU supported-limit subset participates in
+the cross-endpoint identity, while effective limits remain endpoint-local.
+macOS
 `sw_vers -buildVersion` supplies the explicit Apple Metal OS driver-stack
 identity because WebGPU does not expose a portable driver version. Power and
 thermal receipts are sampled around the run. The pinned PlayCanvas runtime tree

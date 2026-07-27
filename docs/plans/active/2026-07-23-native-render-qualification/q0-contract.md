@@ -225,6 +225,28 @@ level, refresh rate, orientation, drawable, memory limits and available
 thermal status. CPU architecture and actual feature detection are mandatory
 for SIMD claims.
 
+For the same-Chrome WebGPU isolation lane, environment admission distinguishes
+the renderer's actual selected `GPUAdapter` from its actual requested
+`GPUDevice`. Each endpoint retains the complete supported limits exposed for
+that selected adapter and the complete effective limits exposed by its device.
+Effective device limits are endpoint execution configuration: wgpu and
+PlayCanvas may request different safe subsets, so they must remain stable
+within one endpoint but are not a cross-endpoint hardware-identity field.
+
+wgpu 28's `BrowserWebGpu` backend returns an intentionally opaque
+`AdapterInfo` (empty name/driver, zero vendor/device and `Other` type). The Q1
+near-contract therefore never compares PlayCanvas' browser-exposed
+vendor/architecture/device tuple with a fabricated wgpu name. Its common
+adapter identity is instead the actual-selection/backend class, the canonical
+hash of the 29 `GPUSupportedLimits` fields that wgpu 28 reads directly from
+the selected adapter, and the already frozen host/browser/OS/driver-stack
+identity. The receipt explicitly records
+`hardware_name_unavailable_cross_endpoint_wgpu28_browser_backend`; this proves
+a stable common selection class and supported-limit profile, not a PCI-level
+hardware identity. Missing owner provenance, any canonical supported limit or
+the adapter/device receipts fails closed, and collectors may not issue a
+second `requestAdapter()` merely to fill evidence.
+
 Formal comparison uses five predeclared randomized AB/BA pairs, or an
 equivalent predeclared ABBA schedule, on the same physical device and as close
 to one session as practical. Each pair keeps dataset, trace, resolution,

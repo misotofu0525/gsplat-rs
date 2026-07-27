@@ -95,10 +95,51 @@ COMMON_ENVIRONMENT_FIELDS = (
     "browser_executable_sha256",
     "browser_launch_args_sha256",
     "adapter",
+    "adapter_identity_status",
     "driver",
-    "adapter_limits_sha256",
+    "canonical_adapter_supported_limits_sha256",
     "power_source",
     "collection_session_id",
+)
+WEBGPU_ENVIRONMENT_SCHEMA = "gsplat-q1-webgpu-selected-device-environment/v1"
+CANONICAL_ADAPTER_SCHEMA = "gsplat-q1-webgpu-canonical-adapter/v1"
+CANONICAL_SUPPORTED_LIMITS_SCHEMA = (
+    "wgpu-28-browser-webgpu-direct-supported-limits/v1"
+)
+ADAPTER_SELECTION_CLASS = "browser_webgpu_renderer_actual_selected_adapter"
+ADAPTER_IDENTITY_STATUS = (
+    "hardware_name_unavailable_cross_endpoint_wgpu28_browser_backend"
+)
+CANONICAL_SUPPORTED_LIMIT_NAMES = (
+    "maxBindGroups",
+    "maxBindingsPerBindGroup",
+    "maxBufferSize",
+    "maxColorAttachmentBytesPerSample",
+    "maxColorAttachments",
+    "maxComputeInvocationsPerWorkgroup",
+    "maxComputeWorkgroupSizeX",
+    "maxComputeWorkgroupSizeY",
+    "maxComputeWorkgroupSizeZ",
+    "maxComputeWorkgroupStorageSize",
+    "maxComputeWorkgroupsPerDimension",
+    "maxDynamicStorageBuffersPerPipelineLayout",
+    "maxDynamicUniformBuffersPerPipelineLayout",
+    "maxSampledTexturesPerShaderStage",
+    "maxSamplersPerShaderStage",
+    "maxStorageBufferBindingSize",
+    "maxStorageBuffersPerShaderStage",
+    "maxStorageTexturesPerShaderStage",
+    "maxTextureArrayLayers",
+    "maxTextureDimension1D",
+    "maxTextureDimension2D",
+    "maxTextureDimension3D",
+    "maxUniformBufferBindingSize",
+    "maxUniformBuffersPerShaderStage",
+    "maxVertexAttributes",
+    "maxVertexBufferArrayStride",
+    "maxVertexBuffers",
+    "minStorageBufferOffsetAlignment",
+    "minUniformBufferOffsetAlignment",
 )
 
 

@@ -859,3 +859,30 @@ browser, create a five-pair schedule, collect a formal Truck artifact, compare
 an endpoint, or change gsplat-rs renderer/public API behavior. Q1 therefore
 remains **Active** pending the equivalent gsplat-rs producer and the separately
 authorized finite series orchestration/collection.
+
+### Q1 actual adapter/device identity contract repair (2026-07-28)
+
+The PlayCanvas producer and offline admission contract now distinguish three
+facts that the earlier `adapter_limits_sha256` field conflated:
+
+- `graphicsDevice.gpuAdapter` is the renderer's actual selected adapter and
+  owns the complete adapter-supported limit receipt;
+- `graphicsDevice.wgpu` is the actual requested GPUDevice and owns the complete
+  endpoint-effective limit receipt; and
+- only the 29 WebGPU limits mapped directly by wgpu 28 form the canonical
+  supported-limit hash used across endpoints.
+
+Endpoint-effective limits and full endpoint receipts remain frozen across a
+producer's controls and throughput artifact, but do not need to equal the
+other implementation's requested limits. Cross-endpoint admission uses the
+actual-selection/backend class, canonical supported-limit hash, and the same
+host/browser/OS/driver-stack fields. It explicitly records that a cross-stack
+hardware name is unavailable because wgpu 28 BrowserWebGpu returns opaque
+`AdapterInfo`; PlayCanvas' real `GPUAdapterInfo` remains endpoint-only evidence
+instead of being compared with an invented wgpu name. Missing provenance or
+limits is rejected, and no collector is permitted to call `requestAdapter()`
+again for evidence.
+
+This is a mechanism-only repair. No browser or Truck performance run was
+performed, and Q1 remains **Active** pending the aligned gsplat-rs receipt and
+finite orchestrated series.

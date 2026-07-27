@@ -41,7 +41,8 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
     seen_endpoint_paths: set[pathlib.Path] = set()
     frozen_commit: str | None = None
     frozen_builds: dict[str, dict[str, Any]] = {}
-    frozen_environment: dict[str, Any] | None = None
+    frozen_cross_environment: dict[str, Any] | None = None
+    frozen_endpoint_environments: dict[str, dict[str, Any]] = {}
     frozen_display: dict[str, Any] | None = None
     previous_pair_end = None
     pair_results: list[dict[str, Any]] = []
@@ -107,10 +108,16 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
                 fail(f"{pair_id}.{endpoint} changed the series Git commit")
             if frozen_builds.setdefault(endpoint, throughput["build_artifacts"]) != throughput["build_artifacts"]:
                 fail(f"{pair_id}.{endpoint} changed built artifacts")
-            if frozen_environment is None:
-                frozen_environment = throughput["environment"]["identity"]
-            elif throughput["environment"]["identity"] != frozen_environment:
-                fail(f"{pair_id}.{endpoint} changed the collection environment")
+            endpoint_environment = throughput["environment"]["identity"]
+            if endpoint not in frozen_endpoint_environments:
+                frozen_endpoint_environments[endpoint] = endpoint_environment
+            elif endpoint_environment != frozen_endpoint_environments[endpoint]:
+                fail(f"{pair_id}.{endpoint} changed its renderer-selected WebGPU environment")
+            cross_environment = throughput["environment"]["cross_identity"]
+            if frozen_cross_environment is None:
+                frozen_cross_environment = cross_environment
+            elif cross_environment != frozen_cross_environment:
+                fail(f"{pair_id}.{endpoint} changed the common collection environment")
             if frozen_display is None:
                 frozen_display = throughput["display"]
             elif throughput["display"] != frozen_display:

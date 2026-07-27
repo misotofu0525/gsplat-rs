@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
+import {
+  Q1_ADAPTER_IDENTITY_STATUS,
+  Q1_ADAPTER_SELECTION_CLASS,
+  Q1_CANONICAL_ADAPTER_SCHEMA,
+  Q1_CANONICAL_SUPPORTED_LIMIT_NAMES,
+  Q1_CANONICAL_SUPPORTED_LIMITS_SCHEMA,
+  Q1_WEBGPU_ENVIRONMENT_SCHEMA
+} from '../public/webgpu-environment-receipt.js';
 
 export const Q1_PRODUCER_REQUEST_SCHEMA = 'gsplat-q1-playcanvas-producer-request/v1';
 export const Q1_TERMINAL_SCHEMA = 'gsplat-q1-webgpu-terminal-window/v1';
@@ -19,6 +27,126 @@ function requiredSha(value, label) {
   const digest = requiredText(value, label);
   if (!SHA256_PATTERN.test(digest)) throw new Error(`${label} must be a lowercase SHA-256`);
   return digest;
+}
+
+function requiredObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value;
+}
+
+function normalizedLimits(value, label, requiredNames = []) {
+  const source = requiredObject(value, label);
+  const result = {};
+  for (const name of Object.keys(source).sort()) {
+    const limit = source[name];
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error(`${label}.${name} must be a non-negative safe integer`);
+    }
+    result[name] = limit;
+  }
+  if (Object.keys(result).length === 0) throw new Error(`${label} must not be empty`);
+  for (const name of requiredNames) {
+    if (!Number.isSafeInteger(result[name]) || result[name] <= 0) {
+      throw new Error(`${label}.${name} is required for the canonical WebGPU limit contract`);
+    }
+  }
+  return result;
+}
+
+export function normalizeQ1WebGpuEnvironmentReceipt(value) {
+  const receipt = requiredObject(value, 'WebGPU environment receipt');
+  if (receipt.schema !== Q1_WEBGPU_ENVIRONMENT_SCHEMA || receipt.endpoint !== 'playcanvas') {
+    throw new Error('Q1 run lacks the PlayCanvas renderer-selected WebGPU environment receipt');
+  }
+  const selectedAdapter = requiredObject(receipt.selected_adapter, 'selected adapter receipt');
+  if (selectedAdapter.provenance !== 'playcanvas_graphicsDevice.gpuAdapter' ||
+      !['browser_exposed', 'browser_redacted'].includes(selectedAdapter.info_status)) {
+    throw new Error('Q1 selected adapter provenance is invalid');
+  }
+  const adapterInfo = requiredObject(selectedAdapter.info, 'selected adapter info');
+  const expectedInfoNames = [
+    'vendor', 'architecture', 'device', 'description', 'subgroupMinSize', 'subgroupMaxSize'
+  ];
+  if (Object.keys(adapterInfo).sort().join('\0') !== [...expectedInfoNames].sort().join('\0')) {
+    throw new Error('Q1 selected adapter info fields are incomplete');
+  }
+  for (const name of expectedInfoNames) {
+    const field = adapterInfo[name];
+    if (field !== null && typeof field !== 'string' && !Number.isSafeInteger(field)) {
+      throw new Error(`Q1 selected adapter info ${name} has an invalid value`);
+    }
+  }
+  const adapterInfoExposed = Object.values(adapterInfo).some((field) =>
+    (typeof field === 'string' && field.trim().length > 0) || Number.isSafeInteger(field)
+  );
+  if ((selectedAdapter.info_status === 'browser_exposed') !== adapterInfoExposed) {
+    throw new Error('Q1 selected adapter info status does not match its fields');
+  }
+  const adapterSupportedLimits = normalizedLimits(
+    selectedAdapter.supported_limits,
+    'selected adapter supported limits',
+    Q1_CANONICAL_SUPPORTED_LIMIT_NAMES
+  );
+  const selectedDevice = requiredObject(receipt.selected_device, 'selected device receipt');
+  if (selectedDevice.provenance !== 'playcanvas_graphicsDevice.wgpu') {
+    throw new Error('Q1 selected device provenance is invalid');
+  }
+  const deviceEffectiveLimits = normalizedLimits(
+    selectedDevice.effective_limits,
+    'selected device effective limits',
+    Q1_CANONICAL_SUPPORTED_LIMIT_NAMES
+  );
+  const canonical = requiredObject(receipt.canonical_adapter, 'canonical adapter receipt');
+  const expectedCanonical = {
+    schema: Q1_CANONICAL_ADAPTER_SCHEMA,
+    selection_class: Q1_ADAPTER_SELECTION_CLASS,
+    backend_class: 'browser_webgpu',
+    hardware_identity_status: Q1_ADAPTER_IDENTITY_STATUS,
+    supported_limits_schema: Q1_CANONICAL_SUPPORTED_LIMITS_SCHEMA
+  };
+  if (Object.keys(canonical).sort().join('\0') !==
+      [...Object.keys(expectedCanonical), 'supported_limits'].sort().join('\0')) {
+    throw new Error('Q1 canonical adapter fields are not exact');
+  }
+  for (const [name, expected] of Object.entries(expectedCanonical)) {
+    if (canonical[name] !== expected) {
+      throw new Error(`Q1 canonical adapter ${name} is invalid`);
+    }
+  }
+  const canonicalSupportedLimits = normalizedLimits(
+    canonical.supported_limits,
+    'canonical adapter supported limits',
+    Q1_CANONICAL_SUPPORTED_LIMIT_NAMES
+  );
+  if (Object.keys(canonicalSupportedLimits).join('\0') !==
+      Q1_CANONICAL_SUPPORTED_LIMIT_NAMES.join('\0')) {
+    throw new Error('Q1 canonical adapter supported-limit set is not exact');
+  }
+  for (const name of Q1_CANONICAL_SUPPORTED_LIMIT_NAMES) {
+    if (canonicalSupportedLimits[name] !== adapterSupportedLimits[name]) {
+      throw new Error(`Q1 canonical adapter supported limit ${name} is not selected-adapter data`);
+    }
+  }
+  return {
+    schema: Q1_WEBGPU_ENVIRONMENT_SCHEMA,
+    endpoint: 'playcanvas',
+    selected_adapter: {
+      provenance: selectedAdapter.provenance,
+      info_status: selectedAdapter.info_status,
+      info: Object.fromEntries(expectedInfoNames.map((name) => [name, adapterInfo[name]])),
+      supported_limits: adapterSupportedLimits
+    },
+    selected_device: {
+      provenance: selectedDevice.provenance,
+      effective_limits: deviceEffectiveLimits
+    },
+    canonical_adapter: {
+      ...expectedCanonical,
+      supported_limits: canonicalSupportedLimits
+    }
+  };
 }
 
 function inside(root, path, label) {
@@ -348,14 +476,7 @@ export async function verifyQ1BuildArtifacts(config, harnessRoot, artifacts) {
 
 export function q1EnvironmentFields(config, observed) {
   if (!config) return null;
-  const adapterReceipt = observed.adapterReceipt;
-  if (adapterReceipt?.schema !== 'gsplat-playcanvas-webgpu-environment/v1') {
-    throw new Error('Q1 run lacks the renderer-selected WebGPU environment receipt');
-  }
-  const adapter = requiredText(adapterReceipt.adapter, 'adapter receipt adapter');
-  if (adapter.includes('redacted_by_browser')) {
-    throw new Error('Q1 browser redacted adapter identity');
-  }
+  const adapterReceipt = normalizeQ1WebGpuEnvironmentReceipt(observed.adapterReceipt);
   const driverStack = observed.driverStack;
   if (driverStack?.source !== 'macos_sw_vers_buildVersion' ||
       driverStack.pre !== driverStack.post) {
@@ -378,8 +499,12 @@ export function q1EnvironmentFields(config, observed) {
         sha256(Buffer.from(JSON.stringify(browserProcessArgs.normalized_args)))) {
     throw new Error('Q1 run lacks a valid actual browser process argument receipt');
   }
+  const adapterSupportedLimits = adapterReceipt.selected_adapter.supported_limits;
+  const canonicalSupportedLimits = adapterReceipt.canonical_adapter.supported_limits;
+  const deviceEffectiveLimits = adapterReceipt.selected_device.effective_limits;
   return {
-    adapter,
+    adapter: Q1_ADAPTER_SELECTION_CLASS,
+    adapter_identity_status: Q1_ADAPTER_IDENTITY_STATUS,
     driver,
     driver_source: driverStack.source,
     browser_executable_sha256: requiredSha(
@@ -391,7 +516,16 @@ export function q1EnvironmentFields(config, observed) {
       'browser process arguments SHA-256'
     ),
     browser_launch_args_receipt: browserProcessArgs,
-    adapter_limits_sha256: sha256(Buffer.from(JSON.stringify(adapterReceipt.limits))),
+    canonical_adapter_supported_limits_sha256: sha256(
+      Buffer.from(JSON.stringify(canonicalSupportedLimits))
+    ),
+    adapter_supported_limits_sha256: sha256(
+      Buffer.from(JSON.stringify(adapterSupportedLimits))
+    ),
+    device_effective_limits_sha256: sha256(
+      Buffer.from(JSON.stringify(deviceEffectiveLimits))
+    ),
+    webgpu_device_environment_receipt: adapterReceipt,
     power_source: requiredText(observed.powerSource, 'power source'),
     collection_session_id: config.collectionSessionId,
     thermal

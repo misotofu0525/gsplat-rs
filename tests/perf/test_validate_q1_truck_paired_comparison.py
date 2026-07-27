@@ -24,6 +24,11 @@ from q1_pair_admission.artifacts import (
 )
 from q1_pair_admission.common import ValidationError, canonical_sha256, file_sha256
 from q1_pair_admission.contract import (
+    ADAPTER_IDENTITY_STATUS,
+    ADAPTER_SELECTION_CLASS,
+    CANONICAL_ADAPTER_SCHEMA,
+    CANONICAL_SUPPORTED_LIMIT_NAMES,
+    CANONICAL_SUPPORTED_LIMITS_SCHEMA,
     HEIGHT,
     IMAGE_SCHEMA,
     MEASURED,
@@ -35,6 +40,7 @@ from q1_pair_admission.contract import (
     TRUCK,
     WARMUP,
     WIDTH,
+    WEBGPU_ENVIRONMENT_SCHEMA,
 )
 from q1_pair_admission.evaluate import admission_rejection, evaluate
 
@@ -75,6 +81,86 @@ PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE = pathlib.Path(__file__).parent / (
 PLAYCANVAS_CAMERA_RECEIPTS = json.loads(
     PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE.read_text(encoding="utf-8")
 )["receipts"]
+
+
+def webgpu_limits(offset: int = 0, *, extra: bool = False) -> dict[str, int]:
+    limits = {
+        name: 1000 + index + offset
+        for index, name in enumerate(CANONICAL_SUPPORTED_LIMIT_NAMES)
+    }
+    if extra:
+        limits["futureEndpointOnlyLimit"] = 9999 + offset
+    return limits
+
+
+def webgpu_environment_receipt(endpoint: str) -> dict[str, object]:
+    canonical = webgpu_limits()
+    if endpoint == "playcanvas":
+        adapter_provenance = "playcanvas_graphicsDevice.gpuAdapter"
+        device_provenance = "playcanvas_graphicsDevice.wgpu"
+        info_status = "browser_exposed"
+        info: dict[str, object] = {
+            "vendor": "Apple",
+            "architecture": "apple8",
+            "device": "M4",
+            "description": "Metal",
+            "subgroupMinSize": 4,
+            "subgroupMaxSize": 32,
+        }
+        adapter_limits = webgpu_limits(extra=True)
+        device_limits = webgpu_limits(-100)
+    else:
+        adapter_provenance = "gsplat_surface_session.wgpu_adapter"
+        device_provenance = "gsplat_surface_session.wgpu_device"
+        info_status = "unavailable_wgpu28_browser_backend"
+        info = {
+            "name": "",
+            "vendor_id": 0,
+            "device_id": 0,
+            "device_type": "Other",
+            "driver": "",
+            "driver_info": "",
+            "backend": "BrowserWebGpu",
+        }
+        adapter_limits = webgpu_limits()
+        device_limits = webgpu_limits(-200, extra=True)
+    return {
+        "schema": WEBGPU_ENVIRONMENT_SCHEMA,
+        "endpoint": endpoint,
+        "selected_adapter": {
+            "provenance": adapter_provenance,
+            "info_status": info_status,
+            "info": info,
+            "supported_limits": adapter_limits,
+        },
+        "selected_device": {
+            "provenance": device_provenance,
+            "effective_limits": device_limits,
+        },
+        "canonical_adapter": {
+            "schema": CANONICAL_ADAPTER_SCHEMA,
+            "selection_class": ADAPTER_SELECTION_CLASS,
+            "backend_class": "browser_webgpu",
+            "hardware_identity_status": ADAPTER_IDENTITY_STATUS,
+            "supported_limits_schema": CANONICAL_SUPPORTED_LIMITS_SCHEMA,
+            "supported_limits": canonical,
+        },
+    }
+
+
+def webgpu_environment_fields(endpoint: str) -> dict[str, object]:
+    receipt = webgpu_environment_receipt(endpoint)
+    adapter_limits = receipt["selected_adapter"]["supported_limits"]
+    device_limits = receipt["selected_device"]["effective_limits"]
+    canonical_limits = receipt["canonical_adapter"]["supported_limits"]
+    return {
+        "adapter": ADAPTER_SELECTION_CLASS,
+        "adapter_identity_status": ADAPTER_IDENTITY_STATUS,
+        "canonical_adapter_supported_limits_sha256": canonical_sha256(canonical_limits),
+        "adapter_supported_limits_sha256": canonical_sha256(adapter_limits),
+        "device_effective_limits_sha256": canonical_sha256(device_limits),
+        "webgpu_device_environment_receipt": receipt,
+    }
 
 
 def write_json(path: pathlib.Path, value: object) -> None:
@@ -396,7 +482,7 @@ def manifest(
         "trace": {**TRACE, "camera_mode": "trace_sequence"},
         "renderer": renderer,
         "display": {"width": WIDTH, "height": HEIGHT, "dpr": 1, "refresh_hz": 60, "frame_budget_ms": 16.666666666666668, "refresh_hz_source": "configured", "frame_budget_source": "configured"},
-        "environment": {"platform": "web", "os": "Darwin-test", "device": "M4-test", "browser": "Chrome-test", "adapter": "Apple M4", "driver": "apple_metal_os_build:25A1", "driver_source": "macos_sw_vers_buildVersion", "browser_executable_sha256": SHA_A, "browser_launch_args_sha256": NORMALIZED_BROWSER_ARGS_SHA, "browser_launch_args_receipt": PROCESS_ARGS_RECEIPT, "adapter_limits_sha256": SHA_A, "power_source": "ac", "collection_session_id": "session-1", "thermal": {"source": "host-probe", "pre": "nominal", "post": "nominal", "admitted": True}},
+        "environment": {"platform": "web", "os": "Darwin-test", "device": "M4-test", "browser": "Chrome-test", **webgpu_environment_fields(endpoint), "driver": "apple_metal_os_build:25A1", "driver_source": "macos_sw_vers_buildVersion", "browser_executable_sha256": SHA_A, "browser_launch_args_sha256": NORMALIZED_BROWSER_ARGS_SHA, "browser_launch_args_receipt": PROCESS_ARGS_RECEIPT, "power_source": "ac", "collection_session_id": "session-1", "thermal": {"source": "host-probe", "pre": "nominal", "post": "nominal", "admitted": True}},
         "unavailable_fields": unavailable,
         "exactness": {"source_splat_count": TRUCK["splat_count"], "decoded_splat_count": TRUCK["splat_count"], "encoded_splat_count": TRUCK["splat_count"], "resident_splat_count": TRUCK["splat_count"], "addressable_splat_count": TRUCK["splat_count"], "source_sh_degree": 3, "resident_sh_degree": 3, "source_membership": "all", "sampling": "disabled", "lod": "disabled", "partial_scene_published": False, "full_quality": True},
         "resolution": {**{f"{stage}_width": WIDTH for stage in ("requested", "surface", "internal_render", "presented")}, **{f"{stage}_height": HEIGHT for stage in ("requested", "surface", "internal_render", "presented")}, "dynamic_resolution": "disabled", "upscaling": "disabled", "full_resolution": True},
@@ -779,14 +865,51 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
 
     def test_complete_playcanvas_native_producer_enters_admitted_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            schedule = build_series(
-                pathlib.Path(directory), playcanvas_producer=True
+            root = pathlib.Path(directory)
+            schedule = build_series(root, playcanvas_producer=True)
+            playcanvas_environment = json.loads(
+                (root / "pairs/pair-01/playcanvas/throughput/manifest.json").read_text()
+            )["environment"]
+            gsplat_environment = json.loads(
+                (root / "pairs/pair-01/gsplat_rs/throughput/manifest.json").read_text()
+            )["environment"]
+            self.assertNotEqual(
+                playcanvas_environment["device_effective_limits_sha256"],
+                gsplat_environment["device_effective_limits_sha256"],
+            )
+            self.assertEqual(
+                playcanvas_environment["canonical_adapter_supported_limits_sha256"],
+                gsplat_environment["canonical_adapter_supported_limits_sha256"],
             )
             result = evaluate(schedule)
         self.assertEqual(result["state"], "Accepted")
         self.assertTrue(result["evidence_admitted"])
         self.assertTrue(result["quality_passed"])
         self.assertIsNotNone(result["performance"])
+
+    def test_device_effective_limit_mutation_is_rejected_against_actual_receipt(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/throughput",
+            lambda value: value["environment"]["webgpu_device_environment_receipt"][
+                "selected_device"
+            ]["effective_limits"].__setitem__("maxBufferSize", 4242),
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "device_effective_limits_sha256 does not match"
+        ):
+            evaluate(self.schedule)
+
+    def test_canonical_limit_must_come_from_actual_selected_adapter(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/throughput",
+            lambda value: value["environment"]["webgpu_device_environment_receipt"][
+                "canonical_adapter"
+            ]["supported_limits"].__setitem__("maxBufferSize", 4242),
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "canonical limits are not selected-adapter data"
+        ):
+            evaluate(self.schedule)
 
     def test_playcanvas_camera_authority_fixture_is_current(self) -> None:
         completed = subprocess.run(
