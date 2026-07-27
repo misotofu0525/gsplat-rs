@@ -25,10 +25,10 @@ SCHEMA = "gsplat-scalable-proxy-image-gate/v1"
 PREFLIGHT_SCHEMA = "gsplat-scalable-proxy-image-gate-preflight/v1"
 VALIDATOR_VERSION = 1
 BALANCED_VALIDATOR_SHA256 = (
-    "6c1e61edf97096ecb8dd1555cc9553353d6a12dd77373c643f5a65a4138c0dfa"
+    "14023327d729f4233d3244f86eeefa978443c23b81704263b6883642a725c5e8"
 )
 BENCHMARK_VALIDATOR_SHA256 = (
-    "3a47dc9221e28a13985928c531d53143934f62313f9d8d257758fb1befbecc6c"
+    "4f68686d1fd5863376fd53ddf77da31516bd83c084c65a528f02d76462268a62"
 )
 REQUIRED_CUTS = (
     "complete_leaf_exact",
@@ -61,6 +61,7 @@ FRAME_METRIC_LIMITS = {
 TEMPORAL_METRIC = "temporal_rgb_residual_mae_normalized"
 TEMPORAL_LIMIT = 0.005
 METRIC_RECEIPT_TOLERANCE = 1.0e-9
+BALANCED_EXACT_REFERENCE_CONTRACT = {"quality": {"suite": {"full_quality": True}}}
 FORMAL_SOURCE = {
     "dataset_id": "bonsai",
     "local_path": "tests/datasets/external/inria_3dgs/bonsai/point_cloud.ply",
@@ -813,7 +814,11 @@ def validate_exact_reference(
         trace={},
     )
     try:
-        balanced.validate_exactness({"exactness": exactness}, balanced_authority)
+        balanced.validate_exactness(
+            {"exactness": exactness},
+            balanced_authority,
+            BALANCED_EXACT_REFERENCE_CONTRACT,
+        )
     except balanced.ValidationError as error:
         reject(f"manifest.exact_reference fails unchanged B1 membership: {error}")
     return exactness_sha256

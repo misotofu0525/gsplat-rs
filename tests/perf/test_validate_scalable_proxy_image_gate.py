@@ -715,6 +715,18 @@ class ScalableProxyImageGateTests(unittest.TestCase):
         self.assertEqual(result.comparison_count, 72)
         self.assertEqual(result.transition_count, 32)
 
+    def test_exact_reference_retains_full_quality_after_shared_validator_extension(
+        self,
+    ) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        exactness = manifest["exact_reference"]["exactness"]
+        exactness["full_quality"] = False
+        manifest["exact_reference"]["exactness_sha256"] = canonical_sha256(exactness)
+        with self.assertRaisesRegex(
+            VALIDATOR.ValidationError, "full_quality must be true"
+        ):
+            self.validate_manifest(manifest, "non-full-quality-exact-reference.json")
+
     def test_pinned_shared_validator_hashes_match_contract_and_files(self) -> None:
         contract = (
             ROOT

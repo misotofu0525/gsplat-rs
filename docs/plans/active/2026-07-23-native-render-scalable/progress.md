@@ -188,12 +188,20 @@ The B1 validator repair that admits the valid initial
 `viewport_generation = 0` changed the hash of the shared Balanced validator.
 S1 correctly failed closed rather than silently using the new dependency; the
 S0 contract and S1 validator pin now name the repaired hash
-`6c1e61edf97096ecb8dd1555cc9553353d6a12dd77373c643f5a65a4138c0dfa`.
-The repair and the later Balanced-only depth-profile registry leave the shared
-image metric, artifact/path confinement, resolution and Exactness rules
-unchanged. A focused regression verifies that the S0 contract text, S1 pin and
-actual shared-validator bytes agree, so later drift fails at dependency
-identity rather than masking the remaining S1 assertions.
+`14023327d729f4233d3244f86eeefa978443c23b81704263b6883642a725c5e8`.
+The repair, Balanced-only depth-profile registry and later Candidate20
+classification/temporal-evidence requirements leave the shared image metric,
+artifact/path confinement, resolution and S1 Exact-reference rules unchanged.
+S1 now passes its original `full_quality = true` Exact-reference contract
+explicitly through the shared validator's extended API. Focused regressions
+verify that non-full-quality Exact reference is still rejected and that the S0
+contract text, S1 pin and actual shared-validator bytes agree, so later drift
+fails at dependency identity rather than masking the remaining S1 assertions.
+The same regression exposed the separately integrated canonical benchmark
+validator's additive terminal-queue/fixed-GPU evidence modes; its synchronized
+pin is now
+`4f68686d1fd5863376fd53ddf77da31516bd83c084c65a528f02d76462268a62`.
+S1 does not opt into either mode merely by accepting the newer validator.
 
 This is dependency identity maintenance only; it does not create proxy image
 evidence, revise the frozen S1 thresholds or unlock S2--S5. **S1 remains

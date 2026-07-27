@@ -330,13 +330,19 @@ presentation join, RGBA8 PNG decoding/hash checks, metric recomputation and
 validator-version receipt used by
 [`validate-balanced-image-gate.py`](../../../../tests/perf/validate-balanced-image-gate.py).
 At this contract baseline that validator has SHA-256
-`6c1e61edf97096ecb8dd1555cc9553353d6a12dd77373c643f5a65a4138c0dfa`.
+`14023327d729f4233d3244f86eeefa978443c23b81704263b6883642a725c5e8`.
 This pin includes the B1 repair that admits only the valid initial
-`viewport_generation = 0` plus the later Balanced-only depth-profile registry;
-it retains the shared image metric, path, artifact, resolution and exactness
-contract used by S1.
-the canonical benchmark validator has SHA-256
-`3a47dc9221e28a13985928c531d53143934f62313f9d8d257758fb1befbecc6c`.
+`viewport_generation = 0`, the Balanced-only depth-profile registry, and the
+Candidate20 evidence classification plus moving-sequence/V/C/D/SortedAlpha
+requirements. Those additions are fail-closed extensions for the Balanced
+candidate lane; they retain the shared image metric, path, artifact, resolution
+and full-quality Exact-reference contract used by S1.
+The canonical benchmark validator has SHA-256
+`4f68686d1fd5863376fd53ddf77da31516bd83c084c65a528f02d76462268a62`.
+That pin includes the integrated terminal-queue throughput and fixed-GPU
+renderer-identity validation. Those modes are additive and fail closed; S1's
+canonical image artifacts retain their existing exact presentation/count
+requirements.
 A later shared-helper refactor is allowed only when B1 stays fail-closed and
 the retained S1 artifact records the exact validator version and file hash.
 A prose table, renderer log, screenshot pair or producer-computed score is not
