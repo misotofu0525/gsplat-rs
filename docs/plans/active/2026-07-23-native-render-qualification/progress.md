@@ -84,3 +84,28 @@ with report result `product_comparison=not_applicable`. No gsplat-rs Balanced
 product plan exists to compare with PlayCanvas, so launching or fabricating a
 matched product-throughput run would be misleading. This outcome is not a
 performance win; it is the finite truthful completion path for a rejected B6.
+
+## Q1 M4 PlayCanvas prerequisite (2026-07-27)
+
+At clean root commit `cab9c9e`, the pinned PlayCanvas `2.21.0-beta.14`
+(`d5fe88878e338936fe763bbce1a58bc315e89cbe`) harness completed one fresh
+Chrome/WebGPU prerequisite run over the full 2,541,226-splat Truck SH3 source.
+The run used the canonical two-view moving trace, `1920x1080` backing/internal
+resolution, 20 warmup and 80 measured frames, GPU sort on every forward frame,
+and disabled LOD, sampling, dynamic resolution and upscaling. Source, decoded
+and resident counts all equal `2,541,226`; both trace indices were measured.
+
+The canonical benchmark validator accepted
+`tests/competitive/playcanvas/target/benchmarks/qualification/`
+`playcanvas-truck-1080p-cab9c9e-prereq-attempt2/`. Its stopped-rAF plus terminal
+WebGPU queue-drain receipt reports frame-wall mean `17.6675 ms`, p95 `33.3 ms`,
+48 of 80 frames over the 16.67 ms budget, terminal mean `18.7625 ms` and
+`53.2978 FPS`. Browser `frameupdate`-to-`frameend` CPU time is separately
+reported as `1.8 ms`; no unavailable GPU phase timing is invented.
+
+This is a comparator prerequisite, not Q1 acceptance or a native-performance
+loss. A desktop browser page cannot prove physical presentation dimensions;
+the artifact truthfully leaves presented width/height unavailable and
+`full_resolution=false` despite proving the full internal backing. Q1 still
+needs the matched native Exact run and the scoped external-presentation/
+quality decision before comparing terminal throughput.
