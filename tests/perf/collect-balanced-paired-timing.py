@@ -80,6 +80,20 @@ def require_string(value: Any, context: str) -> str:
     return value
 
 
+def load_trace_identity(trace_path: Path, trace_entry: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Join the matrix's canonical content identity to the exact file bytes."""
+
+    file_sha256 = sha256_file(trace_path)
+    trace_value = require_object(
+        json.loads(trace_path.read_text(encoding="utf-8")), "Truck trace"
+    )
+    require(
+        trace_value.get("content_sha256") == trace_entry.get("sha256"),
+        "Truck trace content SHA-256 mismatch",
+    )
+    return trace_value, file_sha256
+
+
 def load_workload(repo: Path, matrix_path: Path = MATRIX_PATH) -> Workload:
     """Pin the B0 workload to the full Truck, not a ladder subset."""
 
@@ -112,9 +126,8 @@ def load_workload(repo: Path, matrix_path: Path = MATRIX_PATH) -> Workload:
     require(trace_path.is_file(), f"Truck trace is unavailable: {trace_path}")
     require(sha256_file(dataset_path) == dataset.get("sha256"), "full Truck dataset SHA-256 mismatch")
     require(dataset_path.stat().st_size == dataset.get("bytes"), "full Truck dataset byte count mismatch")
-    require(sha256_file(trace_path) == trace_entry.get("sha256"), "Truck trace file SHA-256 mismatch")
     M2B.run_trace_validator(repo, trace_path)
-    trace_value = require_object(json.loads(trace_path.read_text(encoding="utf-8")), "Truck trace")
+    trace_value, trace_file_sha256 = load_trace_identity(trace_path, trace_entry)
     require(trace_value.get("trace_id") == trace_entry["id"], "Truck trace identity mismatch")
     require(trace_value.get("content_sha256"), "Truck trace content hash is unavailable")
     frames = trace_value.get("frames")
@@ -132,7 +145,7 @@ def load_workload(repo: Path, matrix_path: Path = MATRIX_PATH) -> Workload:
         trace={
             "trace_id": trace_value["trace_id"],
             "content_sha256": trace_value["content_sha256"],
-            "file_sha256": trace_entry["sha256"],
+            "file_sha256": trace_file_sha256,
             "width": FORMAL_SIZE[0],
             "height": FORMAL_SIZE[1],
             "frame_indices": frame_indices,

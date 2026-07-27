@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 
@@ -17,6 +20,24 @@ SPEC.loader.exec_module(COLLECTOR)
 
 
 class BalancedPairedTimingTests(unittest.TestCase):
+    def test_matrix_content_hash_is_distinct_from_trace_file_hash(self) -> None:
+        content_sha256 = "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = pathlib.Path(directory) / "trace.json"
+            trace_path.write_text(
+                json.dumps({"content_sha256": content_sha256}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            trace, file_sha256 = COLLECTOR.load_trace_identity(
+                trace_path, {"sha256": content_sha256}
+            )
+            self.assertEqual(trace["content_sha256"], content_sha256)
+            self.assertEqual(file_sha256, hashlib.sha256(trace_path.read_bytes()).hexdigest())
+            self.assertNotEqual(file_sha256, content_sha256)
+
+            with self.assertRaisesRegex(COLLECTOR.ValidationError, "content SHA-256"):
+                COLLECTOR.load_trace_identity(trace_path, {"sha256": "b" * 64})
+
     def test_schedule_is_deterministic_counterbalanced_and_has_three_pairs(self) -> None:
         schedule = COLLECTOR.schedule_pairs(3, 41)
         self.assertEqual(schedule, COLLECTOR.schedule_pairs(3, 41))
