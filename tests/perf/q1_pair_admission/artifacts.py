@@ -506,8 +506,6 @@ def _playcanvas_presentation_receipt(
             "native_materialization": None,
             "native_identity": None,
         }
-    if q1.get("renderer_rgba_unavailable_reason") is not None:
-        fail(f"{context} cannot mark an available PlayCanvas producer unavailable")
     if (
         presentation.get("schema") != PLAYCANVAS_PRESENTATION_SCHEMA
         or presentation.get("ready_for_external_capture") is not True
@@ -536,7 +534,37 @@ def _playcanvas_presentation_receipt(
             fail(f"{context}.presentation_capture.frames[{index}] submit chain mismatch")
         prior_submit = after
     final_frame = presentation_frames[-1]
-    capture = obj(presentation, "renderer_capture", f"{context}.presentation_capture")
+    capture_value = presentation.get("renderer_capture")
+    if not isinstance(capture_value, dict):
+        partial_producer = (
+            capture_value is not None
+            or manifest.get("renderer_capture") is not None
+            or manifest.get("renderer_capture_materialization") is not None
+            or any(
+                key.startswith("renderer_") and key != "renderer_capture"
+                for key in presentation
+            )
+            or any(frame.get("renderer_capture_copy") is not None for frame in presentation_frames)
+        )
+        if (
+            partial_producer
+            or q1.get("renderer_rgba_unavailable_reason")
+            != PLAYCANVAS_RGBA_UNAVAILABLE
+        ):
+            fail(f"{context} contains a partial PlayCanvas renderer producer")
+        if presentation.get("terminal_camera_receipt") != manifest.get("camera_receipt"):
+            fail(f"{context}.presentation_capture terminal camera owner mismatch")
+        return {
+            "trace_frame_index": trace,
+            "renderer_rgba_status": "unavailable",
+            "renderer_rgba_reason": PLAYCANVAS_RGBA_UNAVAILABLE,
+            "renderer_rgba_receipt": None,
+            "native_materialization": None,
+            "native_identity": presentation,
+        }
+    if q1.get("renderer_rgba_unavailable_reason") is not None:
+        fail(f"{context} cannot mark an available PlayCanvas producer unavailable")
+    capture = capture_value
     if manifest.get("renderer_capture") != capture or set(capture) != PLAYCANVAS_CAPTURE_FIELDS:
         fail(f"{context} PlayCanvas renderer capture fields/owner location are not frozen")
     for field, expected in {

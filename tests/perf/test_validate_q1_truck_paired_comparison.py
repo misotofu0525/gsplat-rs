@@ -264,6 +264,47 @@ def presentation(
     return result
 
 
+def playcanvas_camera_receipt(trace: int, phase: str) -> dict[str, object]:
+    return {
+        "schema": "gsplat-playcanvas-runtime-camera-receipt/v1",
+        "trace_frame_index": trace,
+        "phase": phase,
+    }
+
+
+def legacy_playcanvas_presentation(trace: int) -> tuple[dict[str, object], dict[str, object]]:
+    frames: list[dict[str, object]] = []
+    submit = 100
+    for index in range(3):
+        camera = playcanvas_camera_receipt(trace, f"presentation_frame_{index}")
+        frames.append(
+            {
+                "trace_frame_index": trace,
+                "camera_receipt": camera,
+                "submit_version_before": submit,
+                "submit_version_after": submit + 1,
+                "queue_submit_call_count": 1,
+            }
+        )
+        submit += 1
+    terminal_camera = playcanvas_camera_receipt(trace, "external_capture_terminal")
+    return (
+        {
+            "schema": "gsplat-playcanvas-presentation-capture/v1",
+            "ready_for_external_capture": True,
+            "excluded_from_performance": True,
+            "capture_trace_frame_index": trace,
+            "capture_trace_frame_source": "explicit_capture_trace_frame",
+            "stable_frame_count": 3,
+            "minimum_stable_frame_count": 3,
+            "measurement_terminal_submit_version": 100,
+            "frames": frames,
+            "terminal_camera_receipt": terminal_camera,
+        },
+        terminal_camera,
+    )
+
+
 def protocol() -> dict[str, object]:
     return {
         "dataset": TRUCK,
@@ -359,13 +400,168 @@ def write_artifact(
             doc["q1_comparison"]["presentation_identity"] = presentation(
                 capture_trace, str(doc["run_id"]), records
             )
+        else:
+            assert capture_trace in {0, 1}
+            native_presentation, terminal_camera = legacy_playcanvas_presentation(
+                capture_trace
+            )
+            doc["presentation_capture"] = native_presentation
+            doc["camera_receipt"] = terminal_camera
     write_json(directory / "manifest.json", doc)
     (directory / "frames.jsonl").write_text("".join(f"{json.dumps(value)}\n" for value in records), encoding="utf-8")
     write_json(directory / "summary.json", summary(str(doc["run_id"]), terminal_ms))
     return directory
 
 
-def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: float = 1.0) -> pathlib.Path:
+def install_complete_playcanvas_producers(root: pathlib.Path, schedule_path: pathlib.Path) -> None:
+    document = json.loads(schedule_path.read_text(encoding="utf-8"))
+    rgba = bytes((0, 0, 0, 255)) * (WIDTH * HEIGHT)
+    rgba_sha = hashlib.sha256(rgba).hexdigest()
+    for pair in document["pairs"]:
+        endpoint = pair["playcanvas"]
+        binding_digests: dict[int, str] = {}
+        for control in endpoint["controls"]:
+            trace = int(control["trace_frame_index"])
+            directory = root / control["artifact"]
+            manifest_path = directory / "manifest.json"
+            manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+            native_presentation = manifest_value["presentation_capture"]
+            final_frame = native_presentation["frames"][-1]
+            renderer_submit = int(final_frame["submit_version_after"])
+            copy_submit = renderer_submit + 1
+            camera = final_frame["camera_receipt"]
+            camera_json = json.dumps(camera, separators=(",", ":"))
+            capture = {
+                "schema": "gsplat-playcanvas-webgpu-renderer-capture/v1",
+                "producer": "playcanvas_webgpu_copy_texture_to_buffer",
+                "status": "terminal",
+                "renderer_frame_sequence": 103,
+                "renderer_submit_version": renderer_submit,
+                "copy_submit_version_before": renderer_submit,
+                "copy_submit_version_after": copy_submit,
+                "texture_format": "bgra8unorm",
+                "render_view_format": "bgra8unorm",
+                "canvas_color_space": "srgb",
+                "canvas_alpha_mode": "premultiplied",
+                "pixel_format": "rgba8unorm",
+                "row_origin": "top_left",
+                "width": WIDTH,
+                "height": HEIGHT,
+                "row_bytes": WIDTH * 4,
+                "byte_length": len(rgba),
+                "rgba8_sha256": rgba_sha,
+                "camera_receipt_sha256": hashlib.sha256(camera_json.encode()).hexdigest(),
+                "camera_receipt_json": camera_json,
+                "camera_receipt": camera,
+                "resolution": {
+                    "requested_width": WIDTH,
+                    "requested_height": HEIGHT,
+                    "surface_width": WIDTH,
+                    "surface_height": HEIGHT,
+                    "internal_render_width": WIDTH,
+                    "internal_render_height": HEIGHT,
+                    "presented_width": WIDTH,
+                    "presented_height": HEIGHT,
+                    "dynamic_resolution": "disabled",
+                    "upscaling": "disabled",
+                    "internal_full_resolution": True,
+                    "full_resolution": True,
+                },
+                "source": {
+                    "dataset_id": TRUCK["id"],
+                    "dataset_sha256": TRUCK["sha256"],
+                    "source_splat_count": TRUCK["splat_count"],
+                    "decoded_splat_count": TRUCK["splat_count"],
+                    "resident_splat_count": TRUCK["splat_count"],
+                    "source_sh_degree": 3,
+                    "resident_sh_degree": 3,
+                    "source_membership": "all",
+                    "sampling": "disabled",
+                    "lod": "disabled",
+                    "partial_scene_published": False,
+                    "full_quality": True,
+                },
+                "copy_map_complete": True,
+                "queue_terminal_complete": True,
+                "terminal_queue_drain": {
+                    "phase": "post_capture_presentation",
+                    "submit_version_before": copy_submit,
+                    "submit_version_after": copy_submit,
+                    "submit_version_stable": True,
+                },
+            }
+            source_image = root / next(
+                image["path"] for image in endpoint["images"]
+                if image["trace_frame_index"] == trace
+            )
+            png = source_image.read_bytes()
+            png_path = directory / "final-frame.png"
+            rgba_path = directory / "final-frame.rgba8"
+            png_path.write_bytes(png)
+            rgba_path.write_bytes(rgba)
+            png_sha = hashlib.sha256(png).hexdigest()
+            materialization = {
+                "schema": "gsplat-playcanvas-renderer-capture-materialization/v1",
+                "source": "host_png_from_renderer_owned_webgpu_rgba8",
+                "source_capture_schema": capture["schema"],
+                "source_capture_producer": capture["producer"],
+                "source_rgba8_sha256": rgba_sha,
+                "rgba8_file": rgba_path.name,
+                "rgba8_byte_length": len(rgba),
+                "png_file": png_path.name,
+                "png_byte_length": len(png),
+                "png_sha256": png_sha,
+                "width": WIDTH,
+                "height": HEIGHT,
+            }
+            final_frame["renderer_capture_copy"] = {
+                "submit_version_after": copy_submit
+            }
+            native_presentation["renderer_capture"] = capture
+            native_presentation["queue_drain"] = {
+                "phase": "post_capture_presentation",
+                "frameLoopStopped": True,
+                "submitVersionBefore": copy_submit,
+                "submitVersionAfter": copy_submit,
+                "submitVersionStable": True,
+            }
+            manifest_value["renderer_capture"] = capture
+            manifest_value["renderer_capture_materialization"] = materialization
+            manifest_value["q1_comparison"].pop(
+                "renderer_rgba_unavailable_reason", None
+            )
+            write_json(manifest_path, manifest_value)
+            manifest_sha = file_sha256(manifest_path)
+            control["manifest_sha256"] = manifest_sha
+            binding_digests[trace] = manifest_sha
+            image = next(
+                image for image in endpoint["images"]
+                if image["trace_frame_index"] == trace
+            )
+            image["path"] = png_path.relative_to(root).as_posix()
+            image["sha256"] = png_sha
+            image["producer_artifact"]["manifest_sha256"] = manifest_sha
+            image["host_admission_join"].update(
+                {
+                    "producer_manifest_sha256": manifest_sha,
+                    "source_rgba8_sha256": rgba_sha,
+                    "png_sha256": png_sha,
+                }
+            )
+        throughput_path = root / endpoint["throughput"] / "manifest.json"
+        throughput = json.loads(throughput_path.read_text(encoding="utf-8"))
+        for binding in throughput["q1_comparison"]["control_bindings"]:
+            binding["manifest_sha256"] = binding_digests[
+                int(binding["trace_frame_index"])
+            ]
+        write_json(throughput_path, throughput)
+    write_json(schedule_path, document)
+
+
+def build_series(
+    root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: float = 1.0,
+    playcanvas_producer: bool = False,
+) -> pathlib.Path:
     series_id = "q1-truck-test"
     references = []
     for trace in (0, 1):
@@ -484,6 +680,8 @@ def build_series(root: pathlib.Path, *, gs_terminal_ms: float = 800.0, score: fl
         pairs.append(pair)
     schedule_path = root / "schedule.json"
     write_json(schedule_path, {"schema": SCHEMA, "series_id": series_id, "schedule": schedule_block, "protocol": protocol_value, "pairs": pairs})
+    if playcanvas_producer:
+        install_complete_playcanvas_producers(root, schedule_path)
     return schedule_path
 
 
@@ -529,7 +727,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             binding["manifest_sha256"] = digest
             write_json(throughput_path, throughput)
 
-    def test_complete_candidate_series_is_deferred_without_playcanvas_producer(self) -> None:
+    def test_legacy_presentation_without_renderer_capture_is_deferred(self) -> None:
         result = evaluate(self.schedule)
         self.assertEqual(result["state"], "Deferred")
         self.assertFalse(result["evidence_admitted"])
@@ -540,6 +738,27 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             result["reasons"],
             ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
         )
+
+    def test_partial_playcanvas_renderer_producer_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/control-trace-0",
+            lambda value: value["presentation_capture"]["frames"][-1].__setitem__(
+                "renderer_capture_copy", {"submit_version_after": 104}
+            ),
+        )
+        with self.assertRaisesRegex(ValidationError, "partial PlayCanvas renderer producer"):
+            evaluate(self.schedule)
+
+    def test_complete_playcanvas_native_producer_enters_admitted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schedule = build_series(
+                pathlib.Path(directory), playcanvas_producer=True
+            )
+            result = evaluate(schedule)
+        self.assertEqual(result["state"], "Accepted")
+        self.assertTrue(result["evidence_admitted"])
+        self.assertTrue(result["quality_passed"])
+        self.assertIsNotNone(result["performance"])
 
     def test_null_pairing_from_historical_artifact_is_rejected(self) -> None:
         self.mutate_manifest("pairs/pair-01/playcanvas/control-trace-0", lambda value: value.__setitem__("pairing", {"pair_id": None, "run_order": None, "position": None}))
@@ -664,7 +883,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
                 "renderer_capture", gsplat_renderer_rgba(79, 79)
             ),
         )
-        with self.assertRaisesRegex(ValidationError, "truthfully declare unavailable"):
+        with self.assertRaisesRegex(ValidationError, "partial PlayCanvas renderer producer"):
             evaluate(self.schedule)
 
     def test_host_png_source_must_match_renderer_owned_rgba(self) -> None:
