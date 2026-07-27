@@ -6,7 +6,7 @@
   },
   "authority": {
     "path": "tests/competitive/playcanvas/public/trace-camera.js",
-    "sha256": "5976989c6af6565f3eb071e4aa09143bd7cd23f1b35b0ee005c65be93dfc6cc4",
+    "sha256": "f3faeaac0c8fd8fcd83bde1e0f6df22775724fe5b5e6a2e4992275cccd975310",
     "oracle_export": "canonicalPlayCanvasCameraOracle",
     "receipt_export": "createPlayCanvasCameraReceipt"
   },

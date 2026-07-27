@@ -780,3 +780,51 @@ PlayCanvas producer and collect one fresh predeclared two-control-per-endpoint
 series; this validator can then reach a comparative verdict without another
 schema revision. Missing provenance does not authorize automatic retries, and
 no lead-percentage threshold can keep the task spinning.
+
+## Q1 Web timing semantics and integrated admission checkpoint (2026-07-28)
+
+Root subsequently integrated the PlayCanvas renderer-owned WebGPU capture
+producer, the gsplat-rs browser timing collector and their publication
+hardening through `beba235`. A fresh K1d run at that source identity retained
+complete Kitsune SH3, the `0 -> 1 -> 0` trace and true internal/presented
+`1920x1080`; its ExactFull32 versus CandidateStable20 captures passed with
+SSIM `0.9998697584 / 0.9996730161 / 0.9998697584`, exact alpha and stable
+return-to-frame-zero renderer RGBA hashes.
+
+The separate complete-Truck gsplat-rs diagnostic executed three
+counterbalanced pairs, each lane with 20 warmup plus 80 measured frames. Exact
+terminal means were `19.1675 / 19.36375 / 19.1675 ms`; Candidate20 terminal
+means were `19.3925 / 18.33625 / 18.33625 ms`. Pair directions disagreed, so
+the finite machine result is `inconclusive`. This is not a PlayCanvas
+comparison: the comparator prerequisite is an unpaired rAF/queue-drain sample,
+the two endpoints do not yet share the Q1 two-control artifact shape, and
+PlayCanvas does not expose post-projection `V/C/D`.
+
+To prevent a repeat of the rejected apparent `66.875 ms` versus `17.6675 ms`
+ratio, `71173fe` renamed the browser host-call fields to
+`renderer_call_wall_ms` / `renderer_call_wall_mean_ms` and explicitly leaves
+the cross-implementation metric unavailable. A renderer call interval is not
+a browser rAF interval, queue terminal, GPU time or presented frame time.
+
+The cumulative Q1 offline admission mechanism is integrated through `2c39306`.
+It requires five fresh AB/BA pairs; two trace-specific untimed controls plus a
+separate throughput artifact per endpoint and pair; full source, SH, backing,
+build, environment and thermal identity; same-present images; and one common
+terminal primitive. PlayCanvas camera receipts are checked against the
+existing JavaScript trace authority for pose, intrinsics and all produced
+matrices. Legacy or missing real capture evidence is `Deferred`, partial or
+inconsistent evidence is `Rejected`, and admitted quality/performance produces
+one finite result without an automatic retry or percentage success gate.
+
+Integration advanced `trace-camera.js` with the separately accepted renderer
+capture proof, so the generated camera-authority fixture was refreshed only to
+bind that newer source SHA; its camera receipts did not change. The generator
+`--check`, 35 focused admission tests, 15 PlayCanvas camera/capture tests, 21
+canonical benchmark-artifact tests and the source architecture policy pass.
+
+Q1 remains **Active**, but not because a benchmark percentage failed. The next
+bounded implementation slices are the real PlayCanvas Q1 two-control/
+throughput producer mode, then the equivalent gsplat-rs mode, then the finite
+five-pair orchestrator. Launching thirty browser executions before those two
+producer contracts exist would create another expensive but inadmissible
+sample, so no endpoint series is authorized at this checkpoint.
