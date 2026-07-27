@@ -686,3 +686,36 @@ prerequisite only. The capture/blit frames are not timing samples, complete
 Truck performance remains unmeasured for Candidate20, and the separate Q1 pair
 admission candidate is still rejected until real gsplat-rs and PlayCanvas
 terminal image producers own their endpoint receipts.
+
+### Q1 Web Candidate20/Exact Truck pair-orchestrator mechanism (2026-07-28)
+
+An isolated gsplat-rs-only collector now defines the next bounded experiment;
+this checkpoint contains no browser or endpoint run. It accepts only a retained
+K1d balanced-image suite whose clean commit and Exact/Candidate JS, WASM, and
+build-receipt hashes exactly match the timing packages. The canonical K1d
+validator runs before the output directory is claimed.
+
+The admitted workload is complete 2,541,226-splat Truck SH3, the committed
+moving two-view trace, and true requested/Surface/internal/presented
+`1920x1080`. Both lanes keep Packed Exact membership, GPU Preproject ordering,
+Compact exact contributor drawing, and sort refresh interval one. The only
+changed receipt is renderer-owned depth-key precision: `ExactFull32` versus
+`CandidateStable20` as already admitted by K1d.
+
+The collector creates at least three seeded, counterbalanced pairs. Every
+scheduled lane has exactly one renderer execution with 20 warmup and 80
+measured frames. Capture and blit APIs are absent from the timing path. The
+final warmup draw and final measured draw each issue one renderer-owned
+current-stats request; their Ready terminals must match the complete
+scene/camera/viewport/contract/plan-set/order/raster/encode/presentation
+identity and prove `source >= visible >= contributor == drawn`. The measured
+window starts immediately before the first measured camera input and ends at
+the final renderer terminal; per-frame `frame_wall_ms` is retained separately.
+
+The machine result is deliberately finite: all paired deltas favoring one lane
+produces `candidate` or `exact`; mixed/tied observations produce
+`inconclusive`. Percent changes are observations and are not hard gates. Fresh
+output, one execution, and no automatic retry are fail-closed. A real clean-SHA
+K1d rerun followed by complete-Truck Chrome execution remains **Deferred** to
+the root endpoint owner. This mechanism alone is not PlayCanvas comparison or
+Q1 acceptance.

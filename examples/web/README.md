@@ -64,6 +64,32 @@ evidence only. It is not a formal Kitsune performance run or broad device
 qualification. The Candidate20 collector is narrower still: its
 `diagnostic_only` artifact cannot enter a quality or performance suite.
 
+After a retained K1d quality suite has admitted the ExactFull32 and
+CandidateStable20 packages at the same clean commit, the gsplat-rs-only Truck
+timing collector can compare those two packages without running a competitor:
+
+```bash
+node examples/web/scripts/collect-web-depth-precision-paired-timing.mjs \
+  --exact-pkg /absolute/path/to/quality-exact \
+  --candidate-pkg /absolute/path/to/quality-candidate20 \
+  --quality-suite /absolute/path/to/retained-k1d/suite.json \
+  --expected-commit <FULL_CLEAN_COMMIT_SHA> \
+  --chrome /absolute/path/to/Chrome \
+  --output /absolute/path/to/fresh-output
+```
+
+The collector validates the retained quality suite with the canonical image
+gate, then requires its commit and exact JS/WASM/build-receipt hashes to match
+the timing packages. It schedules at least three seeded, counterbalanced pairs
+over complete Truck SH3 at moving 1920x1080. Each scheduled lane executes once:
+20 warmup frames, 80 measured frames, no capture/blit call, and renderer-owned
+current-stats terminal fences after warmup and after the final measured frame.
+The output is only `candidate`, `exact`, or `inconclusive`; percentage changes
+are observations rather than an acceptance threshold. The destination must not
+exist, and a failed attempt is preserved without automatic retry. This is a
+within-gsplat-rs depth-precision experiment, not PlayCanvas evidence or Q1
+acceptance.
+
 The default/product path fails closed when WASM/WebGPU construction or exact
 scene admission fails. To inspect the non-equivalent sampled WebGL2 diagnostic
 when WebGPU is unavailable, opt in explicitly:
