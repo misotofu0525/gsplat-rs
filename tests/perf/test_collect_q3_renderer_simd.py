@@ -18,44 +18,40 @@ def line(prefix: str, fields: dict[str, object]) -> str:
     return prefix + " ".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in fields.items())
 
 
-def dimensions() -> dict[str, object]:
-    return {
+def fixture_log() -> str:
+    begin = {
+        "trace_id": "truck-trace",
+        "trace_sha256": "a" * 64,
+        "exact_plan_requested": "cpu_post_sort",
+        "geometry_path": "packed_atlas",
+        "raster_execution_plan": "projected_quads_exact",
+        "blend_mode": "sorted_alpha",
+        "source_membership": "all",
+        "sampling": "disabled",
+        "lod": "disabled",
+        "adapter_backend": "metal",
+        "adapter_name": "Apple-M4",
+        "adapter_device_type": "integrated_gpu",
+        "adapter_driver": "Metal",
+        "adapter_driver_info": "available",
+        "source_count": 100,
+        "decoded_count": 100,
+        "encoded_count": 100,
+        "resident_count": 100,
+        "addressable_count": 100,
+        "sh_degree": 3,
         "requested_width": 1920,
         "requested_height": 1080,
         "surface_width": 1920,
         "surface_height": 1080,
         "internal_render_width": 1920,
         "internal_render_height": 1080,
-        "presented_width": 1920,
-        "presented_height": 1080,
         "dynamic_resolution": "disabled",
         "upscaling": "disabled",
         "full_resolution": True,
-    }
-
-
-def fixture_log() -> str:
-    common = {
-        "trace_id": "truck-trace",
-        "trace_sha256": "a" * 64,
-        "benchmark_mode": "isolated",
-        "sort_policy": "every_frame",
-        "requested_backend": "cpu",
-        "geometry_path": "packed_atlas",
-        "raster_execution_plan": "projected_quads_exact",
-        "gpu_order_producer": "product-default",
-        "producer_measurement_enabled": False,
-        "source_count": 100,
-        "resident_count": 100,
-        "sh_degree": 3,
-    }
-    begin = {
-        **common,
-        "sort_interval": 1,
-        **{key: value for key, value in dimensions().items() if not key.startswith("presented_")},
         "trace_frames": 3,
     }
-    lines = [line("SURFACE_BENCHMARK_BEGIN ", begin)]
+    lines = [line("SURFACE_EXACT_EVIDENCE_BEGIN ", begin)]
     frame_values = [
         ("warmup", "none", 0, 0, 1.0, 2.0, 5.0),
         ("measure", 0, 0, 0, 1.5, 2.5, 6.0),
@@ -63,75 +59,139 @@ def fixture_log() -> str:
     ]
     for index, (phase, sample, trace_frame, timestamp, preprocess, sort, completion) in enumerate(frame_values):
         frame = {
+            "trace_id": "truck-trace",
+            "trace_sha256": "a" * 64,
             "playback_index": index,
             "phase": phase,
             "measured_sample": sample,
             "trace_frame": trace_frame,
             "trace_timestamp_ns": timestamp,
+            "elapsed_ns": (index + 1) * 1_000_000,
+            "exact_plan_requested": "cpu_post_sort",
+            "exact_plan_actual": "cpu_post_sort",
+            "current_stats_ticket": index + 1,
+            "scene_generation": 1,
             "camera_revision": index,
-            "sort_policy": "every_frame",
-            "requested_backend": "cpu",
-            "actual_backend": "cpu",
-            "raster_execution_plan": "projected_quads_exact",
-            "frame_presented": True,
-            "gpu_order_preparation_pending": False,
-            "sort_refreshed": True,
-            "order_uploaded": True,
-            "gpu_sort_fallback": False,
+            "viewport_generation": 0,
+            "contract_generation": 1,
+            "plan_set_generation": 1,
+            "order_generation": index + 1,
+            "raster_generation": 1,
+            "encode_attempt": index + 1,
+            "presentation_sequence": index + 1,
+            "count_semantics": "direct_draw_equals_visible",
             "source_count": 100,
-            "resident_count": 100,
-            "visible_count": 80,
-            "drawn_count": 80,
-            "measurement_ticket_submitted": index + 1,
-            "measurement_backend": "cpu",
-            "measurement_unsampled_reason": "none",
-            "gpu_ticket_submitted": "none",
-            "cpu_preprocess_ms": preprocess,
-            "cpu_sort_ms": sort,
-            "cpu_render_submit_ms": preprocess + sort + 1.0,
-            "frame_wall_ms": completion + 1.0,
-            **dimensions(),
-        }
-        terminal = {
-            "ticket": index + 1,
-            "camera_revision": index,
-            "measured": phase == "measure",
-            "cpu_preprocess_ms": preprocess,
-            "cpu_sort_ms": sort,
-            "frame_completion_ms": completion,
             "visible_count": 80,
             "contributor_count": 70,
             "drawn_count": 80,
             "exact_contributor_compaction": False,
+            "sort_refreshed": True,
+            "order_uploaded": True,
+            "actual_backend": "cpu",
+            "cpu_preprocess_ms": preprocess,
+            "cpu_sort_ms": sort,
+            "cpu_render_submit_ms": preprocess + sort + 1.0,
+            "call_ms": completion + 0.5,
+            "frame_wall_ms": completion + 1.0,
+            "requested_width": 1920,
+            "requested_height": 1080,
+            "presented_width": 1920,
+            "presented_height": 1080,
+            "frame_presented": True,
+            "terminal_receipt": "ready",
         }
-        lines.append(line("SURFACE_FRAME_RECEIPT ", frame))
-        lines.append(line("SURFACE_CPU_MEASUREMENT ", terminal))
+        terminal = {
+            "status": "ready",
+            "ticket_namespace": "current_stats",
+            "ticket": index + 1,
+            "executed_plan": "cpu_post_sort",
+            "scene_generation": 1,
+            "camera_revision": index,
+            "viewport_generation": 0,
+            "contract_generation": 1,
+            "plan_set_generation": 1,
+            "order_generation": index + 1,
+            "raster_generation": 1,
+            "encode_attempt": index + 1,
+            "presentation_sequence": index + 1,
+            "count_semantics": "direct_draw_equals_visible",
+            "source_count": 100,
+            "visible_count": 80,
+            "contributor_count": 70,
+            "drawn_count": 80,
+            "cpu_preprocess_ms": preprocess,
+            "cpu_sort_ms": sort,
+            "queue_completion_ms": completion,
+        }
+        lines.append(line("SURFACE_CURRENT_STATS_TERMINAL ", terminal))
+        lines.append(line("SURFACE_EXACT_EVIDENCE_FRAME ", frame))
+    capture = {
+        "status": "ok",
+        "path": "final-frame.png",
+        "trace_frame": 1,
+        "exact_plan_requested": "cpu_post_sort",
+        "exact_plan_actual": "cpu_post_sort",
+        "current_stats_ticket": 4,
+        "scene_generation": 1,
+        "camera_revision": 3,
+        "viewport_generation": 0,
+        "contract_generation": 1,
+        "plan_set_generation": 1,
+        "order_generation": 4,
+        "raster_generation": 1,
+        "encode_attempt": 4,
+        "presentation_sequence": 4,
+        "count_semantics": "direct_draw_equals_visible",
+        "source_count": 100,
+        "visible_count": 80,
+        "contributor_count": 70,
+        "drawn_count": 80,
+        "exact_contributor_compaction": False,
+        "actual_backend": "cpu",
+        "requested_width": 1920,
+        "requested_height": 1080,
+        "captured_width": 1920,
+        "captured_height": 1080,
+        "frame_presented": True,
+        "terminal_receipt": "ready",
+    }
+    capture_terminal = {
+        "status": "ready",
+        "ticket_namespace": "current_stats",
+        "ticket": 4,
+        "executed_plan": "cpu_post_sort",
+        "scene_generation": 1,
+        "camera_revision": 3,
+        "viewport_generation": 0,
+        "contract_generation": 1,
+        "plan_set_generation": 1,
+        "order_generation": 4,
+        "raster_generation": 1,
+        "encode_attempt": 4,
+        "presentation_sequence": 4,
+        "count_semantics": "direct_draw_equals_visible",
+        "source_count": 100,
+        "visible_count": 80,
+        "contributor_count": 70,
+        "drawn_count": 80,
+        "cpu_preprocess_ms": 2.5,
+        "cpu_sort_ms": 3.5,
+        "queue_completion_ms": 8.0,
+    }
+    lines.append(line("SURFACE_CURRENT_STATS_TERMINAL ", capture_terminal))
+    lines.append(line("SURFACE_EXACT_EVIDENCE_CAPTURE ", capture))
     summary = {
         "status": "ok",
-        **common,
-        "final_actual_backend": "cpu",
-        **dimensions(),
+        "exact_plan_requested": "cpu_post_sort",
+        "actual_plan_set": "cpu_post_sort",
         "trace_frames": 3,
-        "presented_frames": 3,
         "measured_frames": 2,
-        "measured_cpu_frames": 2,
-        "measured_gpu_frames": 0,
-        "sort_refreshes": 3,
-        "gpu_fallback_frames": 0,
-        "gpu_refreshes_without_ticket": 0,
-        "cpu_requests_without_ticket": 0,
-        "surface_unavailable_measurements": 0,
-        "terminal_order_tickets": 3,
-        "terminal_producer_tickets": 0,
-        "outstanding_cpu_tickets": 0,
-        "outstanding_gpu_tickets": 0,
-        "outstanding_producer_tickets": 0,
-        "mean_cpu_preprocess_ms": 2.0,
-        "mean_cpu_sort_ms": 3.0,
-        "mean_cpu_completion_ms": 7.0,
-        "mean_frame_wall_ms": 8.0,
+        "eligibility_retries": 0,
+        "capture_retries": 0,
+        "terminal_receipts": 4,
+        "final_capture": "available",
     }
-    lines.append(line("SURFACE_BENCHMARK_SUMMARY ", summary))
+    lines.append(line("SURFACE_EXACT_EVIDENCE_SUMMARY ", summary))
     return "\n".join(lines) + "\n"
 
 
@@ -188,12 +248,12 @@ class Q3RendererSimdCollectorTests(unittest.TestCase):
         self.assertEqual(COLLECTOR.terminal_decision(pairs([-1, -2, -1, -3, -1]))[0], "Accepted")
         self.assertEqual(COLLECTOR.terminal_decision(pairs([-1, -2, 0.1, -3, -1]))[0], "Rejected")
 
-    def test_cpu_terminals_join_every_measured_whole_plan_phase(self):
+    def test_current_stats_terminals_join_identity_counts_and_queue_completion(self):
         validated = COLLECTOR.validate_run_log(
             fixture_log(),
             "",
             lane="scalar",
-            dataset={"splat_count": 100},
+            dataset={"splat_count": 100, "sh_degree": 3},
             trace={
                 "trace_id": "truck-trace",
                 "content_sha256": "a" * 64,
@@ -204,26 +264,32 @@ class Q3RendererSimdCollectorTests(unittest.TestCase):
             },
             warmup=1,
             measured=2,
+            capture_path=Path("/tmp/final-frame.png"),
         )
-        self.assertEqual(validated["terminal_ticket_count"], 3)
+        self.assertEqual(validated["terminal_ticket_count"], 4)
+        self.assertEqual(validated["capture_ticket"], 4)
         self.assertEqual(validated["frames"][0]["preprocess_ms"], 1.5)
         self.assertEqual(validated["frames"][0]["sort_ms"], 2.5)
         self.assertTrue(validated["frames"][0]["order_uploaded"])
         self.assertEqual(validated["frames"][0]["drawn"], 80)
         self.assertEqual(validated["frames"][0]["frame_completion_ms"], 6.0)
 
-    def test_missing_cpu_terminal_is_deferred_protocol_input(self):
+    def test_missing_current_stats_terminal_is_owner_protocol_incomplete(self):
         stdout = "\n".join(
             line
             for line in fixture_log().splitlines()
-            if not (line.startswith("SURFACE_CPU_MEASUREMENT ") and "ticket=3 " in line)
+            if not (
+                line.startswith("SURFACE_CURRENT_STATS_TERMINAL ") and "ticket=3 " in line
+            )
         )
-        with self.assertRaisesRegex(COLLECTOR.ValidationError, "exactly one terminal"):
+        with self.assertRaisesRegex(
+            COLLECTOR.OwnerProtocolIncompleteError, "lack canonical terminal"
+        ):
             COLLECTOR.validate_run_log(
                 stdout,
                 "",
                 lane="neon",
-                dataset={"splat_count": 100},
+                dataset={"splat_count": 100, "sh_degree": 3},
                 trace={
                     "trace_id": "truck-trace",
                     "content_sha256": "a" * 64,
@@ -235,6 +301,77 @@ class Q3RendererSimdCollectorTests(unittest.TestCase):
                 warmup=1,
                 measured=2,
             )
+
+    def test_current_stats_identity_mismatch_is_integrity_rejected(self):
+        stdout = fixture_log().replace(
+            "ticket_namespace=current_stats ticket=2 executed_plan=cpu_post_sort scene_generation=1 camera_revision=1",
+            "ticket_namespace=current_stats ticket=2 executed_plan=cpu_post_sort scene_generation=1 camera_revision=99",
+        )
+        with self.assertRaisesRegex(COLLECTOR.IntegrityRejectedError, "camera_revision"):
+            COLLECTOR.validate_run_log(
+                stdout,
+                "",
+                lane="scalar",
+                dataset={"splat_count": 100, "sh_degree": 3},
+                trace={
+                    "trace_id": "truck-trace",
+                    "content_sha256": "a" * 64,
+                    "width": 1920,
+                    "height": 1080,
+                    "frame_indices": (0, 1),
+                    "frame_timestamps_ns": (0, 16_666_667),
+                },
+                warmup=1,
+                measured=2,
+            )
+
+    def test_old_order_measurement_terminal_cannot_satisfy_current_stats_owner(self):
+        stdout = "\n".join(
+            line
+            for line in fixture_log().splitlines()
+            if not line.startswith("SURFACE_CURRENT_STATS_TERMINAL ")
+        )
+        stdout += "\nSURFACE_CPU_MEASUREMENT ticket=1 camera_revision=0 measured=false\n"
+        with self.assertRaises(COLLECTOR.OwnerProtocolIncompleteError):
+            COLLECTOR.validate_run_log(
+                stdout,
+                "",
+                lane="neon",
+                dataset={"splat_count": 100, "sh_degree": 3},
+                trace={
+                    "trace_id": "truck-trace",
+                    "content_sha256": "a" * 64,
+                    "width": 1920,
+                    "height": 1080,
+                    "frame_indices": (0, 1),
+                    "frame_timestamps_ns": (0, 16_666_667),
+                },
+                warmup=1,
+                measured=2,
+            )
+
+    def test_failure_classes_map_to_finite_cells(self):
+        self.assertEqual(
+            COLLECTOR.terminal_for_error(COLLECTOR.OwnerProtocolIncompleteError("missing")),
+            ("Deferred", "owner_protocol_incomplete"),
+        )
+        self.assertEqual(
+            COLLECTOR.terminal_for_error(COLLECTOR.EnvironmentPrerequisiteError("host")),
+            ("Deferred", "environment_prerequisite"),
+        )
+        self.assertEqual(
+            COLLECTOR.terminal_for_error(COLLECTOR.IntegrityRejectedError("mismatch")),
+            ("Rejected", "integrity_rejected"),
+        )
+
+    def test_command_uses_strict_evidence_and_no_order_measurement_ticket(self):
+        workload = COLLECTOR.Workload(
+            {"splat_count": 100}, Path("truck.ply"), {}, Path("trace.json")
+        )
+        command = COLLECTOR.make_command(Path("desktop-example"), workload, 1, 2)
+        self.assertIn("--surface-evidence-plan", command)
+        self.assertIn("cpu-post-sort", command)
+        self.assertNotIn("--order-backend", command)
 
 
 if __name__ == "__main__":

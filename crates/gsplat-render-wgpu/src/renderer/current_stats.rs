@@ -271,6 +271,102 @@ impl CurrentStatsTerminal {
     }
 }
 
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+pub(crate) fn qualification_terminal_record(poll: CurrentStatsPoll) -> Option<String> {
+    let CurrentStatsPoll::Terminal(terminal) = poll else {
+        return None;
+    };
+    let submission = terminal.submission();
+    let join = submission.join();
+    let frame = join.frame_identity();
+    let identity = format!(
+        "ticket_namespace=current_stats ticket={} executed_plan={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} order_generation={} raster_generation={} encode_attempt={} presentation_sequence={}",
+        submission.ticket().get(),
+        qualification_plan_label(join.plan_id()),
+        frame.scene_generation(),
+        frame.camera_revision(),
+        frame.viewport_generation(),
+        frame.contract_generation(),
+        frame.plan_set_generation(),
+        join.order_generation(),
+        join.raster_generation(),
+        join.encode_attempt(),
+        join.presentation_sequence(),
+    );
+    match terminal {
+        CurrentStatsTerminal::Ready(receipt) => {
+            let counts = receipt.counts();
+            Some(format!(
+                "SURFACE_CURRENT_STATS_TERMINAL status=ready {identity} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} cpu_preprocess_ms={} cpu_sort_ms={} queue_completion_ms={:.6}",
+                qualification_count_semantics_label(receipt.count_semantics()),
+                counts.source(),
+                counts.visible(),
+                counts.contributor(),
+                counts.drawn(),
+                qualification_optional_ms(receipt.cpu_preprocess_ms()),
+                qualification_optional_ms(receipt.cpu_sort_ms()),
+                receipt.frame_complete_ms(),
+            ))
+        }
+        CurrentStatsTerminal::MapFailure(_)
+        | CurrentStatsTerminal::GenerationInvalidated(_)
+        | CurrentStatsTerminal::Expired(_)
+        | CurrentStatsTerminal::Dropped(_) => Some(format!(
+            "SURFACE_CURRENT_STATS_TERMINAL status={} {identity}",
+            qualification_failure_label(terminal),
+        )),
+    }
+}
+
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+const fn qualification_plan_label(plan: PlanId) -> &'static str {
+    match plan {
+        PlanId::CpuPostSort => "cpu_post_sort",
+        PlanId::GpuPostSort => "gpu_post_sort",
+        PlanId::GpuPreproject => "gpu_preproject",
+    }
+}
+
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+const fn qualification_count_semantics_label(semantics: PlanCountSemantics) -> &'static str {
+    match semantics {
+        PlanCountSemantics::DirectDrawEqualsVisible => "direct_draw_equals_visible",
+        PlanCountSemantics::IndirectDrawEqualsVisible => "indirect_draw_equals_visible",
+        PlanCountSemantics::IndirectDrawEqualsContributor => "indirect_draw_equals_contributor",
+    }
+}
+
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+const fn qualification_failure_label(terminal: CurrentStatsTerminal) -> &'static str {
+    match terminal {
+        CurrentStatsTerminal::Ready(_) => "ready",
+        CurrentStatsTerminal::MapFailure(_) => "map_failure",
+        CurrentStatsTerminal::GenerationInvalidated(_) => "generation_invalidated",
+        CurrentStatsTerminal::Expired(_) => "expired",
+        CurrentStatsTerminal::Dropped(_) => "dropped",
+    }
+}
+
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+fn qualification_optional_ms(value: Option<f32>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| format!("{value:.6}"))
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum CurrentStatsVisibleSource<'a> {
     Host(u32),

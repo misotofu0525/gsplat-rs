@@ -41,6 +41,11 @@ use gpu_prepare::{
 use sampler::{PlanSampleDescriptor, PlanSampler, PlanSamplerError, StagedPlanSample};
 pub(crate) use surface_attempt::SurfaceAttempt;
 
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon"
+))]
+pub(crate) use current_stats::qualification_terminal_record;
 pub(crate) use current_stats::{
     CurrentStatsCounts, CurrentStatsFailure, CurrentStatsJoinIdentity, CurrentStatsPoll,
     CurrentStatsReceipt, CurrentStatsRequest, CurrentStatsSubmission,

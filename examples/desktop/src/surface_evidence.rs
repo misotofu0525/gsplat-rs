@@ -1219,7 +1219,7 @@ fn print_frame(
     let frame = join.frame_identity();
     let counts = receipt.counts();
     println!(
-        "SURFACE_EXACT_EVIDENCE_FRAME trace_id={} trace_sha256={} playback_index={} phase={} measured_sample={} trace_frame={} trace_timestamp_ns={} elapsed_ns={} exact_plan_requested={} exact_plan_actual={} current_stats_ticket={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} order_generation={} raster_generation={} encode_attempt={} presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} sort_refreshed={} actual_backend={} call_ms={:.6} frame_wall_ms={:.6} requested_width={} requested_height={} presented_width={} presented_height={} frame_presented=true terminal_receipt=ready",
+        "SURFACE_EXACT_EVIDENCE_FRAME trace_id={} trace_sha256={} playback_index={} phase={} measured_sample={} trace_frame={} trace_timestamp_ns={} elapsed_ns={} exact_plan_requested={} exact_plan_actual={} current_stats_ticket={} scene_generation={} camera_revision={} viewport_generation={} contract_generation={} plan_set_generation={} order_generation={} raster_generation={} encode_attempt={} presentation_sequence={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} exact_contributor_compaction={} sort_refreshed={} order_uploaded={} actual_backend={} cpu_preprocess_ms={:.6} cpu_sort_ms={:.6} cpu_render_submit_ms={:.6} call_ms={:.6} frame_wall_ms={:.6} requested_width={} requested_height={} presented_width={} presented_height={} frame_presented=true terminal_receipt=ready",
         identity.trace_id,
         identity.trace_sha256,
         step.playback_index,
@@ -1248,7 +1248,11 @@ fn print_frame(
         receipt.count_semantics()
             == SurfaceCurrentStatsCountSemantics::IndirectDrawEqualsContributor,
         output.sort_refreshed,
+        output.order_uploaded,
         backend_label(output.order_backend),
+        output.stats.preprocess_ms,
+        output.stats.sort_ms,
+        output.timings.render_submit_ms,
         call_ms,
         output.timings.frame_wall_ms,
         identity.resolution.requested.0,

@@ -1189,11 +1189,18 @@ impl SurfaceRenderSession {
     /// Renderer retains any additional ready terminals in its bounded queue.
     pub fn poll_current_stats(&mut self) -> SurfaceCurrentStatsPoll {
         if self.exact_plan_state().is_some() {
-            let poll = self
+            let renderer_poll = self
                 .renderer
                 .poll_exact_surface_current_stats()
-                .map(Into::into)
-                .unwrap_or(SurfaceCurrentStatsPoll::Empty);
+                .unwrap_or(crate::renderer::CurrentStatsPoll::Empty);
+            #[cfg(any(
+                feature = "qualification-q3-cpu-scalar",
+                feature = "qualification-q3-cpu-neon"
+            ))]
+            if let Some(record) = crate::renderer::qualification_terminal_record(renderer_poll) {
+                println!("{record}");
+            }
+            let poll = renderer_poll.into();
             self.publication.observe_current_stats_poll(poll);
             return poll;
         }

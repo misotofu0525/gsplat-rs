@@ -3,7 +3,7 @@
 
 The two lanes are compile-time qualification builds of the same private Packed
 Exact CPU renderer plan.  Product builds keep their ordinary AArch64 dispatch.
-Every measured frame joins the existing CPU terminal ticket before this
+Every measured frame joins the Renderer-owned current-stats terminal before this
 collector publishes a finite Accepted, Rejected, or Deferred cell.
 """
 
@@ -28,6 +28,7 @@ from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASE_PATH = REPO_ROOT / "tests/perf/collect-desktop-producer-ab.py"
+SURFACE_EVIDENCE_PATH = REPO_ROOT / "tests/perf/collect-desktop-surface-evidence.py"
 MICRO_PATH = REPO_ROOT / "tests/perf/collect-q3-m4-simd.py"
 MATRIX_PATH = REPO_ROOT / "tests/perf/full-quality-matrix-plan-v1.json"
 TRACE_VALIDATOR_PATH = REPO_ROOT / "tests/perf/trace/validate_trace_v1.py"
@@ -48,12 +49,7 @@ CORRECTNESS_FIELDS = {
     "fma_derived_key",
     "stable_tie",
 }
-PREFIXES = {
-    "begin": "SURFACE_BENCHMARK_BEGIN ",
-    "frame": "SURFACE_FRAME_RECEIPT ",
-    "cpu": "SURFACE_CPU_MEASUREMENT ",
-    "summary": "SURFACE_BENCHMARK_SUMMARY ",
-}
+CURRENT_STATS_PREFIX = "SURFACE_CURRENT_STATS_TERMINAL "
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -67,21 +63,50 @@ def load_module(name: str, path: Path) -> Any:
 
 
 BASE = load_module("collect_desktop_producer_ab_for_q3", BASE_PATH)
+SURFACE_EVIDENCE = load_module(
+    "collect_desktop_surface_evidence_for_q3", SURFACE_EVIDENCE_PATH
+)
 MICRO = load_module("collect_q3_m4_simd_for_renderer", MICRO_PATH)
 ValidationError = BASE.ValidationError
 require = BASE.require
 sha256_file = BASE.sha256_file
 utc_now = BASE.utc_now
-parse_bool = BASE.parse_bool
 parse_uint = BASE.parse_uint
 parse_float = BASE.parse_float
 only = BASE.only
 require_keys = BASE.require_keys
-assert_equal = BASE.assert_equal
-validate_dimensions = BASE.validate_dimensions
 git_receipt = BASE.git_receipt
 validate_ignored_output = BASE.validate_ignored_output
 distribution = BASE.distribution
+
+
+class EnvironmentPrerequisiteError(ValidationError):
+    """The requested host, input, build, or executable prerequisite is absent."""
+
+
+class OwnerProtocolIncompleteError(ValidationError):
+    """The renderer did not publish every required current-stats terminal."""
+
+
+class IntegrityRejectedError(ValidationError):
+    """Published evidence exists but violates its exact join contract."""
+
+
+def terminal_for_error(error: Exception) -> tuple[str, str]:
+    if isinstance(error, IntegrityRejectedError):
+        return "Rejected", "integrity_rejected"
+    if isinstance(error, OwnerProtocolIncompleteError):
+        return "Deferred", "owner_protocol_incomplete"
+    if isinstance(error, EnvironmentPrerequisiteError):
+        return "Deferred", "environment_prerequisite"
+    if isinstance(error, (OSError, subprocess.SubprocessError)):
+        return "Deferred", "environment_prerequisite"
+    return "Rejected", "integrity_rejected"
+
+
+def integrity_require(condition: bool, message: str) -> None:
+    if not condition:
+        raise IntegrityRejectedError(message)
 
 
 @dataclass(frozen=True)
@@ -239,18 +264,17 @@ def schedule_pairs(pairs: int, seed: int) -> list[tuple[str, str]]:
     return schedule
 
 
-def parse_log(stdout: str, stderr: str = "") -> dict[str, list[dict[str, str]]]:
-    records = {name: [] for name in PREFIXES}
+def parse_current_stats_log(stdout: str, stderr: str = "") -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
     for stream_name, stream in (("stdout", stdout), ("stderr", stderr)):
         for line_number, line in enumerate(stream.splitlines(), 1):
-            for name, prefix in PREFIXES.items():
-                if line.startswith(prefix):
-                    records[name].append(
-                        BASE.parse_key_value_payload(
-                            line[len(prefix) :], f"{stream_name}:{line_number}:{prefix.strip()}"
-                        )
+            if line.startswith(CURRENT_STATS_PREFIX):
+                records.append(
+                    BASE.parse_key_value_payload(
+                        line[len(CURRENT_STATS_PREFIX) :],
+                        f"{stream_name}:{line_number}:SURFACE_CURRENT_STATS_TERMINAL",
                     )
-                    break
+                )
     return records
 
 
@@ -267,117 +291,146 @@ def validate_run_log(
     trace: dict[str, Any],
     warmup: int,
     measured: int,
+    capture_path: Path | None = None,
 ) -> dict[str, Any]:
-    require(lane in {item.name for item in LANES}, f"unknown Q3 lane {lane}")
-    records = parse_log(stdout, stderr)
-    begin = only(records["begin"], "SURFACE_BENCHMARK_BEGIN")
-    summary = only(records["summary"], "SURFACE_BENCHMARK_SUMMARY")
-    expected_total = warmup + measured
-    common = {
-        "trace_id": trace["trace_id"],
-        "trace_sha256": trace["content_sha256"],
-        "benchmark_mode": "isolated",
-        "sort_policy": "every_frame",
-        "requested_backend": "cpu",
-        "geometry_path": "packed_atlas",
-        "raster_execution_plan": "projected_quads_exact",
-        "gpu_order_producer": "product-default",
-        "producer_measurement_enabled": "false",
-        "source_count": str(dataset["splat_count"]),
-        "resident_count": str(dataset["splat_count"]),
-        "sh_degree": "3",
-    }
-    assert_equal(begin, common, "begin")
-    validate_dimensions(begin, trace["width"], trace["height"], "begin")
-    require(begin.get("sort_interval") == "1", "begin.sort_interval must equal one")
-    require(parse_uint(begin.get("trace_frames", ""), "begin.trace_frames") == expected_total, "trace frame count mismatch")
+    integrity_require(lane in {item.name for item in LANES}, f"unknown Q3 lane {lane}")
+    terminals = parse_current_stats_log(stdout, stderr)
+    if not terminals:
+        raise OwnerProtocolIncompleteError(
+            "renderer published no SURFACE_CURRENT_STATS_TERMINAL records"
+        )
+    for index, terminal in enumerate(terminals):
+        status = terminal.get("status")
+        integrity_require(status is not None, f"current_stats_terminal[{index}] lacks status")
+        if status != "ready":
+            integrity_require(
+                status in {"map_failure", "generation_invalidated", "expired", "dropped"},
+                f"current_stats_terminal[{index}] has unknown status {status!r}",
+            )
+            raise IntegrityRejectedError(
+                f"current-stats terminal {terminal.get('ticket', 'unknown')} ended as {status}"
+            )
+    try:
+        validated_surface = SURFACE_EVIDENCE.validate_run_log(
+            stdout,
+            stderr,
+            arm="cpu_post_sort",
+            dataset=dataset,
+            trace=trace,
+            warmup=warmup,
+            measured=measured,
+            capture_path=capture_path,
+        )
+    except SURFACE_EVIDENCE.ValidationError as error:
+        raise IntegrityRejectedError(str(error)) from error
 
-    scheduled = [frame for frame in records["frame"] if frame.get("phase") != "drain"]
-    require(len(scheduled) == expected_total, f"expected {expected_total} scheduled frames, got {len(scheduled)}")
-    issued: dict[int, tuple[dict[str, str], bool]] = {}
+    surface_records = SURFACE_EVIDENCE.parse_log(stdout, stderr)
+    scheduled = surface_records["frame"]
+    capture = only(surface_records["capture"], "SURFACE_EXACT_EVIDENCE_CAPTURE")
+    expected_total = warmup + measured
+    integrity_require(
+        len(scheduled) == expected_total,
+        f"expected {expected_total} scheduled frames, got {len(scheduled)}",
+    )
+    issued: dict[int, tuple[dict[str, str], bool, bool]] = {}
     measured_frames: list[dict[str, Any]] = []
     for index, frame in enumerate(scheduled):
         context = f"frame[{index}]"
         phase = "warmup" if index < warmup else "measure"
-        require(frame.get("phase") == phase, f"{context}.phase violates the fixed schedule")
-        require(parse_uint(frame.get("playback_index", ""), f"{context}.playback_index") == index, f"{context}.playback_index mismatch")
-        phase_index = index if phase == "warmup" else index - warmup
-        trace_slot = phase_index % len(trace["frame_indices"])
-        require(parse_uint(frame.get("trace_frame", ""), f"{context}.trace_frame") == trace["frame_indices"][trace_slot], f"{context}.trace_frame mismatch")
-        require(parse_uint(frame.get("trace_timestamp_ns", ""), f"{context}.trace_timestamp_ns") == trace["frame_timestamps_ns"][trace_slot], f"{context}.trace_timestamp mismatch")
-        assert_equal(
-            frame,
-            {
-                "sort_policy": "every_frame",
-                "requested_backend": "cpu",
-                "actual_backend": "cpu",
-                "raster_execution_plan": "projected_quads_exact",
-                "frame_presented": "true",
-                "gpu_order_preparation_pending": "false",
-                "sort_refreshed": "true",
-                "order_uploaded": "true",
-                "gpu_sort_fallback": "false",
-                "source_count": str(dataset["splat_count"]),
-                "resident_count": str(dataset["splat_count"]),
-                "measurement_backend": "cpu",
-                "measurement_unsampled_reason": "none",
-                "gpu_ticket_submitted": "none",
-            },
-            context,
+        integrity_require(frame.get("phase") == phase, f"{context}.phase drifted")
+        integrity_require(frame.get("order_uploaded") == "true", f"{context} did not upload order")
+        ticket = parse_uint(
+            frame.get("current_stats_ticket", ""), f"{context}.current_stats_ticket", positive=True
         )
-        validate_dimensions(frame, trace["width"], trace["height"], context)
-        ticket = parse_uint(frame.get("measurement_ticket_submitted", ""), f"{context}.ticket", positive=True)
-        require(ticket not in issued, f"CPU ticket {ticket} was issued twice")
+        integrity_require(ticket not in issued, f"current-stats ticket {ticket} was issued twice")
         is_measured = phase == "measure"
-        issued[ticket] = (frame, is_measured)
+        issued[ticket] = (frame, is_measured, False)
         if is_measured:
-            require(parse_uint(frame.get("measured_sample", ""), f"{context}.measured_sample") == len(measured_frames), f"{context}.measured_sample mismatch")
+            integrity_require(
+                parse_uint(frame.get("measured_sample", ""), f"{context}.measured_sample")
+                == len(measured_frames),
+                f"{context}.measured_sample mismatch",
+            )
             measured_frames.append({"ticket": ticket})
-        else:
-            require(frame.get("measured_sample") == "none", f"{context}.measured_sample must be none")
+    capture_ticket = parse_uint(
+        capture.get("current_stats_ticket", ""), "capture.current_stats_ticket", positive=True
+    )
+    integrity_require(capture_ticket not in issued, "capture reused a planned-frame ticket")
+    issued[capture_ticket] = (capture, False, True)
 
     terminal_by_ticket: dict[int, dict[str, str]] = {}
     measured_by_ticket: dict[int, dict[str, Any]] = {}
-    for index, terminal in enumerate(records["cpu"]):
-        context = f"cpu_terminal[{index}]"
+    for index, terminal in enumerate(terminals):
+        context = f"current_stats_terminal[{index}]"
         require_keys(
             terminal,
             (
+                "status",
+                "ticket_namespace",
                 "ticket",
+                "executed_plan",
+                "scene_generation",
                 "camera_revision",
-                "measured",
-                "cpu_preprocess_ms",
-                "cpu_sort_ms",
-                "frame_completion_ms",
+                "viewport_generation",
+                "contract_generation",
+                "plan_set_generation",
+                "order_generation",
+                "raster_generation",
+                "encode_attempt",
+                "presentation_sequence",
+                "count_semantics",
+                "source_count",
                 "visible_count",
                 "contributor_count",
                 "drawn_count",
-                "exact_contributor_compaction",
+                "cpu_preprocess_ms",
+                "cpu_sort_ms",
+                "queue_completion_ms",
             ),
             context,
         )
+        integrity_require(terminal["ticket_namespace"] == "current_stats", f"{context} used the wrong ticket namespace")
         ticket = parse_uint(terminal["ticket"], f"{context}.ticket", positive=True)
-        require(ticket in issued, f"unknown CPU terminal ticket {ticket}")
-        require(ticket not in terminal_by_ticket, f"CPU ticket {ticket} has more than one terminal")
-        frame, expected_measured = issued[ticket]
-        require(parse_uint(terminal["camera_revision"], f"{context}.camera_revision") == parse_uint(frame["camera_revision"], f"{context}.frame_camera_revision"), f"CPU ticket {ticket} camera revision mismatch")
-        terminal_measured = parse_bool(terminal["measured"], f"{context}.measured")
-        require(terminal_measured == expected_measured, f"CPU ticket {ticket} measured flag mismatch")
+        integrity_require(ticket in issued, f"unknown current-stats terminal ticket {ticket}")
+        integrity_require(ticket not in terminal_by_ticket, f"current-stats ticket {ticket} has more than one terminal")
+        frame, expected_measured, is_capture = issued[ticket]
+        field_pairs = {
+            "executed_plan": "exact_plan_actual",
+            "scene_generation": "scene_generation",
+            "camera_revision": "camera_revision",
+            "viewport_generation": "viewport_generation",
+            "contract_generation": "contract_generation",
+            "plan_set_generation": "plan_set_generation",
+            "order_generation": "order_generation",
+            "raster_generation": "raster_generation",
+            "encode_attempt": "encode_attempt",
+            "presentation_sequence": "presentation_sequence",
+            "count_semantics": "count_semantics",
+            "source_count": "source_count",
+            "visible_count": "visible_count",
+            "contributor_count": "contributor_count",
+            "drawn_count": "drawn_count",
+        }
+        for terminal_field, frame_field in field_pairs.items():
+            integrity_require(
+                terminal[terminal_field] == frame.get(frame_field),
+                f"current-stats ticket {ticket} {terminal_field} join mismatch",
+            )
+        integrity_require(terminal["executed_plan"] == "cpu_post_sort", f"current-stats ticket {ticket} plan drifted")
         preprocess = parse_float(terminal["cpu_preprocess_ms"], f"{context}.cpu_preprocess_ms")
         sort = parse_float(terminal["cpu_sort_ms"], f"{context}.cpu_sort_ms")
-        completion = parse_float(terminal["frame_completion_ms"], f"{context}.frame_completion_ms")
-        require(close_enough(preprocess, parse_float(frame["cpu_preprocess_ms"], f"{context}.frame_preprocess")), f"CPU ticket {ticket} preprocess join mismatch")
-        require(close_enough(sort, parse_float(frame["cpu_sort_ms"], f"{context}.frame_sort")), f"CPU ticket {ticket} sort join mismatch")
+        completion = parse_float(terminal["queue_completion_ms"], f"{context}.queue_completion_ms")
+        if not is_capture:
+            integrity_require(close_enough(preprocess, parse_float(frame["cpu_preprocess_ms"], f"{context}.frame_preprocess")), f"current-stats ticket {ticket} preprocess join mismatch")
+            integrity_require(close_enough(sort, parse_float(frame["cpu_sort_ms"], f"{context}.frame_sort")), f"current-stats ticket {ticket} sort join mismatch")
         visible = parse_uint(terminal["visible_count"], f"{context}.visible_count")
         contributor = parse_uint(terminal["contributor_count"], f"{context}.contributor_count")
         drawn = parse_uint(terminal["drawn_count"], f"{context}.drawn_count")
-        compacted = parse_bool(terminal["exact_contributor_compaction"], f"{context}.exact_contributor_compaction")
-        require(0 <= contributor <= visible <= dataset["splat_count"], f"CPU ticket {ticket} violates C<=V<=S")
-        require(drawn == (contributor if compacted else visible), f"CPU ticket {ticket} violates the issued draw contract")
-        require(visible == parse_uint(frame["visible_count"], f"{context}.frame_visible"), f"CPU ticket {ticket} visible count mismatch")
-        require(drawn == parse_uint(frame["drawn_count"], f"{context}.frame_drawn"), f"CPU ticket {ticket} drawn count mismatch")
+        compacted = frame["exact_contributor_compaction"] == "true"
+        integrity_require(0 <= contributor <= visible <= dataset["splat_count"], f"current-stats ticket {ticket} violates C<=V<=S")
+        integrity_require(drawn == visible and not compacted, f"current-stats ticket {ticket} violates CPU PostSort D=V")
         terminal_by_ticket[ticket] = terminal
-        if terminal_measured:
+        if expected_measured:
             measured_by_ticket[ticket] = {
                 "frame_index": len(measured_by_ticket),
                 "ticket": ticket,
@@ -395,46 +448,25 @@ def validate_run_log(
                 "raster_execution_plan": "projected_quads_exact",
                 "frame_presented": True,
             }
-    require(set(terminal_by_ticket) == set(issued), "CPU tickets do not have exactly one terminal receipt")
-    frames = [measured_by_ticket[item["ticket"]] for item in measured_frames]
-    require(len(frames) == measured, "measured CPU terminal count mismatch")
-
-    assert_equal(summary, {**common, "status": "ok", "final_actual_backend": "cpu"}, "summary")
-    validate_dimensions(summary, trace["width"], trace["height"], "summary")
-    assert_equal(
-        summary,
-        {
-            "trace_frames": str(expected_total),
-            "presented_frames": str(expected_total),
-            "measured_frames": str(measured),
-            "measured_cpu_frames": str(measured),
-            "measured_gpu_frames": "0",
-            "sort_refreshes": str(expected_total),
-            "gpu_fallback_frames": "0",
-            "gpu_refreshes_without_ticket": "0",
-            "cpu_requests_without_ticket": "0",
-            "surface_unavailable_measurements": "0",
-            "terminal_order_tickets": str(expected_total),
-            "terminal_producer_tickets": "0",
-            "outstanding_cpu_tickets": "0",
-            "outstanding_gpu_tickets": "0",
-            "outstanding_producer_tickets": "0",
-        },
-        "summary",
+    missing = sorted(set(issued) - set(terminal_by_ticket))
+    if missing:
+        raise OwnerProtocolIncompleteError(
+            f"current-stats tickets lack canonical terminal receipts: {missing}"
+        )
+    integrity_require(
+        set(terminal_by_ticket) == set(issued),
+        "current-stats terminal set contains unexpected tickets",
     )
-    for field, values in (
-        ("mean_cpu_preprocess_ms", [frame["preprocess_ms"] for frame in frames]),
-        ("mean_cpu_sort_ms", [frame["sort_ms"] for frame in frames]),
-        ("mean_cpu_completion_ms", [frame["frame_completion_ms"] for frame in frames]),
-        ("mean_frame_wall_ms", [frame["frame_wall_ms"] for frame in frames]),
-    ):
-        require(close_enough(parse_float(summary[field], f"summary.{field}"), sum(values) / len(values)), f"summary.{field} disagrees with measured receipts")
+    frames = [measured_by_ticket[item["ticket"]] for item in measured_frames]
+    integrity_require(len(frames) == measured, "measured current-stats terminal count mismatch")
     return {
         "lane": lane,
         "scheduled_frames": expected_total,
         "warmup_frames": warmup,
         "measured_frames": measured,
         "terminal_ticket_count": len(terminal_by_ticket),
+        "capture_ticket": capture_ticket,
+        "adapter": validated_surface["adapter"],
         "frames": frames,
         "distributions": {
             "preprocess_ms": distribution([frame["preprocess_ms"] for frame in frames]),
@@ -533,8 +565,10 @@ def make_command(binary: Path, workload: Workload, warmup: int, measured: int) -
         "isolated",
         "--surface-sort-policy",
         "every-frame",
-        "--order-backend",
-        "cpu",
+        "--surface-evidence-plan",
+        "cpu-post-sort",
+        "--png",
+        "final-frame.png",
     ]
 
 
@@ -601,7 +635,7 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
         "schema": SCHEMA,
         "cell": CELL,
         "decision": "Deferred",
-        "reason": "whole_plan_owner_protocol_incomplete",
+        "reason": "owner_protocol_incomplete",
         "started_at_utc": utc_now(),
         "build": initial_git,
         "host": host,
@@ -623,20 +657,41 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
     }
     try:
         deferral = MICRO.host_deferral(host["system"], host["machine"], host["cpu_brand"])
-        require(deferral is None, deferral or "unknown host deferral")
-        correctness = validate_correctness(args.correctness.resolve(), initial_git["commit"], host)
+        if deferral is not None:
+            raise EnvironmentPrerequisiteError(deferral)
+        if not args.correctness.resolve().is_file():
+            raise EnvironmentPrerequisiteError(
+                f"fixed correctness artifact is unavailable: {args.correctness.resolve()}"
+            )
+        try:
+            correctness = validate_correctness(
+                args.correctness.resolve(), initial_git["commit"], host
+            )
+        except ValidationError as error:
+            raise IntegrityRejectedError(str(error)) from error
         result["correctness"] = {
             "path": str(args.correctness.resolve()),
             "sha256": sha256_file(args.correctness.resolve()),
             "receipt": correctness,
         }
         if correctness["decision"] == "Rejected":
-            result.update({"decision": "Rejected", "reason": "fixed_scalar_neon_correctness_failed"})
+            result.update(
+                {
+                    "decision": "Rejected",
+                    "reason": "integrity_rejected",
+                    "error": "fixed_scalar_neon_correctness_failed",
+                }
+            )
             remove_private_builds(stage)
             publish(stage, output, result)
             return result
 
-        workload = load_workload(repo, args.matrix.resolve())
+        try:
+            workload = load_workload(repo, args.matrix.resolve())
+        except ValidationError as error:
+            if "unavailable" in str(error):
+                raise EnvironmentPrerequisiteError(str(error)) from error
+            raise IntegrityRejectedError(str(error)) from error
         result["workload"] = {
             "dataset": workload.dataset,
             "trace": workload.trace,
@@ -663,12 +718,29 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
                 ended = utc_now()
                 (run_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
                 (run_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
-                require(completed.returncode == 0, f"pair {pair_index} {lane_name} exited with {completed.returncode}")
+                if completed.returncode != 0:
+                    raise EnvironmentPrerequisiteError(
+                        f"pair {pair_index} {lane_name} exited with {completed.returncode}"
+                    )
                 require(sha256_file(binaries[lane_name]) == build_receipts[lane_name]["binary_sha256"], f"{lane_name} binary changed during collection")
                 require(sha256_file(workload.dataset_path) == workload.dataset["sha256"], "Truck dataset changed during collection")
                 require(sha256_file(workload.trace_path) == workload.trace["file_sha256"], "Truck trace changed during collection")
                 require(git_receipt(repo) == initial_git, "git receipt changed during Q3 matrix")
-                validated = validate_run_log(completed.stdout, completed.stderr, lane=lane_name, dataset=workload.dataset, trace=workload.trace, warmup=args.warmup, measured=args.measured)
+                capture_path = run_dir / "final-frame.png"
+                validated = validate_run_log(
+                    completed.stdout,
+                    completed.stderr,
+                    lane=lane_name,
+                    dataset=workload.dataset,
+                    trace=workload.trace,
+                    warmup=args.warmup,
+                    measured=args.measured,
+                    capture_path=capture_path,
+                )
+                integrity_require(
+                    SURFACE_EVIDENCE.png_dimensions(capture_path) == FORMAL_SIZE,
+                    f"pair {pair_index} {lane_name} capture dimensions drifted",
+                )
                 frames_path = run_dir / "frames.jsonl"
                 frames_path.write_text("".join(json.dumps(frame, sort_keys=True) + "\n" for frame in validated["frames"]), encoding="utf-8")
                 run = {
@@ -708,7 +780,8 @@ def collect(args: argparse.Namespace, repo: Path = REPO_ROOT) -> dict[str, Any]:
         publish(stage, output, result)
         return result
     except Exception as error:
-        result.update({"decision": "Deferred", "reason": "whole_plan_owner_protocol_incomplete", "error": str(error)})
+        decision, reason = terminal_for_error(error)
+        result.update({"decision": decision, "reason": reason, "error": str(error)})
         remove_private_builds(stage)
         publish(stage, output, result)
         return result
