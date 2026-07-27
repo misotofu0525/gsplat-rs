@@ -130,10 +130,23 @@ serialized each presented frame with its asynchronous terminal readback, while
 the PlayCanvas prerequisite submitted continuously and drained the queue only
 after its final measured frame. The resulting gsplat-rs frame-wall mean
 `66.875 ms` and 80/80 over-budget frames must not be compared with PlayCanvas
-`17.6675 ms`. A replacement sample is allowed only after the collector proves
-overlapped bounded current-stats tickets, continuous measured submissions and
-one final no-new-draw drain. Q1 still requires the native M4 Exact endpoint,
-common external-presentation scope and counterbalanced outer pairing.
+`17.6675 ms`. The same rejected artifact remains useful only as a diagnostic:
+65 GPU-order frames had mean host call time about `0.308 ms`, while 15 CPU-order
+probe frames had mean host call time about `29.573 ms`; Candidate drew mean
+`1,779,155.5` visible splats although only mean `979,533.5` were exact
+contributors. Those observations do not establish a bottleneck because the
+per-frame observer could itself perturb plan learning and queue cadence.
+
+A replacement therefore requires the two content-linked artifacts frozen by
+Q0 section 4.1: an untimed current-stats control and a separately timed window
+with continuous measured submissions, no wait between measured frames, no
+per-frame observer readback, drawing stopped before a single fail-closed
+terminal drain, and the actual Exact plan/state retained directly from each
+render result. The terminal mechanism may add one explicitly receipted
+same-submission completion observation on the final measured frame; it may not
+reintroduce an observer wait between frames or infer Promise success from an
+error-erasing callback. Q1 still requires the native M4 Exact endpoint, common
+external-presentation scope and counterbalanced outer pairing.
 
 ## Q3 M4 SIMD microbenchmark checkpoint (2026-07-27)
 
