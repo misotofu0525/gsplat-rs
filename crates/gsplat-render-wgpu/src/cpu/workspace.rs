@@ -32,8 +32,8 @@ pub(crate) struct WorkspaceTimings {
 
 #[derive(Default)]
 pub(crate) struct CpuOrderWorkspace {
-    depth_keys: Vec<u32>,
     #[cfg(not(target_arch = "wasm32"))]
+    depth_keys: Vec<u32>,
     packed_pairs: Vec<u64>,
     candidate_ids: Vec<u32>,
     sorter: CpuSortBackend,
@@ -46,6 +46,7 @@ pub(crate) struct CpuOrderWorkspace {
 impl CpuOrderWorkspace {
     pub(crate) fn try_with_capacity(source_count: usize) -> Result<Self, WorkspaceAllocationError> {
         let mut workspace = Self::default();
+        #[cfg(not(target_arch = "wasm32"))]
         workspace
             .depth_keys
             .try_reserve_exact(source_count)
@@ -58,14 +59,14 @@ impl CpuOrderWorkspace {
             .map_err(|_| WorkspaceAllocationError {
                 resource: "working source IDs",
             })?;
+        workspace
+            .packed_pairs
+            .try_reserve_exact(source_count)
+            .map_err(|_| WorkspaceAllocationError {
+                resource: "packed depth/source pairs",
+            })?;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            workspace
-                .packed_pairs
-                .try_reserve_exact(source_count)
-                .map_err(|_| WorkspaceAllocationError {
-                    resource: "packed depth/source pairs",
-                })?;
             workspace
                 .packed_chunks
                 .try_reserve_exact(MAX_PARALLEL_PREPROCESS_CHUNKS)
@@ -126,15 +127,14 @@ impl CpuOrderWorkspace {
         #[cfg(target_arch = "wasm32")]
         {
             let preprocess_start = timer_now();
-            preprocess::positions_visible_into_with_precision(
+            preprocess::positions_visible_into_packed_with_precision(
                 positions,
                 camera,
                 precision,
-                &mut self.depth_keys,
-                &mut self.candidate_ids,
+                &mut self.packed_pairs,
             )?;
             let preprocess_ms = timer_elapsed_ms(preprocess_start);
-            self.finish_order(stable_full32, authoritative_ids, preprocess_ms)
+            self.finish_packed_order(stable_full32, authoritative_ids, preprocess_ms)
         }
     }
 
@@ -220,6 +220,7 @@ impl CpuOrderWorkspace {
         self.finish_order(stable_full32, authoritative_ids, preprocess_ms)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn finish_order(
         &mut self,
         stable_full32: bool,
@@ -242,7 +243,6 @@ impl CpuOrderWorkspace {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn finish_packed_order(
         &mut self,
         stable_full32: bool,
@@ -272,20 +272,22 @@ impl CpuOrderWorkspace {
 
     #[cfg(test)]
     pub(crate) fn buffer_state(&self) -> ((usize, usize), (usize, usize), (usize, usize)) {
-        #[cfg(not(target_arch = "wasm32"))]
         let packed_state = (
             self.packed_pairs.as_ptr() as usize,
             self.packed_pairs.capacity(),
         );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let depth_state = (
+            self.depth_keys.as_ptr() as usize,
+            self.depth_keys.capacity(),
+        );
         #[cfg(target_arch = "wasm32")]
-        let packed_state = (0, 0);
+        let depth_state = (0, 0);
 
         (
             packed_state,
-            (
-                self.depth_keys.as_ptr() as usize,
-                self.depth_keys.capacity(),
-            ),
+            depth_state,
             (
                 self.candidate_ids.as_ptr() as usize,
                 self.candidate_ids.capacity(),

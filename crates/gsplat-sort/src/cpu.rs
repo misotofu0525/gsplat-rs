@@ -15,7 +15,6 @@ pub struct CpuSortBackend {
 impl CpuSortBackend {
     /// Packs one key/value pair in the representation consumed by
     /// [`Self::sort_prepacked_values`].
-    #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     pub const fn pack_key_value(key: u32, value: u32) -> u64 {
         pack_sort_pair(key, value)
@@ -61,7 +60,6 @@ impl CpuSortBackend {
     /// keys in the required stable input order. This entry reuses the same
     /// high-key radix passes as [`Self::sort_values_by_keys`] without first
     /// copying split keys and values into another packed buffer.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn sort_prepacked_values(
         &mut self,
         packed: &mut [u64],
@@ -551,7 +549,6 @@ mod tests {
         assert_eq!(values, [0, 2, 3, 1]);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cpu_backend_sorts_prepacked_values_with_stable_source_ties() {
         let keys = [20_u32, 12, 12, 5];
@@ -570,7 +567,6 @@ mod tests {
         assert_eq!(values, [7, 11, 13, 17]);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cpu_backend_prepacked_entry_matches_split_entry_across_edge_lengths() {
         let mut seed = 0x5eed_u32;
@@ -628,7 +624,6 @@ mod tests {
         assert_eq!(err, SortError::LengthMismatch);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cpu_backend_rejects_prepacked_value_mismatch() {
         let mut packed = [

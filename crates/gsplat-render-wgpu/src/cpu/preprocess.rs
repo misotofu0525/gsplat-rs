@@ -107,7 +107,7 @@ fn reserve_outputs(depth_keys: &mut Vec<u32>, source_ids: &mut Vec<u32>, capacit
     }
 }
 
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 fn dispatch_leaf(
     positions: CpuPositionView<'_>,
     source_base: usize,
@@ -191,6 +191,22 @@ pub(crate) fn positions_visible_into_scalar_with_precision(
     Ok(())
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn positions_visible_into_packed_with_precision(
+    positions: CpuPositionView<'_>,
+    camera: &Camera,
+    precision: DepthKeyPrecision,
+    packed_pairs: &mut Vec<u64>,
+) -> Result<(), RendererError> {
+    let context = PreprocessContext::from_camera(camera)?;
+    packed_pairs.clear();
+    if packed_pairs.capacity() < positions.len() {
+        packed_pairs.reserve(positions.len());
+    }
+    scalar::preprocess_packed_into_with_precision(positions, 0, context, precision, packed_pairs);
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn positions_visible_into(
     positions: CpuPositionView<'_>,
@@ -210,7 +226,7 @@ pub(crate) fn positions_visible_into(
     )
 }
 
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(test)]
 pub(crate) fn positions_visible_into_with_precision(
     positions: CpuPositionView<'_>,
     camera: &Camera,
