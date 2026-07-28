@@ -690,6 +690,23 @@ integrity failure. The original attempt remains Rejected and immutable. Q3 is
 still **Active**; no timed A065 Scalar/NEON pair exists until a new exact-SHA
 transaction is separately admitted and executed once.
 
+The next clean exact-SHA transaction at `534d159` terminated after the 50k
+Scalar correctness run as **Rejected / matrix_infrastructure_rejected**. Its
+renderer artifact itself was valid, but the matrix compared the entire
+preflight receipt with the run receipt. Preflight alone carries a
+`launch_readiness` observation for screen/keyguard admission, so the same
+physical device was necessarily reported as changed when the run receipt did
+not repeat that transient object. No NEON or timing run occurred.
+
+Commit `97a1dff` defines the matrix identity as an explicit stable projection:
+schema/source, serial, manufacturer/model/device, Android release/API,
+hardware, build fingerprint, device properties and renderer-identity
+provenance. It excludes only launch readiness; changing the fingerprint or any
+other frozen identity field still rejects the matrix. Focused tests and an
+offline replay of the retained 50k artifact pass with the real
+`adapter = null` / Vulkan device receipt. The attempt remains immutable and
+Rejected; Q3 remains **Active** pending a separately admitted exact-SHA run.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8
