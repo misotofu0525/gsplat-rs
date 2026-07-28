@@ -7,6 +7,8 @@ const EPSILON = 1e-12;
 const TRACE_MATRIX_TOLERANCE = 1e-9;
 const RUNTIME_ABSOLUTE_TOLERANCE = 2e-4;
 const RUNTIME_RELATIVE_TOLERANCE = 2e-5;
+const MIN_FOCAL_LENGTH_X_OVER_Y = 2 ** -16;
+const MAX_FOCAL_LENGTH_X_OVER_Y = 2 ** 16;
 const MIN_PRESENTATION_STABLE_FRAMES = 3;
 
 export const PLAYCANVAS_CAMERA_RECEIPT_SCHEMA =
@@ -175,6 +177,22 @@ function canonicalViewMatrix(frame) {
   ];
 }
 
+function focalLengthXOverY(frame) {
+  const intrinsics = frame?.intrinsics;
+  const value = intrinsics && Object.hasOwn(intrinsics, 'focal_length_x_over_y')
+    ? intrinsics.focal_length_x_over_y
+    : 1;
+  if (!Number.isFinite(value) ||
+      value < MIN_FOCAL_LENGTH_X_OVER_Y ||
+      value > MAX_FOCAL_LENGTH_X_OVER_Y) {
+    throw new Error(
+      `trace focal_length_x_over_y must be finite and within ` +
+      `[${MIN_FOCAL_LENGTH_X_OVER_Y}, ${MAX_FOCAL_LENGTH_X_OVER_Y}]`
+    );
+  }
+  return Number(value);
+}
+
 function canonicalProjectionMatrix(frame, aspect) {
   const fov = finiteNumber(frame.intrinsics?.vertical_fov_radians, 'trace vertical FOV');
   const near = finiteNumber(frame.intrinsics?.near_plane, 'trace near plane');
@@ -183,13 +201,124 @@ function canonicalProjectionMatrix(frame, aspect) {
     throw new Error('trace intrinsics are invalid');
   }
   const focal = 1 / Math.tan(fov * 0.5);
+  const focalRatio = focalLengthXOverY(frame);
   const depth = far / (far - near);
   return [
-    focal / aspect, 0, 0, 0,
+    focal * focalRatio / aspect, 0, 0, 0,
     0, focal, 0, 0,
     0, 0, depth, -near * depth,
     0, 0, 1, 0
   ];
+}
+
+/**
+ * Return the exact centered-pinhole OpenGL projection consumed by the pinned
+ * PlayCanvas CameraComponent.calculateProjection hook.
+ */
+export function playCanvasProjectionFromTraceFrame(frame, aspect) {
+  const validatedAspect = finiteNumber(aspect, 'trace display aspect');
+  if (!(validatedAspect > 0)) throw new Error('trace display aspect must be positive');
+  const canonicalProjection = canonicalProjectionMatrix(frame, validatedAspect);
+  const canonicalToPlayCanvas = [
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, -1, 0,
+    0, 0, 0, 1
+  ];
+  const ndcZeroOneToOpenGl = [
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 2, -1,
+    0, 0, 0, 1
+  ];
+  const projectionMatrixOpenGlColumnMajor = rowMajorToColumnMajor(multiplyRowMajor(
+    ndcZeroOneToOpenGl,
+    multiplyRowMajor(canonicalProjection, canonicalToPlayCanvas)
+  ));
+  return {
+    focalLengthXOverY: focalLengthXOverY(frame),
+    projectionMatrixOpenGlColumnMajor
+  };
+}
+
+/**
+ * Install one runtime projection owner on a PlayCanvas CameraComponent. The
+ * controller caches immutable per-frame matrices so trace playback only swaps
+ * the selected matrix inside the measured loop. The exact same official hook
+ * is used by PlayCanvas raster uniforms, GSplat projection/culling, and this
+ * receipt path.
+ */
+export function createPlayCanvasCenteredPinholeProjectionController({
+  cameraComponent,
+  aspect,
+  centerView
+}) {
+  if (!cameraComponent || typeof cameraComponent !== 'object') {
+    throw new Error('PlayCanvas camera component is required');
+  }
+  const validatedAspect = finiteNumber(aspect, 'trace display aspect');
+  if (!(validatedAspect > 0)) throw new Error('trace display aspect must be positive');
+  if (!Number.isSafeInteger(centerView)) {
+    throw new Error('PlayCanvas center view must be a safe integer');
+  }
+  if (cameraComponent.calculateProjection != null) {
+    throw new Error('PlayCanvas camera already has a custom projection owner');
+  }
+
+  const projectionCache = new WeakMap();
+  let current = null;
+  const calculateProjection = (target, view) => {
+    if (view !== centerView) {
+      throw new Error(`unexpected PlayCanvas projection view ${view}`);
+    }
+    if (!current) throw new Error('PlayCanvas trace projection was used before frame application');
+    if (!target || typeof target.set !== 'function') {
+      throw new Error('PlayCanvas projection target must provide Mat4.set');
+    }
+    target.set(current.projectionMatrixOpenGlColumnMajor);
+  };
+  cameraComponent.calculateProjection = calculateProjection;
+
+  return Object.freeze({
+    applyFrame(frame) {
+      let next = projectionCache.get(frame);
+      if (!next) {
+        next = playCanvasProjectionFromTraceFrame(frame, validatedAspect);
+        projectionCache.set(frame, next);
+      }
+      // Commit only after every source value and matrix has validated.
+      current = next;
+      cameraComponent.horizontalFov = false;
+      cameraComponent.fov = (frame.intrinsics.vertical_fov_radians * 180) / Math.PI;
+      cameraComponent.nearClip = frame.intrinsics.near_plane;
+      cameraComponent.farClip = frame.intrinsics.far_plane;
+      // The pinned GSplat frustum culler reads CameraComponent.projectionMatrix
+      // directly. Materialize the custom matrix now as well as retaining the
+      // official callback used later by the renderer uniform path.
+      const runtimeCamera = cameraComponent.camera;
+      if (runtimeCamera) {
+        if (runtimeCamera.calculateProjection !== calculateProjection) {
+          throw new Error('PlayCanvas runtime camera did not retain the custom projection hook');
+        }
+        runtimeCamera.calculateProjection(runtimeCamera.projectionMatrix, centerView);
+      }
+      return next;
+    },
+    captureRuntimeProjection(runtimeCamera, target) {
+      if (!current) throw new Error('PlayCanvas trace projection has no applied frame');
+      if (runtimeCamera?.calculateProjection !== calculateProjection) {
+        throw new Error('PlayCanvas runtime camera lost the exact custom projection hook');
+      }
+      runtimeCamera.calculateProjection(target, centerView);
+      return {
+        focalLengthXOverY: current.focalLengthXOverY,
+        customProjectionActive: true,
+        customProjectionHook: 'CameraComponent.calculateProjection',
+        configuredProjectionMatrixOpenGlColumnMajor:
+          [...current.projectionMatrixOpenGlColumnMajor]
+      };
+    }
+  });
 }
 
 function assertTraceMatrix(actual, expected, label) {
@@ -268,6 +397,7 @@ export function canonicalPlayCanvasCameraOracle(trace, traceFrameIndex) {
   return {
     traceFrameIndex,
     aspect: display.aspect,
+    focalLengthXOverY: focalLengthXOverY(frame),
     position: reflectRufWorldToPlayCanvas(sourcePosition),
     forward: reflectRufWorldToPlayCanvas(sourceForward),
     up: reflectRufWorldToPlayCanvas(sourceUp),
@@ -332,9 +462,22 @@ export function createPlayCanvasCameraReceipt({
     near_plane: finiteNumber(observation.nearPlane, 'runtime camera near plane'),
     far_plane: finiteNumber(observation.farPlane, 'runtime camera far plane'),
     aspect: finiteNumber(observation.aspect, 'runtime camera aspect'),
+    focal_length_x_over_y: finiteNumber(
+      observation.focalLengthXOverY,
+      'runtime camera focal length x/y ratio'
+    ),
     horizontal_fov: observation.horizontalFov,
     render_target_flip_y: observation.renderTargetFlipY,
     webgpu_depth_range_applied: observation.webGpuDepthRangeApplied,
+    custom_projection: {
+      active: observation.customProjectionActive,
+      hook: observation.customProjectionHook,
+      configured_projection_matrix_opengl_column_major: finiteVector(
+        observation.configuredProjectionMatrixOpenGlColumnMajor,
+        16,
+        'configured PlayCanvas custom projection matrix'
+      )
+    },
     view_matrix_column_major: finiteVector(
       observation.viewMatrixColumnMajor,
       16,
@@ -363,7 +506,7 @@ export function createPlayCanvasCameraReceipt({
     conversion: {
       world: 'canonical RUF +Z-forward to PlayCanvas RUB -Z-forward by diag(1,1,-1)',
       projection:
-        'canonical row-major +Z/[0,1] -> PlayCanvas column-major -Z/OpenGL[-1,1] -> WebGPU shader [0,1]',
+        'centered f*x/y/aspect canonical row-major +Z/[0,1] -> PlayCanvas column-major -Z/OpenGL[-1,1] -> WebGPU shader [0,1]',
       shader_flip_y: false
     },
     validation: {
@@ -400,6 +543,10 @@ export function validatePlayCanvasCameraReceipt(receipt, trace, expectedTraceFra
       receipt.webgpu_depth_range_applied !== true) {
     throw new Error('camera receipt projection mode is not the qualified vertical-FOV WebGPU path');
   }
+  if (receipt.custom_projection?.active !== true ||
+      receipt.custom_projection?.hook !== 'CameraComponent.calculateProjection') {
+    throw new Error('camera receipt did not prove the PlayCanvas custom projection hook');
+  }
   if (receipt.conversion?.shader_flip_y !== false || receipt.validation?.passed !== true) {
     throw new Error('camera receipt conversion/validation declaration is incomplete');
   }
@@ -412,6 +559,11 @@ export function validatePlayCanvasCameraReceipt(receipt, trace, expectedTraceFra
       receipt.view_matrix_column_major,
       oracle.playCanvas.viewMatrixColumnMajor,
       'runtime PlayCanvas view matrix'
+    ),
+    assertCloseVector(
+      receipt.custom_projection.configured_projection_matrix_opengl_column_major,
+      oracle.playCanvas.projectionMatrixOpenGlColumnMajor,
+      'configured PlayCanvas custom projection matrix'
     ),
     assertCloseVector(
       receipt.projection_matrix_opengl_column_major,
@@ -442,6 +594,11 @@ export function validatePlayCanvasCameraReceipt(receipt, trace, expectedTraceFra
   assertCloseScalar(receipt.near_plane, oracle.nearPlane, 'runtime camera near plane');
   assertCloseScalar(receipt.far_plane, oracle.farPlane, 'runtime camera far plane');
   assertCloseScalar(receipt.aspect, oracle.aspect, 'runtime camera aspect');
+  assertCloseScalar(
+    receipt.focal_length_x_over_y,
+    oracle.focalLengthXOverY,
+    'runtime camera focal length x/y ratio'
+  );
   return {
     receipt,
     oracle,

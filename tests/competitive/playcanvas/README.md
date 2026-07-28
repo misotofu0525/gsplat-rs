@@ -132,12 +132,17 @@ captured `frameupdate`, before PlayCanvas update, sort/project, and render.
 Warmup and measurement use separate phase indices, so measurement restarts at
 the trace's first frame even when warmup ends partway through a trace cycle.
 Every measured frame records the live PlayCanvas position, forward/up vectors,
-vertical FOV, near/far planes, aspect, view matrix, OpenGL projection and
-view-projection matrices, and the WebGPU shader projection and view-projection
-matrices. A separate oracle recomputes the canonical trace matrices from its
-pose/intrinsics and explicitly converts row-major RUF/+Z/[0,1] into PlayCanvas
-column-major RUB/-Z/OpenGL[-1,1], followed by PlayCanvas' WebGPU depth-range
-transform. A trace index, FOV, pose, or matrix mismatch fails the run.
+vertical FOV, near/far planes, aspect, centered `focal_length_x_over_y`, view
+matrix, OpenGL projection and view-projection matrices, and the WebGPU shader
+projection and view-projection matrices. The harness installs this projection
+through the pinned engine's `CameraComponent.calculateProjection` hook, so the
+same custom matrix drives GSplat culling, projection, shader uniforms, and the
+runtime receipt; it is not receipt-only metadata. A separate oracle recomputes
+the canonical trace matrices from its pose/intrinsics and explicitly converts
+row-major RUF/+Z/[0,1] into PlayCanvas column-major RUB/-Z/OpenGL[-1,1], followed
+by PlayCanvas' WebGPU depth-range transform. Legacy traces omit the ratio and
+therefore remain exactly `1`. A trace index, FOV, focal ratio, custom-hook, pose,
+or matrix mismatch fails the run.
 
 The terminal measurement queue drain remains the end of the performance
 interval. After it completes, an untimed presentation phase submits the chosen

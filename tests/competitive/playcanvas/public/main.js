@@ -12,6 +12,7 @@ import {
   RESOLUTION_FIXED,
   SHADERLANGUAGE_WGSL,
   ShaderChunks,
+  VIEW_CENTER,
   createGraphicsDevice,
   revision,
   version
@@ -27,6 +28,7 @@ import {
   summarizeSustainedMeasurement
 } from '/harness/queue-terminal.js';
 import {
+  createPlayCanvasCenteredPinholeProjectionController,
   createPlayCanvasCameraReceipt,
   PLAYCANVAS_MIN_PRESENTATION_STABLE_FRAMES,
   PLAYCANVAS_PRESENTATION_CAPTURE_SCHEMA,
@@ -214,13 +216,11 @@ function activeSplatCount(manager, fallback) {
   return state?.totalActiveSplats ?? fallback;
 }
 
-function applyTraceFrameToCamera(camera, frame) {
+function applyTraceFrameToCamera(camera, frame, projectionController) {
   const pose = traceFrameToPlayCanvasPose(frame);
   camera.setPosition(...pose.position);
   camera.lookAt(...pose.target, ...pose.up);
-  camera.camera.fov = (frame.intrinsics.vertical_fov_radians * 180) / Math.PI;
-  camera.camera.nearClip = frame.intrinsics.near_plane;
-  camera.camera.farClip = frame.intrinsics.far_plane;
+  projectionController.applyFrame(frame);
   return pose;
 }
 
@@ -228,10 +228,15 @@ const rawViewProjectionScratch = new Mat4();
 const shaderProjectionScratch = new Mat4();
 const shaderViewProjectionScratch = new Mat4();
 
-function captureRuntimeCameraObservation(camera, graphicsDevice) {
+function captureRuntimeCameraObservation(camera, graphicsDevice, projectionController) {
   const runtimeCamera = camera.camera.camera;
   const view = runtimeCamera.viewMatrix;
   const projection = runtimeCamera.projectionMatrix;
+  const customProjection = projectionController.captureRuntimeProjection(
+    runtimeCamera,
+    projection,
+    VIEW_CENTER
+  );
   rawViewProjectionScratch.mul2(projection, view);
   const renderTargetFlipY = Boolean(runtimeCamera.renderTarget?.flipY);
   Camera.applyShaderProjectionTransform(
@@ -249,6 +254,7 @@ function captureRuntimeCameraObservation(camera, graphicsDevice) {
     nearPlane: runtimeCamera.nearClip,
     farPlane: runtimeCamera.farClip,
     aspect: runtimeCamera.aspectRatio,
+    ...customProjection,
     horizontalFov: runtimeCamera.horizontalFov,
     renderTargetFlipY,
     webGpuDepthRangeApplied: graphicsDevice.isWebGPU,
@@ -261,15 +267,26 @@ function captureRuntimeCameraObservation(camera, graphicsDevice) {
   };
 }
 
-function applyAndCaptureTraceCamera({ app, camera, trace, traceFrameIndex, phase }) {
+function applyAndCaptureTraceCamera({
+  app,
+  camera,
+  trace,
+  traceFrameIndex,
+  phase,
+  projectionController
+}) {
   const frame = trace?.frames?.[traceFrameIndex];
   if (!frame) throw new Error(`trace frame ${traceFrameIndex} is unavailable during ${phase}`);
-  applyTraceFrameToCamera(camera, frame);
+  applyTraceFrameToCamera(camera, frame, projectionController);
   return createPlayCanvasCameraReceipt({
     trace,
     traceFrameIndex,
     phase,
-    observation: captureRuntimeCameraObservation(camera, app.graphicsDevice)
+    observation: captureRuntimeCameraObservation(
+      camera,
+      app.graphicsDevice,
+      projectionController
+    )
   });
 }
 
@@ -285,7 +302,8 @@ async function collectFrameSamples(
   requestedCaptureFrameIndex,
   capturePresentation,
   presentationProbe,
-  rendererCaptureIdentity
+  rendererCaptureIdentity,
+  projectionController
 ) {
   requireQueueTerminalApi(app.graphicsDevice);
   const traceFrames = trace?.frames ?? [];
@@ -348,10 +366,10 @@ async function collectFrameSamples(
       const frame = traceFrames[activeTraceFrameIndex];
       if (!frame) throw new Error(`trace frame ${activeTraceFrameIndex} is unavailable`);
       if (state === 'warming_up') {
-        applyTraceFrameToCamera(camera, frame);
+        applyTraceFrameToCamera(camera, frame, projectionController);
         return null;
       }
-      applyTraceFrameToCamera(camera, frame);
+      applyTraceFrameToCamera(camera, frame, projectionController);
       return null;
     };
 
@@ -392,7 +410,11 @@ async function collectFrameSamples(
           trace,
           traceFrameIndex: presentationTraceFrameIndex,
           phase: 'external_capture_terminal',
-          observation: captureRuntimeCameraObservation(camera, app.graphicsDevice)
+          observation: captureRuntimeCameraObservation(
+            camera,
+            app.graphicsDevice,
+            projectionController
+          )
         });
         validatePlayCanvasCameraReceipt(
           terminalCameraReceipt,
@@ -485,7 +507,11 @@ async function collectFrameSamples(
           presentationProbe(`presentation_frame_${presentationFrames.length}_start`);
           frameSubmitVersionStart = app.graphicsDevice.submitVersion;
           activeTraceFrameIndex = presentationTraceFrameIndex;
-          applyTraceFrameToCamera(camera, traceFrames[presentationTraceFrameIndex]);
+          applyTraceFrameToCamera(
+            camera,
+            traceFrames[presentationTraceFrameIndex],
+            projectionController
+          );
           return;
         }
         if (state === 'waiting_for_first_measurement_frame') {
@@ -538,7 +564,11 @@ async function collectFrameSamples(
                 trace,
                 traceFrameIndex: activeTraceFrameIndex,
                 phase: `measurement_frame_${samples.length}`,
-                observation: captureRuntimeCameraObservation(camera, app.graphicsDevice)
+                observation: captureRuntimeCameraObservation(
+                  camera,
+                  app.graphicsDevice,
+                  projectionController
+                )
               });
           samples.push({
             elapsedNs: Math.round((end - measurementStart) * 1_000_000),
@@ -575,7 +605,11 @@ async function collectFrameSamples(
             trace,
             traceFrameIndex: presentationTraceFrameIndex,
             phase: `presentation_frame_${presentationFrames.length}`,
-            observation: captureRuntimeCameraObservation(camera, app.graphicsDevice)
+            observation: captureRuntimeCameraObservation(
+              camera,
+              app.graphicsDevice,
+              projectionController
+            )
           });
           validatePlayCanvasCameraReceipt(
             activeCameraReceipt,
@@ -828,11 +862,20 @@ async function main() {
     nearClip: traceFrame?.intrinsics.near_plane ?? 0.01,
     farClip: traceFrame?.intrinsics.far_plane ?? 100
   });
+  const projectionController = traceFrame
+    ? createPlayCanvasCenteredPinholeProjectionController({
+        cameraComponent: camera.camera,
+        aspect: requestedWidth / requestedHeight,
+        centerView: VIEW_CENTER
+      })
+    : null;
   const cameraPose = traceFrame
-    ? traceFrameToPlayCanvasPose(traceFrame)
+    ? applyTraceFrameToCamera(camera, traceFrame, projectionController)
     : { position: [0, 0, 3], target: [0, 0, 0], forward: [0, 0, -1], up: [0, 1, 0] };
-  camera.setPosition(...cameraPose.position);
-  camera.lookAt(...cameraPose.target, ...cameraPose.up);
+  if (!traceFrame) {
+    camera.setPosition(...cameraPose.position);
+    camera.lookAt(...cameraPose.target, ...cameraPose.up);
+  }
   app.root.addChild(camera);
 
   const splat = new Entity('Splat');
@@ -986,7 +1029,8 @@ async function main() {
       camera,
       trace,
       traceFrameIndex: requestedTraceFrameIndex,
-      phase: 'pre_capture'
+      phase: 'pre_capture',
+      projectionController
     })
     : null;
   if (initialCameraReceipt) {
@@ -1027,7 +1071,8 @@ async function main() {
           dataset_id: datasetManifest?.id ?? asset.name,
           dataset_sha256: datasetSha256
         }
-      }
+      },
+      projectionController
     )
     : null;
   const postCapturePresentation = presentationProbe('post_capture');

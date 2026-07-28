@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import {
   canonicalPlayCanvasCameraOracle,
+  createPlayCanvasCenteredPinholeProjectionController,
   createPlayCanvasCameraReceipt,
   PLAYCANVAS_CAMERA_RECEIPT_SCHEMA,
   PLAYCANVAS_PRESENTATION_CAPTURE_SCHEMA,
   PLAYCANVAS_SCREENSHOT_BINDING_SCHEMA,
+  playCanvasProjectionFromTraceFrame,
   traceFrameIndexForPhase,
   traceFrameToPlayCanvasPose,
   validatePlayCanvasCameraReceipt,
@@ -22,11 +24,35 @@ const truckTrace = JSON.parse(await readFile(resolve(
   root,
   'tests/perf/trace/fixtures/quality/candidate-truck-quality-2412x1080-v1.json'
 ), 'utf8'));
+const formalTruckTrace = JSON.parse(await readFile(resolve(
+  root,
+  'tests/perf/trace/fixtures/quality/formal-truck-product-quality-979x546-v1/camera-trace.json'
+), 'utf8'));
 
 function close(actual, expected, tolerance = 1e-12) {
   assert.equal(actual.length, expected.length);
   actual.forEach((value, index) => assert.ok(Math.abs(value - expected[index]) <= tolerance,
     `component ${index}: expected ${expected[index]}, got ${value}`));
+}
+
+function multiplyRowMajor(a, b) {
+  return Array.from({ length: 16 }, (_, index) => {
+    const row = Math.floor(index / 4);
+    const column = index % 4;
+    let value = 0;
+    for (let k = 0; k < 4; k += 1) value += a[row * 4 + k] * b[k * 4 + column];
+    return value;
+  });
+}
+
+function withFocalRatio(trace, ratio) {
+  const calibrated = structuredClone(trace);
+  for (const frame of calibrated.frames) {
+    frame.intrinsics.focal_length_x_over_y = ratio;
+    frame.projection_matrix[0] *= ratio;
+    frame.view_projection_matrix = multiplyRowMajor(frame.projection_matrix, frame.view_matrix);
+  }
+  return calibrated;
 }
 
 test('identity trace camera becomes PlayCanvas -Z forward', () => {
@@ -82,9 +108,14 @@ function observationFromOracle(oracle) {
     nearPlane: oracle.nearPlane,
     farPlane: oracle.farPlane,
     aspect: oracle.aspect,
+    focalLengthXOverY: oracle.focalLengthXOverY,
     horizontalFov: false,
     renderTargetFlipY: false,
     webGpuDepthRangeApplied: true,
+    customProjectionActive: true,
+    customProjectionHook: 'CameraComponent.calculateProjection',
+    configuredProjectionMatrixOpenGlColumnMajor:
+      oracle.playCanvas.projectionMatrixOpenGlColumnMajor,
     viewMatrixColumnMajor: oracle.playCanvas.viewMatrixColumnMajor,
     projectionMatrixOpenGlColumnMajor: oracle.playCanvas.projectionMatrixOpenGlColumnMajor,
     viewProjectionMatrixOpenGlColumnMajor:
@@ -126,6 +157,136 @@ test('canonical oracle explicitly converts +Z/[0,1] row-major into PlayCanvas -Z
     PLAYCANVAS_CAMERA_RECEIPT_SCHEMA);
 });
 
+test('legacy trace defaults the exact centered-pinhole focal ratio to one', () => {
+  const oracle = canonicalPlayCanvasCameraOracle(truckTrace, 0);
+  assert.equal(oracle.focalLengthXOverY, 1);
+  const projection = playCanvasProjectionFromTraceFrame(
+    truckTrace.frames[0],
+    truckTrace.display.width / truckTrace.display.height
+  );
+  assert.equal(projection.focalLengthXOverY, 1);
+  close(
+    projection.projectionMatrixOpenGlColumnMajor,
+    oracle.playCanvas.projectionMatrixOpenGlColumnMajor
+  );
+});
+
+test('formal Truck Product Quality views preserve the exact calibrated projection', () => {
+  assert.deepEqual(formalTruckTrace.derivation.view_ids, ['000001', '000009']);
+  assert.deepEqual(formalTruckTrace.display, { width: 979, height: 546 });
+  for (let index = 0; index < formalTruckTrace.frames.length; index += 1) {
+    const oracle = canonicalPlayCanvasCameraOracle(formalTruckTrace, index);
+    const projection = playCanvasProjectionFromTraceFrame(
+      formalTruckTrace.frames[index],
+      formalTruckTrace.display.width / formalTruckTrace.display.height
+    );
+    assert.equal(oracle.focalLengthXOverY, 1.005624011459175);
+    assert.equal(projection.focalLengthXOverY, oracle.focalLengthXOverY);
+    close(
+      projection.projectionMatrixOpenGlColumnMajor,
+      oracle.playCanvas.projectionMatrixOpenGlColumnMajor
+    );
+  }
+});
+
+test('calibrated focal ratio reaches the pinned PlayCanvas custom projection hook', () => {
+  const ratio = 581.9245675736333 / 578.6701201866216;
+  const trace = withFocalRatio(truckTrace, ratio);
+  const oracle = canonicalPlayCanvasCameraOracle(trace, 0);
+  const target = {
+    data: null,
+    set(values) {
+      this.data = [...values];
+    }
+  };
+  const runtime = { calculateProjection: null, projectionMatrix: target };
+  const cameraComponent = {
+    camera: runtime,
+    horizontalFov: true,
+    fov: 0,
+    nearClip: 0,
+    farClip: 0,
+    get calculateProjection() {
+      return runtime.calculateProjection;
+    },
+    set calculateProjection(value) {
+      runtime.calculateProjection = value;
+    }
+  };
+  const controller = createPlayCanvasCenteredPinholeProjectionController({
+    cameraComponent,
+    aspect: trace.display.width / trace.display.height,
+    centerView: 0
+  });
+  controller.applyFrame(trace.frames[0]);
+  close(target.data, oracle.playCanvas.projectionMatrixOpenGlColumnMajor);
+  const capture = controller.captureRuntimeProjection(runtime, target);
+  assert.equal(capture.focalLengthXOverY, ratio);
+  assert.equal(capture.customProjectionActive, true);
+  assert.equal(capture.customProjectionHook, 'CameraComponent.calculateProjection');
+  assert.equal(cameraComponent.horizontalFov, false);
+  close(target.data, oracle.playCanvas.projectionMatrixOpenGlColumnMajor);
+  close(
+    capture.configuredProjectionMatrixOpenGlColumnMajor,
+    oracle.playCanvas.projectionMatrixOpenGlColumnMajor
+  );
+  const calibratedReceipt = createPlayCanvasCameraReceipt({
+    trace,
+    traceFrameIndex: 0,
+    phase: 'calibrated_test',
+    observation: observationFromOracle(oracle)
+  });
+  assert.equal(
+    validatePlayCanvasCameraReceipt(calibratedReceipt, trace, 0)
+      .receipt.focal_length_x_over_y,
+    ratio
+  );
+});
+
+test('centered-pinhole controller fails closed on ratio bounds and hook replacement', () => {
+  for (const ratio of [2 ** -16, 2 ** 16]) {
+    assert.doesNotThrow(() => playCanvasProjectionFromTraceFrame(
+      withFocalRatio(truckTrace, ratio).frames[0],
+      16 / 9
+    ));
+  }
+  for (const ratio of [0, 2 ** -17, 2 ** 17, NaN, Infinity, null, '1']) {
+    const cameraComponent = { calculateProjection: null };
+    const controller = createPlayCanvasCenteredPinholeProjectionController({
+      cameraComponent,
+      aspect: 16 / 9,
+      centerView: 0
+    });
+    const trace = withFocalRatio(truckTrace, 1);
+    trace.frames[0].intrinsics.focal_length_x_over_y = ratio;
+    assert.throws(() => controller.applyFrame(trace.frames[0]), /focal_length_x_over_y/);
+  }
+
+  const runtime = { calculateProjection: null, projectionMatrix: { set() {} } };
+  const cameraComponent = {
+    camera: runtime,
+    get calculateProjection() {
+      return runtime.calculateProjection;
+    },
+    set calculateProjection(value) {
+      runtime.calculateProjection = value;
+    }
+  };
+  const controller = createPlayCanvasCenteredPinholeProjectionController({
+    cameraComponent,
+    aspect: 16 / 9,
+    centerView: 0
+  });
+  controller.applyFrame(truckTrace.frames[0]);
+  assert.throws(
+    () => controller.captureRuntimeProjection(
+      { calculateProjection() {} },
+      { set() {} }
+    ),
+    /lost the exact custom projection hook/
+  );
+});
+
 test('camera receipt validator fails closed on trace index, runtime matrix, and FOV mutation', () => {
   const valid = receipt(1, 'measurement_frame_1');
 
@@ -148,6 +309,20 @@ test('camera receipt validator fails closed on trace index, runtime matrix, and 
   assert.throws(
     () => validatePlayCanvasCameraReceipt(wrongFov, truckTrace, 1),
     /vertical FOV/
+  );
+
+  const wrongRatio = structuredClone(valid);
+  wrongRatio.focal_length_x_over_y = 1.25;
+  assert.throws(
+    () => validatePlayCanvasCameraReceipt(wrongRatio, truckTrace, 1),
+    /focal length x\/y ratio/
+  );
+
+  const missingHook = structuredClone(valid);
+  missingHook.custom_projection.active = false;
+  assert.throws(
+    () => validatePlayCanvasCameraReceipt(missingHook, truckTrace, 1),
+    /custom projection hook/
   );
 });
 
