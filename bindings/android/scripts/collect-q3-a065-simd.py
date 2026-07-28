@@ -639,6 +639,48 @@ def validate_a065_receipt(receipt: dict[str, Any]) -> None:
     )
 
 
+def validate_a065_artifact_renderer(manifest: dict[str, Any]) -> None:
+    """Validate Vulkan/Adreno identity without inventing an adapter string.
+
+    Android currently cannot always surface wgpu's adapter name through the
+    benchmark ABI.  When that field is unavailable, retain the null and bind
+    the endpoint to the independently captured A065 device receipt instead.
+    A reported adapter remains authoritative and may not use this fallback.
+    """
+
+    renderer = manifest.get("renderer")
+    require(isinstance(renderer, dict), "Q3 renderer receipt is missing")
+    require(renderer.get("backend") == "vulkan", "A065 artifact backend is not Vulkan")
+    environment = manifest.get("environment")
+    require(isinstance(environment, dict), "Q3 environment receipt is missing")
+    adapter = environment.get("adapter")
+    if adapter is not None:
+        require(
+            isinstance(adapter, str) and "adreno" in adapter.lower(),
+            "A065 artifact adapter is not Adreno",
+        )
+        return
+
+    unavailable = manifest.get("unavailable_fields")
+    require(
+        isinstance(unavailable, list) and "environment.adapter" in unavailable,
+        "unavailable A065 adapter is not declared",
+    )
+    device_receipt = environment.get("android_device_receipt")
+    require(
+        isinstance(device_receipt, dict),
+        "unavailable A065 adapter lacks its device receipt",
+    )
+    validate_a065_receipt(device_receipt)
+    properties = device_receipt.get("device_properties")
+    vulkan_hal = properties.get("vulkan_hal_property")
+    require(
+        isinstance(vulkan_hal, dict)
+        and str(vulkan_hal.get("value", "")).lower() == "adreno",
+        "A065 Vulkan HAL is not Adreno",
+    )
+
+
 def preflight_a065(args: argparse.Namespace) -> dict[str, Any]:
     try:
         adb = BASE.resolve_adb(args.adb, dry_run=False)
@@ -1335,11 +1377,7 @@ def validate_collected_run(
     )
     require(renderer.get("path") == "packed_atlas", "Q3 run did not execute Packed")
     require(renderer.get("order_backend_requested") == "cpu", "Q3 run did not request Exact CPU")
-    require(
-        "Adreno" in str(manifest.get("environment", {}).get("adapter", "")),
-        "A065 artifact adapter is not Adreno",
-    )
-    require(renderer.get("backend") == "vulkan", "A065 artifact backend is not Vulkan")
+    validate_a065_artifact_renderer(manifest)
     exactness = manifest.get("exactness")
     require(isinstance(exactness, dict), "Q3 exactness receipt is missing")
     for field in (

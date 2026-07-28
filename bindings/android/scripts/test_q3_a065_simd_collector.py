@@ -1027,6 +1027,60 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
         ):
             COLLECTOR.preflight_a065(args)
 
+    def test_a065_artifact_accepts_declared_adapter_or_device_vulkan_hal(self) -> None:
+        device_receipt = {
+            "manufacturer": "Nothing",
+            "model": "A065",
+            "device": "Pong",
+            "device_properties": {
+                "soc_model_property": {"value": "SM8475"},
+                "vulkan_hal_property": {"value": "adreno"},
+            },
+        }
+        explicit = {
+            "renderer": {"backend": "vulkan"},
+            "environment": {"adapter": "Adreno 730"},
+            "unavailable_fields": [],
+        }
+        COLLECTOR.validate_a065_artifact_renderer(explicit)
+
+        receipt_backed = {
+            "renderer": {"backend": "vulkan"},
+            "environment": {
+                "adapter": None,
+                "android_device_receipt": device_receipt,
+            },
+            "unavailable_fields": ["environment.adapter"],
+        }
+        COLLECTOR.validate_a065_artifact_renderer(receipt_backed)
+
+        for label, mutate, error in (
+            (
+                "reported non-Adreno adapter",
+                lambda manifest: manifest["environment"].__setitem__(
+                    "adapter", "Mali-G710"
+                ),
+                "artifact adapter is not Adreno",
+            ),
+            (
+                "undeclared adapter absence",
+                lambda manifest: manifest.__setitem__("unavailable_fields", []),
+                "adapter is not declared",
+            ),
+            (
+                "non-Adreno Vulkan HAL",
+                lambda manifest: manifest["environment"]["android_device_receipt"][
+                    "device_properties"
+                ]["vulkan_hal_property"].__setitem__("value", "mali"),
+                "Vulkan HAL is not Adreno",
+            ),
+        ):
+            with self.subTest(label=label):
+                manifest = copy.deepcopy(receipt_backed)
+                mutate(manifest)
+                with self.assertRaisesRegex(COLLECTOR.IntegrityRejectedError, error):
+                    COLLECTOR.validate_a065_artifact_renderer(manifest)
+
     def test_q3_screen_failure_is_environment_prerequisite_before_output_claim(self) -> None:
         expected_commit = "1" * 40
         with tempfile.TemporaryDirectory() as directory:
