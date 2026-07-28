@@ -728,6 +728,25 @@ the timeout separation; the shared collector suite, Q3 suite, Android artifact
 extraction suite and source-architecture policy pass. Q3 remains **Active**
 pending one newly admitted clean-SHA device transaction.
 
+The next transaction at clean commit `28c71a8` proved the non-streaming install
+itself: ADB pushed and installed the Scalar APK successfully, both package
+queues reported `Success`, the APK hash matched, and physical element parity
+again passed. The first 50k correctness Activity was nevertheless killed by
+the vendor's delayed `installPackageLI` after logging
+`createSurfaceRenderer start`. Device logcat timestamps place the kill 2.68
+seconds after the installed-APK receipt, later than the former two-second
+settle window. The collector was interrupted once instead of waiting for its
+unrelated 1,800-second measurement timeout. Its incomplete staging directory
+`target/qualification/.q3-a065-simd-28c71a8-attempt-6.staging-2845f687208f473eaf7406feb6a52d51`
+is retained as infrastructure diagnosis and publishes no matrix cell.
+
+Commit `c191a39` raises that single-attempt vendor replacement settle window to
+five seconds and documents the reusable explicit-SDK/JDK launch path. It does
+not retry installation or relax the 60-second install timeout. Shared and Q3
+collector tests plus source architecture pass. Q3 remains **Active**; the next
+device execution, if separately admitted on the new clean SHA, must use a new
+destination and remains a single attempt.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8
