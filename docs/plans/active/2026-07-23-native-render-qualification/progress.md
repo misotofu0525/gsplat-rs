@@ -1768,3 +1768,19 @@ in that receipt only and adds the exact 979x546 calibrated projection as a
 regression test. Renderer projection, authority inputs and endpoint pixels are
 unchanged. Another endpoint remains deferred until this new candidate passes
 focused verification and fixed-SHA review.
+
+Fixed-SHA review accepted `5d7dccf` with no P0/P1/P2. Its single authorized
+endpoint execution completed the full Native Metal render and renderer-owned
+979x546 same-present capture for all 2,541,226 Truck splats, then the Native
+collector rejected the completed receipt because `camera_revision` was zero.
+PlayCanvas and the offline gate again did not start and no formal artifact was
+published. Renderer tests explicitly define zero as the creation-time Surface
+camera revision; `set_camera` increments only when the value changes, and the
+session was constructed with the same formal frame that the trace reapplied.
+The fail-closed join already requires exact revision equality across frame,
+capture, diagnostic and camera receipts. The collector and offline validator
+therefore accept a non-negative camera revision while retaining positive
+requirements for presentation and issued generations. Focused tests use the
+realistic zero baseline and retain mismatch rejection. Another endpoint remains
+deferred until this evidence-contract correction passes verification and
+fixed-SHA review.

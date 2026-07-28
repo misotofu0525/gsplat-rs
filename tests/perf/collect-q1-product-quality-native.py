@@ -412,7 +412,12 @@ def validate_host(
     def positive(field: str) -> int:
         return parse_uint(diagnostic.get(field, ""), f"diagnostic.{field}", positive=True)
 
-    camera_revision = positive("camera_revision")
+    # Surface sessions deliberately use revision zero for an unchanged
+    # creation-time camera. Identity comes from exact agreement across the
+    # frame, capture, diagnostic and camera receipts, not from being non-zero.
+    camera_revision = parse_uint(
+        diagnostic.get("camera_revision", ""), "diagnostic.camera_revision"
+    )
     presentation_sequence = positive("presentation_sequence")
     native_camera = {
         "position": [

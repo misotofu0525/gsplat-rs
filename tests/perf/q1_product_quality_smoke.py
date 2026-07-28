@@ -221,6 +221,12 @@ def _positive_integer(value: Any, context: str) -> int:
     return value
 
 
+def _nonnegative_integer(value: Any, context: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        fail(f"{context} must be a non-negative integer")
+    return value
+
+
 def _finite_close(actual: Any, expected: float, context: str) -> None:
     if (
         not isinstance(actual, (int, float))
@@ -596,7 +602,9 @@ def _native_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, 
     for field, expected in expected_camera.items():
         if camera.get(field) != expected:
             fail(f"gsplat-rs camera.{field} mismatch")
-    camera_revision = _positive_integer(camera.get("camera_revision"), "gsplat-rs camera_revision")
+    camera_revision = _nonnegative_integer(
+        camera.get("camera_revision"), "gsplat-rs camera_revision"
+    )
     terminal = _object(presentation, "terminal_identity", "gsplat-rs presentation")
     terminal_index = terminal.get("frame_index")
     if not isinstance(terminal_index, int) or isinstance(terminal_index, bool):

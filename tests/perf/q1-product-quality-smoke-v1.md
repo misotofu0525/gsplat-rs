@@ -22,7 +22,10 @@ The gsplat-rs adapter requires the existing same-present chain:
 the canonical pose/intrinsics hash, the renderer-returned eleven-value camera
 receipt, its camera revision and terminal frame hash. That terminal contains
 the exact frozen `capture_depth_precision` receipt whose RGBA digest matches
-the decoded PNG.
+the decoded PNG. Camera revision is a non-negative generation identity: zero
+is the valid creation-time revision when applying the formal frame does not
+change the session's already identical camera. Every joined receipt must carry
+the same value; presentation and other issued generations remain positive.
 
 The PlayCanvas adapter requires the existing
 `gsplat-playcanvas-webgpu-renderer-capture/v1` producer, the complete

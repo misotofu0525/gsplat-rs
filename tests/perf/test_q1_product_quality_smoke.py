@@ -217,7 +217,7 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
     root.mkdir()
     capture = {
         "scene_generation": 1,
-        "camera_revision": 9,
+        "camera_revision": 0,
         "viewport_generation": 0,
         "contract_generation": 1,
         "plan_set_generation": 2,
@@ -231,7 +231,7 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
     }
     frame = {
         "trace_frame_index": 0,
-        "camera_revision": 9,
+        "camera_revision": 0,
         "presentation_sequence": 11,
         "capture_depth_precision": capture,
     }
@@ -258,7 +258,7 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
                 "trace_content_sha256": formal_value["trace"]["content_sha256"],
                 "trace_frame_index": 0,
                 "pose_intrinsics_sha256": formal_value["pose_intrinsics_sha256"],
-                "camera_revision": 9,
+                "camera_revision": 0,
                 "runtime_camera_receipt_sha256": SMOKE.canonical_sha256(runtime_camera),
             },
             "terminal_identity": {
@@ -486,6 +486,15 @@ class ProductQualitySmokeTests(unittest.TestCase):
         text = json.dumps(result, sort_keys=True)
         for forbidden in ("frame_wall", "fps", "winner", "pairing", "throughput"):
             self.assertNotIn(forbidden, text.lower())
+
+    def test_camera_revision_is_nonnegative_but_not_boolean(self) -> None:
+        self.assertEqual(SMOKE._nonnegative_integer(0, "camera revision"), 0)
+        for invalid in (-1, True):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(
+                    SMOKE.OneViewQualityError, "non-negative integer"
+                ):
+                    SMOKE._nonnegative_integer(invalid, "camera revision")
 
     def test_quality_miss_is_a_finite_rejected_result(self) -> None:
         rejected = bytes((0, 0, 0, 255)) * PIXELS

@@ -253,6 +253,20 @@ class NativeQualityProducerTests(unittest.TestCase):
         with self.assertRaisesRegex(NATIVE.ValidationError, "camera receipt.camera_revision"):
             NATIVE.validate_host(changed, "", trace=self.trace, capture_path=self.capture_path)
 
+    def test_unchanged_initial_camera_revision_zero_is_valid(self) -> None:
+        zero_revision = self.stdout.replace("camera_revision=9", "camera_revision=0")
+        _, capture = NATIVE.validate_host(
+            zero_revision, "", trace=self.trace, capture_path=self.capture_path
+        )
+        self.assertEqual(capture["camera_revision"], 0)
+
+    def test_negative_camera_revision_fails_closed(self) -> None:
+        negative_revision = self.stdout.replace("camera_revision=9", "camera_revision=-1")
+        with self.assertRaisesRegex(NATIVE.ValidationError, "diagnostic.camera_revision"):
+            NATIVE.validate_host(
+                negative_revision, "", trace=self.trace, capture_path=self.capture_path
+            )
+
     def test_performance_measurements_cannot_enter_published_payload(self) -> None:
         for key in ("frame_wall_ms", "fps", "pairing", "winner"):
             with self.subTest(key=key):
