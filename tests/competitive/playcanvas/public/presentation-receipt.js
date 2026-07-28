@@ -64,7 +64,7 @@ function canvasHitReceipt(documentObject, canvas, width, height, inset) {
   });
   return {
     inset_css_px: inset,
-    sample_count: samples.length,
+    probe_count: samples.length,
     all_samples_hit_canvas: samples.every((sample) => sample.hit?.is_canvas === true),
     samples
   };
@@ -214,7 +214,7 @@ export function assertBrowserPresentationState(receipt) {
     close(mapping?.viewport_height_px, height, physicalTolerance) &&
     close(mapping?.canvas_css_width_px, width, physicalTolerance) &&
     close(mapping?.canvas_css_height_px, height, physicalTolerance) &&
-    receipt?.canvas_unobscured?.sample_count === 5 &&
+    receipt?.canvas_unobscured?.probe_count === 5 &&
     receipt?.canvas_unobscured?.all_samples_hit_canvas === true;
   if (!valid) {
     throw new Error(

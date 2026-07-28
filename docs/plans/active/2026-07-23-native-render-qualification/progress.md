@@ -1842,3 +1842,27 @@ PlayCanvas camera-authority fixture is stale. That authority is outside this
 browser-ownership repair and was not regenerated or weakened. Another endpoint
 execution remains deferred until this new atomic candidate receives a fixed-SHA
 independent review.
+
+Fixed-SHA review accepted `d775f92` with no P0/P1/P2. Doctor and command were
+READY after resolving the worktree's Truck symlink to the same pinned real PLY.
+The single authorized endpoint execution proved the new browser ownership
+path: the direct Node producer and Chrome handshake matched, the complete
+process tree was observed and reaped, `group_gone=true`, and no exact-marker
+process survived. PlayCanvas loaded all 2,541,226 SH3 splats and produced the
+renderer-owned 979x546 capture, but its quality-only manifest validator then
+rejected before publication because it found a forbidden `sample_count` token.
+The offline gate did not run, the formal destination remained absent, and the
+attempt was not retried. The retained failure is
+`target/qualification/q1-product-quality-view000001-d775f92-attempt1.failed-q1-view000001-d775f924fd8c-968beca2186e`.
+
+The token was not benchmark evidence. `canvasHitReceipt` records five fixed
+geometry probes used to prove that the canvas is unobscured, and had named that
+count `sample_count`; the quality-only validator correctly reserves that token
+for forbidden performance samples. The narrow correction renames only this
+private presentation field to `probe_count`, retains all five hit descriptors
+and their exact assertion, and continues to reject a real `sample_count`
+anywhere in the quality manifest. Renderer data, camera, resolution, capture
+pixels and quality admission thresholds do not change. All 84 PlayCanvas Node
+tests, 57 focused Q1 Python tests, source architecture policy and diff hygiene
+pass. Another endpoint remains deferred until this naming correction is
+committed and independently reviewed at a fixed SHA.

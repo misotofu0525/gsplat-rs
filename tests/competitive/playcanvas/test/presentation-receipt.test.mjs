@@ -66,9 +66,14 @@ test('foreground browser receipt proves focus, viewport, DPR, CSS, and backing d
   assert.equal(receipt.canvas.backing_width, 2412);
   assert.equal(receipt.canvas_unobscured.all_samples_hit_canvas, true);
   assert.equal(receipt.canvas_unobscured.inset_css_px, 1);
+  assert.equal(receipt.canvas_unobscured.probe_count, 5);
+  assert.equal('sample_count' in receipt.canvas_unobscured, false);
   assert.equal(receipt.canvas_unobscured.samples.length, 5);
   assert.equal(receipt.canvas_unobscured.samples[0].hit.is_canvas, true);
   assert.equal(receipt.canvas_half_pixel_edge_diagnostic.inset_css_px, 0.5);
+  assert.equal(receipt.canvas_half_pixel_edge_diagnostic.probe_count, 5);
+  assert.equal('sample_count' in receipt.canvas_half_pixel_edge_diagnostic, false);
+  assert.equal(receipt.canvas_half_pixel_edge_diagnostic.samples.length, 5);
   assert.equal(receipt.visual_viewport.dimension_tolerance_css_px, 0.5);
   assert.equal(receipt.physical_pixel_mapping.tolerance_px, 2);
   assert.deepEqual(receipt.safe_area_insets, { observed: false });

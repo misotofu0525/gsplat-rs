@@ -307,9 +307,23 @@ test('quality-only manifest fails closed on any benchmark result surface', () =>
       excluded_from_performance: true,
       capture_trace_frame_index: 0,
       renderer_capture: rendererCapture,
+      browser_presentation: {
+        canvas_unobscured: {
+          probe_count: 5,
+          all_samples_hit_canvas: true
+        }
+      },
       frames: [{ submit_version_before: 1, submit_version_after: 2 }]
     },
     renderer_capture: rendererCapture,
+    browser_presentation: {
+      postCapture: {
+        canvas_unobscured: {
+          probe_count: 5,
+          all_samples_hit_canvas: true
+        }
+      }
+    },
     product_quality: { state: 'Deferred' },
     performance_authorized: false,
     q1_quality: {
@@ -342,6 +356,13 @@ test('quality-only manifest fails closed on any benchmark result surface', () =>
       browser_presentation: { timing: {} }
     }),
     /forbidden timing/
+  );
+  assert.throws(
+    () => validateQ1QualityOnlyArtifact({
+      ...manifest,
+      browser_presentation: { sample_count: 5 }
+    }),
+    /forbidden sample_count/
   );
 });
 
