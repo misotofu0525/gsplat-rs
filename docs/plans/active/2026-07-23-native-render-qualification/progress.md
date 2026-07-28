@@ -661,6 +661,35 @@ architecture. No A065 run has occurred after these corrections. Q3 therefore
 remains **Active** with no Android performance result; the next device action is
 one fresh exact-SHA execution after fixed-SHA review, never an automatic retry.
 
+At clean exact commit `94384ce`, root executed that one-shot transaction into
+`target/qualification/q3-a065-simd-94384ce2-attempt-3/`. Physical AArch64
+Scalar/NEON element parity was Accepted. The collector then completed the
+Scalar correctness lane once for all nine workloads from 50k through complete
+Truck: every workload rendered both formal camera frames with full source,
+resident and addressable membership, independent empty order telemetry, and
+same-ticket current-stats V2 S/V/C/D plus preprocess/sort/frame-completion.
+
+The transaction nevertheless terminalized **Rejected / integrity_rejected**
+before any NEON correctness or timed pair. The single cause in all nine cells
+was `A065 artifact adapter is not Adreno`: the Android benchmark ABI truthfully
+published `environment.adapter = null`, while its bound device receipt proved
+Nothing A065, SM8475, Vulkan backend and `ro.hardware.vulkan=adreno`. The old Q3
+aggregate required a renderer adapter name even though the field was declared
+unavailable. The two-frame correctness timings are not performance samples and
+must not be used for a SIMD decision.
+
+Commit `597a765` replaces that impossible name requirement with an explicit
+two-source identity contract. A reported renderer adapter remains authoritative
+and must name Adreno. Only when it is null *and* declared unavailable may the
+validator use the already bound A065/SM8475 device receipt and its Adreno Vulkan
+HAL property; it keeps the adapter field null and never fabricates a renderer
+name. Negative tests reject a reported Mali adapter, undeclared absence and a
+non-Adreno HAL. Under this correction, an offline strict replay of all nine
+retained correctness artifacts succeeds and confirms there is no later hidden
+integrity failure. The original attempt remains Rejected and immutable. Q3 is
+still **Active**; no timed A065 Scalar/NEON pair exists until a new exact-SHA
+transaction is separately admitted and executed once.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8
