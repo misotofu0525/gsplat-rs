@@ -32,7 +32,7 @@ function makeNativeRenderer(overrides = {}) {
       calls.push(["setCamera", ...values]);
     },
     cameraReceipt() {
-      return new Float32Array([1, 2, 3, 0, 0, 0, 1, Math.PI / 3, 0.1, 100]);
+      return new Float32Array([1, 2, 3, 0, 0, 0, 1, Math.PI / 3, 0.1, 100, 1]);
     },
     orbit(deltaYawRadians, deltaPitchRadians) {
       calls.push(["orbit", deltaYawRadians, deltaPitchRadians]);
@@ -904,6 +904,7 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
   assert.deepEqual(cameraReceipt.position, [1, 2, 3]);
   assert.deepEqual(cameraReceipt.rotationXyzw, [0, 0, 0, 1]);
   assert.ok(Math.abs(cameraReceipt.intrinsics.verticalFovRadians - Math.PI / 3) < 1e-6);
+  assert.equal(cameraReceipt.intrinsics.focalLengthXOverY, 1);
   renderer.free();
 
   assert.deepEqual(native.calls.slice(0, 11), [
@@ -921,6 +922,65 @@ test("GsplatWebRenderer forwards commands and normalizes return values", async (
   ]);
   assert.equal(renderer.isDisposed, true);
   assert.throws(() => renderer.renderFrame(), /disposed/);
+});
+
+test("GsplatWebRenderer carries calibrated focal ratio without breaking legacy cameras", () => {
+  const native = makeNativeRenderer({
+    cameraReceipt() {
+      return new Float32Array([1, 2, 3, 0, 0, 0, 1, 1, 0.1, 100, 1.25]);
+    },
+  });
+  const renderer = new GsplatWebRenderer(native);
+
+  renderer.setCamera({
+    position: [1, 2, 3],
+    rotationXyzw: [0, 0, 0, 1],
+    intrinsics: { verticalFovRadians: 1, nearPlane: 0.1, farPlane: 100 },
+  });
+  renderer.setCamera({
+    position: [1, 2, 3],
+    rotationXyzw: [0, 0, 0, 1],
+    intrinsics: {
+      verticalFovRadians: 1,
+      nearPlane: 0.1,
+      farPlane: 100,
+      focalLengthXOverY: 1.25,
+    },
+  });
+
+  assert.deepEqual(native.calls[0], [
+    "setCamera", 1, 2, 3, 0, 0, 0, 1, 1, Math.fround(0.1), 100,
+  ]);
+  assert.deepEqual(native.calls[1], [
+    "setCamera", 1, 2, 3, 0, 0, 0, 1, 1, Math.fround(0.1), 100, 1.25,
+  ]);
+  assert.equal(renderer.cameraReceipt().intrinsics.focalLengthXOverY, 1.25);
+});
+
+test("GsplatWebRenderer defaults legacy receipts and rejects invalid focal ratios", () => {
+  const legacy = new GsplatWebRenderer(makeNativeRenderer({
+    cameraReceipt() {
+      return new Float32Array([1, 2, 3, 0, 0, 0, 1, 1, 0.1, 100]);
+    },
+  }));
+  assert.equal(legacy.cameraReceipt().intrinsics.focalLengthXOverY, 1);
+
+  const renderer = new GsplatWebRenderer(makeNativeRenderer());
+  const camera = (focalLengthXOverY) => ({
+    position: [1, 2, 3],
+    rotationXyzw: [0, 0, 0, 1],
+    intrinsics: { verticalFovRadians: 1, nearPlane: 0.1, farPlane: 100, focalLengthXOverY },
+  });
+  assert.throws(() => renderer.setCamera(camera(Number.NaN)), TypeError);
+  assert.throws(() => renderer.setCamera(camera(0)), RangeError);
+  assert.throws(() => renderer.setCamera(camera(65_537)), RangeError);
+
+  const invalidReceipt = new GsplatWebRenderer(makeNativeRenderer({
+    cameraReceipt() {
+      return new Float32Array([1, 2, 3, 0, 0, 0, 1, 1, 0.1, 100, 0]);
+    },
+  }));
+  assert.throws(() => invalidReceipt.cameraReceipt(), TypeError);
 });
 
 test("GsplatWebRenderer exposes renderer-owned Exact current-stats receipts", () => {

@@ -36,6 +36,8 @@ const MIN_PROJECTED_TICKET = 2 ** 52;
 const MIN_GPU_PRODUCER_TICKET = 2 ** 51;
 const MAX_GPU_PRODUCER_TICKET = (2 ** 52) - 1;
 const MAX_ORDER_TICKET = (2 ** 51) - 1;
+const MIN_FOCAL_LENGTH_X_OVER_Y = 1 / 65_536;
+const MAX_FOCAL_LENGTH_X_OVER_Y = 65_536;
 const REQUIRED_SURFACE_DEVICE_LIMITS = Object.freeze([
   "maxBindGroups",
   "maxBindingsPerBindGroup",
@@ -523,11 +525,30 @@ export class GsplatWebRenderer {
       intrinsics?.farPlane,
     ];
     values.forEach((value, index) => assertFinite(value, `camera value ${index}`));
+    if (Object.hasOwn(intrinsics ?? {}, "focalLengthXOverY")) {
+      const ratio = intrinsics.focalLengthXOverY;
+      assertFinite(ratio, "camera.intrinsics.focalLengthXOverY");
+      if (ratio < MIN_FOCAL_LENGTH_X_OVER_Y || ratio > MAX_FOCAL_LENGTH_X_OVER_Y) {
+        throw new RangeError(
+          "camera.intrinsics.focalLengthXOverY must be within 2^-16..=2^16",
+        );
+      }
+      values.push(ratio);
+    }
     this.#requireNativeRenderer().setCamera(new Float32Array(values));
   }
 
   cameraReceipt() {
     const values = Array.from(this.#requireNativeRenderer().cameraReceipt());
+    if (!matchesCameraReceiptLength(values.length)
+        || values.some((value) => !Number.isFinite(value))) {
+      throw new TypeError("native camera receipt must contain 10 or 11 finite values");
+    }
+    const focalLengthXOverY = values.length === 11 ? values[10] : 1;
+    if (focalLengthXOverY < MIN_FOCAL_LENGTH_X_OVER_Y
+        || focalLengthXOverY > MAX_FOCAL_LENGTH_X_OVER_Y) {
+      throw new TypeError("native camera receipt has an invalid focal-length ratio");
+    }
     return {
       position: values.slice(0, 3),
       rotationXyzw: values.slice(3, 7),
@@ -535,6 +556,7 @@ export class GsplatWebRenderer {
         verticalFovRadians: values[7],
         nearPlane: values[8],
         farPlane: values[9],
+        focalLengthXOverY,
       },
     };
   }
@@ -1939,6 +1961,10 @@ function assertFinite(value, name) {
   if (!Number.isFinite(value)) {
     throw new TypeError(`${name} must be finite`);
   }
+}
+
+function matchesCameraReceiptLength(length) {
+  return length === 10 || length === 11;
 }
 
 function assertPositiveInteger(value, name) {

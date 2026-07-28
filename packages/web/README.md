@@ -103,6 +103,12 @@ when your application serves the wasm-bindgen files from a different base path.
 `dispose()` and `free()` are equivalent; both release the native wasm renderer
 and mark the wrapper as disposed.
 
+`setCamera()` accepts the historical centered square-pixel intrinsics unchanged.
+Callers that need a calibrated centered pinhole may additionally provide
+`intrinsics.focalLengthXOverY` in the inclusive `2^-16..=2^16` range. Omitting
+it preserves the legacy value `1`; `cameraReceipt()` always reports the actual
+published ratio, including `1` when used with an older ten-value native receipt.
+
 `await renderer.resize(width, height)` is transactional and never calls the
 legacy synchronous native resize. Same-size requests are no-ops; a changed-size
 request requires the native `resizeAsync()` API and resolves only after the new

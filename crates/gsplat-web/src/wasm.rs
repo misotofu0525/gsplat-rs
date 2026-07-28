@@ -626,7 +626,7 @@ impl GsplatWebRenderer {
     #[wasm_bindgen(js_name = setCamera)]
     pub fn set_camera(&mut self, values: Float32Array) -> Result<(), JsValue> {
         let values = values.to_vec();
-        if values.len() != 10 || values.iter().any(|value| !value.is_finite()) {
+        if !matches!(values.len(), 10 | 11) || values.iter().any(|value| !value.is_finite()) {
             return Err(error_code(ErrorCode::InvalidArgument));
         }
         let mut camera = Camera::default();
@@ -635,6 +635,8 @@ impl GsplatWebRenderer {
         camera.intrinsics.vertical_fov_radians = values[7];
         camera.intrinsics.near_plane = values[8];
         camera.intrinsics.far_plane = values[9];
+        camera.intrinsics.focal_length_x_over_y = values.get(10).copied().unwrap_or(1.0);
+        camera.validate().map_err(error_code)?;
         self.session.set_camera(camera).map_err(renderer_error)?;
         self.session.force_sort_refresh();
         self.camera_override = Some(camera);
@@ -656,6 +658,7 @@ impl GsplatWebRenderer {
                 camera.intrinsics.vertical_fov_radians,
                 camera.intrinsics.near_plane,
                 camera.intrinsics.far_plane,
+                camera.intrinsics.focal_length_x_over_y,
             ]
             .as_slice(),
         )
