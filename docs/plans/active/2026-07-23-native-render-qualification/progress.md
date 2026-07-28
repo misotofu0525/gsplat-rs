@@ -1358,3 +1358,27 @@ This is a forward-only evidence-contract slice. It ran no browser or device and
 does not rewrite attempt 8's immutable v1 rejection or derive observations from
 its retained files. A later formal attempt still needs a new reviewed SHA and
 the existing one-shot execution gates.
+
+### Q1 formal attempt 9 terminal and runtime-tree ordering repair (2026-07-28)
+
+Attempt 9 at reviewed SHA
+`6f11ffa4191812d5306a6ac6cc6df2e6d0378a3a` passed two byte-identical dry
+runs, completed all 30 predeclared browser invocations without a producer or
+cleanup blocker, then stopped at final admission. Its immutable v2 result is
+`Rejected`, `evidence_admitted=false`, `performance=null` and
+`workload_timing_observation=null`; no endpoint timing is recovered from it.
+
+The final mismatch was a set-equality bug in the formal PlayCanvas runtime
+tree join. The Node producer and Python lock contained the same 2,389 unique
+paths with identical byte counts and file hashes. Node sorted complete portable
+path strings, while Python's repository lock sorted `Path` components; these
+orders first differ when a directory such as `glb/` has a sibling such as
+`glb-animation`. Hashing the unsafely order-sensitive lists therefore reported
+false content drift.
+
+Admission now validates unique portable relative paths and normalizes the
+producer list to the formal component-wise path order before hashing. It still
+rejects duplicate, absolute, parent-traversing or non-portable paths and any
+real file-set, byte-count or content-hash difference. A later formal attempt
+requires a new reviewed SHA, regenerated same-SHA assets, fresh root and the
+existing one-shot gates; attempt 9 is never reused.

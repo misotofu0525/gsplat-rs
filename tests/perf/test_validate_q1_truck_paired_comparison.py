@@ -50,7 +50,11 @@ from q1_pair_admission.contract import (
     WIDTH,
     WEBGPU_ENVIRONMENT_SCHEMA,
 )
-from q1_pair_admission.evaluate import admission_rejection, evaluate
+from q1_pair_admission.evaluate import (
+    admission_rejection,
+    canonical_runtime_tree_sha256,
+    evaluate,
+)
 
 
 SHA_A = "a" * 64
@@ -1652,6 +1656,42 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
                     "formal WASM lock differs",
                 ):
                     evaluate(schedule)
+
+    def test_runtime_tree_hash_is_independent_of_node_string_order(self) -> None:
+        directory_child = {
+            "path": "src/framework/parsers/glb/extensions/example.js",
+            "bytes": 1,
+            "sha256": SHA_A,
+        }
+        sibling = {
+            "path": "src/framework/parsers/glb-animation.js",
+            "bytes": 2,
+            "sha256": SHA_B,
+        }
+        node_string_order = [sibling, directory_child]
+        python_path_order = [directory_child, sibling]
+        expected = canonical_sha256(python_path_order)
+        self.assertEqual(
+            canonical_runtime_tree_sha256(node_string_order),
+            expected,
+        )
+        self.assertEqual(
+            canonical_runtime_tree_sha256(python_path_order),
+            expected,
+        )
+
+        with self.assertRaisesRegex(ValidationError, "path is invalid"):
+            canonical_runtime_tree_sha256([directory_child, directory_child])
+        with self.assertRaisesRegex(ValidationError, "path is invalid"):
+            canonical_runtime_tree_sha256(
+                [{**directory_child, "path": "../escaped.js"}]
+            )
+        for invalid_path in ("", ".", "a\\b.js", "C:/escaped.js", "a\u0000b.js"):
+            with self.subTest(invalid_path=invalid_path):
+                with self.assertRaises(ValidationError):
+                    canonical_runtime_tree_sha256(
+                        [{**directory_child, "path": invalid_path}]
+                    )
 
     def test_device_effective_limit_mutation_is_rejected_against_actual_receipt(self) -> None:
         self.mutate_manifest(

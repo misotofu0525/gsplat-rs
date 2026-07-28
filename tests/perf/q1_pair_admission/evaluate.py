@@ -30,6 +30,42 @@ from .contract import (
 )
 
 
+def canonical_runtime_tree_sha256(files: Any) -> str:
+    """Hash a runtime tree independently of producer enumeration order.
+
+    The formal Python lock walks ``Path`` components, while the Node producer
+    sorts portable path strings. Both describe the same set but differ around
+    a directory such as ``glb/`` and a sibling such as ``glb-animation``.
+    Normalize to the formal component-wise order after validating that every
+    portable relative path is unique.
+    """
+
+    if not isinstance(files, list):
+        fail("formal PlayCanvas runtime tree files must be an array")
+    seen: set[str] = set()
+    for index, value in enumerate(files):
+        if not isinstance(value, dict):
+            fail(f"formal PlayCanvas runtime tree files[{index}] must be an object")
+        path = string(value, "path", f"formal PlayCanvas runtime tree files[{index}]")
+        portable = pathlib.PurePosixPath(path)
+        if (
+            not path
+            or path == "."
+            or "\\" in path
+            or pathlib.PureWindowsPath(path).drive
+            or any(ord(character) < 32 for character in path)
+            or portable.is_absolute()
+            or ".." in portable.parts
+            or portable.as_posix() != path
+            or path in seen
+        ):
+            fail(f"formal PlayCanvas runtime tree files[{index}].path is invalid")
+        seen.add(path)
+    return canonical_sha256(
+        sorted(files, key=lambda value: pathlib.PurePosixPath(value["path"]))
+    )
+
+
 def evaluate(path: pathlib.Path) -> dict[str, Any]:
     root = path.resolve().parent
     for blocker_name in ("blocker.json", "cleanup-blocker.json"):
@@ -250,8 +286,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         if (
             runtime.get("schema") != "gsplat-playcanvas-runtime-tree/v1"
             or runtime.get("root") != "node_modules/playcanvas/build/playcanvas"
-            or not isinstance(runtime_files, list)
-            or canonical_sha256(runtime_files)
+            or canonical_runtime_tree_sha256(runtime_files)
             != locked_trees[
                 "tests/competitive/playcanvas/node_modules/playcanvas/build/playcanvas"
             ]["sha256"]
