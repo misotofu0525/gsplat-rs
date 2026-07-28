@@ -599,6 +599,92 @@ struct DiagnosticCaptureReceiptRecord {
     feature = "diagnostic-surface-capture-receipt",
     not(target_arch = "wasm32")
 ))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DiagnosticCameraReceiptRecord {
+    trace_frame_index: usize,
+    camera_revision: u64,
+    presentation_sequence: u64,
+    position: [f32; 3],
+    rotation_xyzw: [f32; 4],
+    vertical_fov_radians: f32,
+    near_plane: f32,
+    far_plane: f32,
+    focal_length_x_over_y: f32,
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
+impl DiagnosticCameraReceiptRecord {
+    fn from_presented_capture(
+        trace_frame_index: usize,
+        live: LiveCameraReceipt,
+        capture: &DiagnosticSurfaceCaptureReceipt,
+    ) -> Result<Self, String> {
+        Self::from_presented_identity(
+            trace_frame_index,
+            live,
+            capture.frame_identity().camera_revision(),
+            capture.presentation_sequence(),
+        )
+    }
+
+    fn from_presented_identity(
+        trace_frame_index: usize,
+        live: LiveCameraReceipt,
+        camera_revision: u64,
+        presentation_sequence: u64,
+    ) -> Result<Self, String> {
+        if live.revision != camera_revision {
+            return Err(
+                "diagnostic capture camera receipt does not bind the presented camera revision"
+                    .to_owned(),
+            );
+        }
+        let camera = live.camera;
+        Ok(Self {
+            trace_frame_index,
+            camera_revision: live.revision,
+            presentation_sequence,
+            position: [
+                camera.pose.position.x,
+                camera.pose.position.y,
+                camera.pose.position.z,
+            ],
+            rotation_xyzw: camera.pose.rotation_xyzw,
+            vertical_fov_radians: camera.intrinsics.vertical_fov_radians,
+            near_plane: camera.intrinsics.near_plane,
+            far_plane: camera.intrinsics.far_plane,
+            focal_length_x_over_y: camera.intrinsics.focal_length_x_over_y,
+        })
+    }
+
+    fn line(self) -> String {
+        format!(
+            "SURFACE_DIAGNOSTIC_CAPTURE_CAMERA_RECEIPT trace_frame={} camera_revision={} presentation_sequence={} position_x={} position_y={} position_z={} rotation_x={} rotation_y={} rotation_z={} rotation_w={} vertical_fov_radians={} near_plane={} far_plane={} focal_length_x_over_y={}",
+            self.trace_frame_index,
+            self.camera_revision,
+            self.presentation_sequence,
+            self.position[0],
+            self.position[1],
+            self.position[2],
+            self.rotation_xyzw[0],
+            self.rotation_xyzw[1],
+            self.rotation_xyzw[2],
+            self.rotation_xyzw[3],
+            self.vertical_fov_radians,
+            self.near_plane,
+            self.far_plane,
+            self.focal_length_x_over_y,
+        )
+    }
+}
+
+#[cfg(all(
+    feature = "diagnostic-surface-capture-receipt",
+    not(target_arch = "wasm32")
+))]
 impl DiagnosticCaptureReceiptRecord {
     fn from_receipt(receipt: &DiagnosticSurfaceCaptureReceipt) -> Self {
         let frame = receipt.frame_identity();
@@ -850,6 +936,7 @@ impl<T> CurrentStatsLedger<T> {
 struct PendingReceipt {
     kind: PendingKind,
     output: SurfaceFrameOutput,
+    live_camera: LiveCameraReceipt,
     call_ms: f32,
 }
 
@@ -1297,6 +1384,18 @@ pub(crate) fn run(
                                             )
                                             .line()
                                         );
+                                        match DiagnosticCameraReceiptRecord::from_presented_capture(
+                                            step.trace_frame_index,
+                                            waiting.live_camera,
+                                            &capture_receipt,
+                                        ) {
+                                            Ok(record) => println!("{}", record.line()),
+                                            Err(message) => {
+                                                store_error(&shared_error, message);
+                                                target.exit();
+                                                return;
+                                            }
+                                        }
                                     }
                                 }
                                 terminal_outcome.mark_capture_complete();
@@ -1391,10 +1490,10 @@ pub(crate) fn run(
             };
             let SurfaceRuntimePresentation {
                 output,
+                live_camera,
                 current_stats_submission,
                 capture,
                 call_ms,
-                ..
             } = *presentation;
             match current_stats_submission {
                 SurfaceCurrentStatsSubmission::Issued(submission) => {
@@ -1429,6 +1528,7 @@ pub(crate) fn run(
                         PendingReceipt {
                             kind,
                             output,
+                            live_camera,
                             call_ms,
                         },
                         Instant::now() + RECEIPT_TIMEOUT,
@@ -2497,6 +2597,46 @@ mod tests {
         assert_eq!(
             record.line(),
             "SURFACE_DIAGNOSTIC_CAPTURE_RECEIPT depth_precision_profile=CandidateStable24 projected_cache_precision_profile=CandidateAxes16 projected_axis_record_bytes=8 resident_sh_codec_profile=CandidateSigned8BandScale5 resident_sh_mantissa_bits=8 resident_sh_symmetric_max_code=127 resident_sh_point_scale_bits=5 resident_sh_point_scale_max_code=31 resident_sh_range_chunk_splats=256 resident_sh_source_count=11 resident_sh_encoded_count=11 resident_sh_resident_count=11 resident_sh_addressable_count=11 resident_sh_source_degree=3 resident_sh_resident_degree=3 resident_sh_residual_coefficients_per_source=45 resident_sh_plane_count=3 resident_sh_bytes_per_source=48 scene_generation=1 camera_revision=2 viewport_generation=3 contract_generation=4 plan_set_generation=5 plan_id=GpuPostSort order_generation=6 presentation_sequence=7 width=1920 height=1080 rgba8_sha256=feed"
+        );
+    }
+
+    #[cfg(all(
+        feature = "diagnostic-surface-capture-receipt",
+        not(target_arch = "wasm32")
+    ))]
+    #[test]
+    fn diagnostic_camera_receipt_is_renderer_owned_and_presentation_bound() {
+        let camera = Camera {
+            pose: gsplat_core::CameraPose {
+                position: gsplat_core::Vec3f::new(1.0, 2.0, 3.0),
+                rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            },
+            intrinsics: gsplat_core::CameraIntrinsics {
+                vertical_fov_radians: 0.75,
+                near_plane: 0.01,
+                far_plane: 100.0,
+                focal_length_x_over_y: 1.125,
+            },
+        };
+        let live = LiveCameraReceipt {
+            revision: 9,
+            surface_size: (979, 546),
+            aspect: 979.0 / 546.0,
+            camera,
+            view_matrix: [0.0; 16],
+            projection_matrix: [0.0; 16],
+            view_projection_matrix: [0.0; 16],
+        };
+        let receipt = DiagnosticCameraReceiptRecord::from_presented_identity(0, live, 9, 11)
+            .expect("same-present camera receipt");
+        assert_eq!(
+            receipt.line(),
+            "SURFACE_DIAGNOSTIC_CAPTURE_CAMERA_RECEIPT trace_frame=0 camera_revision=9 presentation_sequence=11 position_x=1 position_y=2 position_z=3 rotation_x=0 rotation_y=0 rotation_z=0 rotation_w=1 vertical_fov_radians=0.75 near_plane=0.01 far_plane=100 focal_length_x_over_y=1.125"
+        );
+        assert!(
+            DiagnosticCameraReceiptRecord::from_presented_identity(0, live, 10, 11)
+                .unwrap_err()
+                .contains("camera revision")
         );
     }
 
