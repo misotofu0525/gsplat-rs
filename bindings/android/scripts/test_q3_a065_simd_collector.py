@@ -726,6 +726,42 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             self.assertEqual(session.install_count, expected_transitions)
             self.assertEqual(session.install_count, 34)
             self.assertLess(session.install_count, 44)
+            self.assertTrue(
+                all(
+                    call.args[3] == 10.0
+                    for call in install_mock.call_args_list
+                )
+            )
+
+    def test_lane_install_timeout_is_capped_below_measurement_timeout(self) -> None:
+        receipts = lane_receipts()
+        receipts["scalar"]["apk_path"] = "build/scalar/sample-app-debug.apk"
+        with tempfile.TemporaryDirectory() as directory:
+            stage = pathlib.Path(directory)
+            session = COLLECTOR.DeviceMatrixSession(
+                "adb", "fixture-serial", stage, receipts
+            )
+            installed = {
+                "device_path": "/data/app/base.apk",
+                **receipts["scalar"]["apk"],
+                "run_as_verified": True,
+            }
+            with (
+                mock.patch.object(COLLECTOR.BASE, "install_apk") as install,
+                mock.patch.object(
+                    COLLECTOR.BASE,
+                    "verify_installed_apk",
+                    return_value=installed,
+                ),
+            ):
+                session.ensure_lane("scalar", 1800.0)
+
+            install.assert_called_once_with(
+                "adb",
+                "fixture-serial",
+                stage / "build/scalar/sample-app-debug.apk",
+                COLLECTOR.Q3_APK_INSTALL_TIMEOUT_SECONDS,
+            )
 
     def test_workload_preparation_pushes_and_copies_only_at_workload_boundaries(self) -> None:
         trace_identity = {"bytes": 17, "sha256": "e" * 64}

@@ -1521,6 +1521,40 @@ class ParsingTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_install_apk_is_one_bounded_non_streaming_attempt(self) -> None:
+        with (
+            mock.patch.object(COLLECTOR, "run_command") as run,
+            mock.patch.object(COLLECTOR.time, "sleep") as sleep,
+        ):
+            COLLECTOR.install_apk(
+                pathlib.Path("adb"),
+                "fixture-serial",
+                pathlib.Path("fixture.apk"),
+                60.0,
+            )
+
+        self.assertEqual(run.call_count, 3)
+        install_args = run.call_args_list[0].args[0]
+        self.assertEqual(
+            install_args,
+            [
+                "adb",
+                "-s",
+                "fixture-serial",
+                "install",
+                "--no-streaming",
+                "--no-fastdeploy",
+                "-r",
+                "fixture.apk",
+            ],
+        )
+        self.assertEqual(run.call_args_list[0].kwargs["timeout"], 60.0)
+        self.assertEqual(
+            sum("install" in call.args[0] for call in run.call_args_list),
+            1,
+        )
+        sleep.assert_called_once_with(2.0)
+
     def test_formal_rejection_requires_marker_and_throwable_reason(self) -> None:
         marker = "I/GsplatExample: formal benchmark artifact rejected"
         self.assertEqual(COLLECTOR.formal_benchmark_rejection(marker), (True, None))

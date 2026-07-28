@@ -594,7 +594,15 @@ def install_apk(
 ) -> None:
     """Install one exact APK once and wait for vendor package queues to settle."""
     run_command(
-        adb_args(adb, serial, "install", "-r", str(apk)),
+        adb_args(
+            adb,
+            serial,
+            "install",
+            "--no-streaming",
+            "--no-fastdeploy",
+            "-r",
+            str(apk),
+        ),
         timeout=timeout_seconds,
     )
     run_command(

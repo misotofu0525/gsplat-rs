@@ -42,6 +42,7 @@ DEFAULT_WARMUP = 20
 DEFAULT_MEASURED = 80
 DEFAULT_CORRECTNESS_FRAMES = 2
 DEFAULT_SEED = 0x5133413036355349
+Q3_APK_INSTALL_TIMEOUT_SECONDS = 60.0
 Q3_LANE_ENV = "GSPLAT_ANDROID_Q3_CPU_LANE"
 PHASE_SCHEMA = "gsplat-q3-android-protocol-phase/v1"
 PARITY_SCHEMA = "gsplat-q3-a065-element-parity/v1"
@@ -152,7 +153,12 @@ class DeviceMatrixSession:
             return self.installed_receipt_path, False
         lane_receipt = self.lane_receipts[lane_name]
         apk = self.stage / lane_receipt["apk_path"]
-        BASE.install_apk(self.adb, self.serial, apk, timeout_seconds)
+        BASE.install_apk(
+            self.adb,
+            self.serial,
+            apk,
+            min(timeout_seconds, Q3_APK_INSTALL_TIMEOUT_SECONDS),
+        )
         installed = BASE.verify_installed_apk(self.adb, self.serial, apk)
         self.install_count += 1
         event = {
