@@ -329,6 +329,7 @@ preflight and inspect the immutable five-pair command plan without starting
 Chrome or creating output:
 
 ```bash
+Q1_PREDECLARED_AT_UTC='<frozen-current-utc-timestamp>'
 PYTHONDONTWRITEBYTECODE=1 python3 \
   tests/perf/collect-q1-truck-paired-series.py \
   --dry-run \
@@ -339,7 +340,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   --chrome /absolute/path/to/Chrome \
   --gsplat-wasm-package /absolute/repo-local/quality-exact-package \
   --reference-authority /absolute/q1-direct-f32-reference-<sha> \
-  --reviewed-sha <full-40-character-sha>
+  --reviewed-sha <full-40-character-sha> \
+  --predeclared-at-utc "$Q1_PREDECLARED_AT_UTC"
 ```
 
 `--dry-run` performs the same complete read-only admission as `--execute`: it
@@ -355,7 +357,9 @@ exist and the series root must not.
 
 After inspecting a successful dry-run, invoke the same command with
 `--execute` instead of `--dry-run`; do not change the reviewed SHA, authority,
-package, Chrome, schedule identity, or destination. `--execute` claims the
+package, Chrome, predeclared timestamp, schedule identity, or destination.
+With identical arguments, dry-run and execute therefore bind byte-identical
+plans and command receipts. `--execute` claims the
 fresh root once, copies the complete authority tree to
 `reference-authority/` without following symlinks, verifies each open source
 file descriptor against the locked tree, then revalidates both source and

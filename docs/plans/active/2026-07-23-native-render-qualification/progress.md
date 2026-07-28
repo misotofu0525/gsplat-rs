@@ -1091,3 +1091,14 @@ after tracker shutdown and a persistently unavailable process-table snapshot.
 This candidate performs no reference generation, Chrome/device run or formal
 comparison. Q1 remains **Active** pending fixed-SHA review, integration, a new
 same-SHA authority artifact and one separately authorized finite execution.
+
+The fixed-SHA review of `33539c8` rejected three remaining authority/schedule
+proof gaps. Its direct-successor repair makes the predeclared UTC timestamp an
+explicit non-future input reused unchanged by dry-run and execute, so identical
+arguments produce byte-identical plans and command receipts. Offline admission
+now joins the formal input, command receipt, execution lock and post-run
+authority identities to every scheduled PNG/RGBA/pose receipt and to a fresh
+semantic re-admission of the complete retained tree. Authority copying now
+anchors root directory descriptors and opens every relative directory/file
+with no-follow `dir_fd` operations, rejecting an intermediate-directory
+symlink swap. These are mechanism tests only; no producer or endpoint ran.

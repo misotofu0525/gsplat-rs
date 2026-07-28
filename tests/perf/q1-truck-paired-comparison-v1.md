@@ -247,6 +247,7 @@ has passed fixed-SHA review. It does not duplicate either renderer collector.
 The default-safe route is print-only:
 
 ```bash
+Q1_PREDECLARED_AT_UTC='<frozen-current-utc-timestamp>'
 PYTHONDONTWRITEBYTECODE=1 python3 \
   tests/perf/collect-q1-truck-paired-series.py \
   --dry-run \
@@ -257,7 +258,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   --chrome /absolute/path/to/Chrome \
   --gsplat-wasm-package /absolute/repo-local/quality-exact-package \
   --reference-authority /absolute/q1-direct-f32-reference-<sha> \
-  --reviewed-sha <full-40-character-sha>
+  --reviewed-sha <full-40-character-sha> \
+  --predeclared-at-utc "$Q1_PREDECLARED_AT_UTC"
 ```
 
 `--dry-run` (also spelled `--print-only`) performs the same complete read-only
@@ -267,9 +269,11 @@ Puppeteer closure and every formal input. It prints the immutable schedule plus
 all 30 commands and creates no series directory, copy, build, artifact or
 browser process.
 
-Formal execution replaces only `--dry-run` with `--execute`. Before the first
-browser action, the collector atomically claims the absent series root, copies
-and revalidates the complete authority under `reference-authority/`, and writes:
+Formal execution replaces only `--dry-run` with `--execute`; the frozen
+predeclared timestamp and every other argument remain byte-identical. Before
+the first browser action, the collector atomically claims the absent series
+root, copies and revalidates the complete authority under
+`reference-authority/`, and writes:
 
 - `schedule-declaration.json`, containing the shared authority receipt plus the
   two PNG, decoded RGBA and pose/intrinsics identities and

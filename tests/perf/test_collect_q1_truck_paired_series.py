@@ -25,6 +25,7 @@ assert SPEC is not None and SPEC.loader is not None
 COLLECTOR = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = COLLECTOR
 SPEC.loader.exec_module(COLLECTOR)
+import q1_pair_admission.artifacts as ADMISSION_ARTIFACTS  # noqa: E402
 from q1_pair_admission.contract import (  # noqa: E402
     TRACE_FRAME_POSE_INTRINSICS_SHA256,
     validate_orchestration,
@@ -106,8 +107,15 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             side_effect=self.admit_authority,
         )
         self.authority_patch.start()
+        self.contract_authority_patch = mock.patch.object(
+            ADMISSION_ARTIFACTS,
+            "reference_authority",
+            side_effect=self.admit_authority,
+        )
+        self.contract_authority_patch.start()
 
     def tearDown(self) -> None:
+        self.contract_authority_patch.stop()
         self.authority_patch.stop()
         self.temp.cleanup()
 
@@ -240,6 +248,69 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "references": self.args.formal_inputs["references"],
         }
 
+    def post_authority(self, locked: dict[str, object]) -> dict[str, object]:
+        authority = locked["reference_authority"]
+        claimed = authority["claimed_pre"]
+        return {
+            "source_pre_sha256": authority["source_pre_sha256"],
+            "source_post_sha256": authority["source_pre_sha256"],
+            "claimed_pre_sha256": authority["claimed_pre_sha256"],
+            "claimed_post_sha256": authority["claimed_pre_sha256"],
+            "receipt_sha256": claimed["receipt_sha256"],
+            "tree_sha256": claimed["tree"]["sha256"],
+        }
+
+    def formal_orchestration_bundle(self, name: str):
+        self.args.series_root = self.root / name
+        self.args.formal_inputs = self.formal_inputs()
+        plan = self.plan()
+        locked = COLLECTOR.claim_series(self.args, plan)
+        post = {
+            "schema": COLLECTOR.POST_RUN_SCHEMA,
+            "verified_at_utc": "2026-07-28T01:00:00Z",
+            "reviewed_commit": self.args.reviewed_sha,
+            "git": {"head": self.args.reviewed_sha, "clean": True},
+            "formal_inputs_sha256": locked["formal_inputs_sha256"],
+            "command_receipt_sha256": locked["command_receipt"]["sha256"],
+            "formal_lock_sha256": COLLECTOR.sha256_path(
+                self.args.series_root / "formal-execution-lock.json"
+            ),
+            "reference_authority": self.post_authority(locked),
+        }
+        document = {
+            "schedule": plan["schedule"],
+            "orchestration": {
+                "formal_execution_lock": locked,
+                "post_run_verification": post,
+            },
+        }
+        commands = json.loads(
+            (self.args.series_root / "commands.json").read_text()
+        )
+        return plan, locked, post, document, commands
+
+    def rewrite_formal_orchestration_bundle(
+        self, locked, post, commands
+    ) -> None:
+        root = self.args.series_root
+        locked["formal_inputs_sha256"] = COLLECTOR.canonical_sha256(
+            locked["formal_inputs"]
+        )
+        commands["formal_inputs_sha256"] = locked["formal_inputs_sha256"]
+        (root / "commands.json").write_bytes(COLLECTOR.json_bytes(commands))
+        locked["command_receipt"]["sha256"] = COLLECTOR.sha256_path(
+            root / "commands.json"
+        )
+        post["formal_inputs_sha256"] = locked["formal_inputs_sha256"]
+        post["command_receipt_sha256"] = locked["command_receipt"]["sha256"]
+        post["reference_authority"] = self.post_authority(locked)
+        (root / "formal-execution-lock.json").write_bytes(
+            COLLECTOR.json_bytes(locked)
+        )
+        post["formal_lock_sha256"] = COLLECTOR.sha256_path(
+            root / "formal-execution-lock.json"
+        )
+
     def test_seeded_schedule_is_deterministic_exactly_five_and_counterbalanced(self) -> None:
         first = COLLECTOR.schedule_orders(20260728)
         self.assertEqual(first, COLLECTOR.schedule_orders(20260728))
@@ -289,7 +360,10 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
             "--reference-authority", str(self.authority_root),
             "--reviewed-sha", self.args.reviewed_sha,
+            "--predeclared-at-utc", self.args.predeclared_at_utc,
         ]
+        frozen_plans = []
+        frozen_commands = []
         for mode in ("--dry-run", "--print-only"):
             with (
                 self.subTest(mode=mode),
@@ -320,7 +394,29 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 self.assertTrue(
                     all(value["decoded_rgba8_sha256"] for value in references)
                 )
+                frozen_plans.append(COLLECTOR.json_bytes(parsed["plan"]))
+                frozen_commands.append(COLLECTOR.json_bytes(parsed["commands"]))
             self.assertFalse(self.series.exists())
+        captured_execute = []
+        with (
+            mock.patch.object(
+                COLLECTOR, "preflight_execute", return_value=self.formal_inputs()
+            ),
+            mock.patch.object(
+                COLLECTOR,
+                "execute",
+                side_effect=lambda _args, plan: captured_execute.append(plan) or 0,
+            ),
+        ):
+            self.assertEqual(COLLECTOR.main(["--execute", *common]), 0)
+        self.assertEqual(len(set(frozen_plans)), 1)
+        self.assertEqual(len(set(frozen_commands)), 1)
+        self.assertEqual(frozen_plans[0], COLLECTOR.json_bytes(captured_execute[0]))
+        self.assertEqual(
+            frozen_commands[0],
+            COLLECTOR.json_bytes(COLLECTOR.command_receipt(captured_execute[0])),
+        )
+        self.assertFalse(self.series.exists())
 
     def test_dry_run_preflight_failure_is_side_effect_free(self) -> None:
         arguments = [
@@ -333,6 +429,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
             "--reference-authority", str(self.authority_root),
             "--reviewed-sha", self.args.reviewed_sha,
+            "--predeclared-at-utc", self.args.predeclared_at_utc,
         ]
         with (
             mock.patch.object(
@@ -348,6 +445,24 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         self.assertIn("quality-exact", stderr.getvalue())
         self.assertFalse(self.series.exists())
 
+    def test_future_predeclared_timestamp_is_rejected_before_admission(self) -> None:
+        arguments = [
+            "--dry-run",
+            "--series-root", str(self.series),
+            "--series-id", self.args.series_id,
+            "--collection-session-id", self.args.collection_session_id,
+            "--seed", str(self.args.seed),
+            "--chrome", str(self.args.chrome),
+            "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
+            "--reference-authority", str(self.authority_root),
+            "--reviewed-sha", self.args.reviewed_sha,
+            "--predeclared-at-utc", "2999-01-01T00:00:00Z",
+        ]
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(COLLECTOR.main(arguments), 2)
+        self.assertIn("must not be in the future", stderr.getvalue())
+        self.assertFalse(self.series.exists())
+
     def test_authority_commit_or_time_mismatch_rejects_before_series_claim(self) -> None:
         common = [
             "--dry-run",
@@ -359,6 +474,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "--gsplat-wasm-package", str(self.args.gsplat_wasm_package),
             "--reference-authority", str(self.authority_root),
             "--reviewed-sha", self.args.reviewed_sha,
+            "--predeclared-at-utc", self.args.predeclared_at_utc,
         ]
         for field, value, message in (
             ("repository_commit", "b" * 40, "commit"),
@@ -390,6 +506,24 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 self.authority_root,
                 self.root / "bad-authority-copy",
                 drifted_tree,
+            )
+
+    def test_authority_copy_rejects_replaced_intermediate_symlink(self) -> None:
+        authority = self.admit_authority(self.authority_root)
+        original = self.authority_root / "producer"
+        moved = self.root / "original-producer"
+        original.rename(moved)
+        attacker = self.root / "attacker-producer"
+        attacker.mkdir()
+        (attacker / "desktop-example").write_bytes(
+            (moved / "desktop-example").read_bytes()
+        )
+        original.symlink_to(attacker, target_is_directory=True)
+        with self.assertRaises(OSError):
+            COLLECTOR.copy_reference_authority(
+                self.authority_root,
+                self.root / "symlink-authority-copy",
+                authority["tree"],
             )
 
     def test_claim_materializes_declaration_commands_and_requests_before_run(self) -> None:
@@ -936,6 +1070,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "formal_lock_sha256": COLLECTOR.sha256_path(
                 self.series / "formal-execution-lock.json"
             ),
+            "reference_authority": self.post_authority(locked),
         }
         document = {
             "schedule": plan["schedule"],
@@ -963,6 +1098,98 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 protocol_sha=plan["protocol_sha256"],
             )
 
+    def test_offline_orchestration_rejects_authority_join_tampering(self) -> None:
+        for field in (
+            "rgba",
+            "pose",
+            "receipt",
+            "receipt_path",
+            "commands",
+            "post",
+        ):
+            with self.subTest(field=field):
+                plan, locked, post, document, commands = (
+                    self.formal_orchestration_bundle(f"tamper-{field}")
+                )
+                if field == "rgba":
+                    locked["formal_inputs"]["references"][0][
+                        "rgba8_sha256"
+                    ] = "e" * 64
+                elif field == "pose":
+                    locked["formal_inputs"]["references"][0][
+                        "pose_intrinsics_sha256"
+                    ] = "e" * 64
+                elif field == "receipt":
+                    locked["formal_inputs"]["references"][0][
+                        "authority_receipt_sha256"
+                    ] = "e" * 64
+                elif field == "receipt_path":
+                    locked["formal_inputs"]["references"][0][
+                        "authority_receipt_path"
+                    ] = "other-authority/reference.json"
+                self.rewrite_formal_orchestration_bundle(locked, post, commands)
+                if field == "commands":
+                    commands["reference_authority"]["series_root"] = "forged"
+                    self.rewrite_formal_orchestration_bundle(
+                        locked, post, commands
+                    )
+                elif field == "post":
+                    post["reference_authority"]["source_post_sha256"] = "e" * 64
+                with self.assertRaisesRegex(ValueError, "authority|command receipt"):
+                    validate_orchestration(
+                        document,
+                        self.args.series_root,
+                        series_id=plan["series_id"],
+                        schedule_sha=plan["schedule_sha256"],
+                        protocol_sha=plan["protocol_sha256"],
+                    )
+
+    def test_self_consistent_forged_formal_tree_rejects_actual_retained_tree(self) -> None:
+        plan, locked, post, document, commands = self.formal_orchestration_bundle(
+            "tamper-tree"
+        )
+        formal_authority = locked["formal_inputs"]["reference_authority"]
+        forged_entry = {
+            "path": "forged-support.log",
+            "bytes": 6,
+            "sha256": hashlib.sha256(b"forged").hexdigest(),
+        }
+        formal_authority["tree"]["files"].append(forged_entry)
+        formal_authority["tree"]["files"].sort(key=lambda value: value["path"])
+        formal_authority["tree"]["file_count"] += 1
+        formal_authority["tree"]["bytes"] += forged_entry["bytes"]
+        formal_authority["tree"]["sha256"] = COLLECTOR.canonical_sha256(
+            formal_authority["tree"]["files"]
+        )
+        commands["reference_authority"] = {
+            "source": formal_authority,
+            "series_root": "reference-authority",
+            "series_receipt_path": "reference-authority/reference.json",
+            "series_files": [
+                {
+                    **entry,
+                    "destination": f"reference-authority/{entry['path']}",
+                }
+                for entry in formal_authority["tree"]["files"]
+            ],
+        }
+        claimed = json.loads(json.dumps(formal_authority))
+        claimed["root_path"] = "reference-authority"
+        locked["reference_authority"] = {
+            "source_pre_sha256": COLLECTOR.canonical_sha256(formal_authority),
+            "claimed_pre": claimed,
+            "claimed_pre_sha256": COLLECTOR.canonical_sha256(claimed),
+        }
+        self.rewrite_formal_orchestration_bundle(locked, post, commands)
+        with self.assertRaisesRegex(ValueError, "retained authority"):
+            validate_orchestration(
+                document,
+                self.args.series_root,
+                series_id=plan["series_id"],
+                schedule_sha=plan["schedule_sha256"],
+                protocol_sha=plan["protocol_sha256"],
+            )
+
     def test_postprocess_chrome_must_equal_frozen_browser(self) -> None:
         self.args.formal_inputs = self.formal_inputs()
         plan = self.plan()
@@ -982,6 +1209,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     "formal_lock_sha256": COLLECTOR.sha256_path(
                         self.series / "formal-execution-lock.json"
                     ),
+                    "reference_authority": self.post_authority(locked),
                 },
             },
         }

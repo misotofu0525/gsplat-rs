@@ -829,49 +829,133 @@ def copy_reference_authority(
 ) -> None:
     """Copy the frozen regular-file tree without ever following a symlink."""
 
-    destination.mkdir()
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    for entry in tree["files"]:
-        relative = pathlib.Path(entry["path"])
-        require(
-            not relative.is_absolute() and ".." not in relative.parts,
-            "authority tree contains an unsafe relative path",
-        )
-        source_path = source / relative
-        destination_path = destination / relative
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-        source_fd = os.open(source_path, os.O_RDONLY | nofollow)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_read_flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_write_flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+    def open_relative_directory(
+        root_fd: int, parts: tuple[str, ...], *, create: bool
+    ) -> int:
+        current = os.dup(root_fd)
         try:
-            source_stat = os.fstat(source_fd)
-            require(
-                stat.S_ISREG(source_stat.st_mode),
-                f"authority source changed type before copy: {relative.as_posix()}",
+            for part in parts:
+                require(
+                    part not in {"", ".", ".."},
+                    "authority tree contains an unsafe path",
+                )
+                if create:
+                    try:
+                        os.mkdir(part, mode=0o755, dir_fd=current)
+                    except FileExistsError:
+                        pass
+                next_fd = os.open(part, directory_flags, dir_fd=current)
+                os.close(current)
+                current = next_fd
+            return current
+        except BaseException:
+            os.close(current)
+            raise
+
+    # Anchor both trees once, then resolve every authority-relative component
+    # with openat-style dir_fd calls. This prevents a checked intermediate
+    # authority directory from being replaced by a symlink during the copy.
+    source_root_fd = os.open(source, directory_flags)
+    try:
+        destination_parent_fd = os.open(destination.parent, directory_flags)
+        try:
+            os.mkdir(destination.name, mode=0o755, dir_fd=destination_parent_fd)
+            destination_root_fd = os.open(
+                destination.name, directory_flags, dir_fd=destination_parent_fd
             )
-            require(
-                source_stat.st_size == entry["bytes"],
-                f"authority source size drifted before copy: {relative.as_posix()}",
-            )
-            copied_hash = hashlib.sha256()
-            copied_bytes = 0
-            with os.fdopen(source_fd, "rb", closefd=False) as source_file:
-                with destination_path.open("xb") as destination_file:
-                    while True:
-                        chunk = source_file.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        copied_hash.update(chunk)
-                        copied_bytes += len(chunk)
-                        destination_file.write(chunk)
-                    destination_file.flush()
-                    os.fsync(destination_file.fileno())
-            require(
-                copied_bytes == entry["bytes"]
-                and copied_hash.hexdigest() == entry["sha256"],
-                f"authority source content drifted during copy: {relative.as_posix()}",
-            )
-            os.chmod(destination_path, stat.S_IMODE(source_stat.st_mode))
+            try:
+                for entry in tree["files"]:
+                    relative = pathlib.PurePosixPath(entry["path"])
+                    require(
+                        not relative.is_absolute()
+                        and relative.name not in {"", ".", ".."}
+                        and ".." not in relative.parts,
+                        "authority tree contains an unsafe relative path",
+                    )
+                    source_parent_fd = open_relative_directory(
+                        source_root_fd, tuple(relative.parts[:-1]), create=False
+                    )
+                    destination_directory_fd = open_relative_directory(
+                        destination_root_fd, tuple(relative.parts[:-1]), create=True
+                    )
+                    try:
+                        source_fd = os.open(
+                            relative.name,
+                            file_read_flags,
+                            dir_fd=source_parent_fd,
+                        )
+                        destination_fd = None
+                        try:
+                            destination_fd = os.open(
+                                relative.name,
+                                file_write_flags,
+                                mode=0o600,
+                                dir_fd=destination_directory_fd,
+                            )
+                            source_stat = os.fstat(source_fd)
+                            require(
+                                stat.S_ISREG(source_stat.st_mode),
+                                f"authority source changed type before copy: {entry['path']}",
+                            )
+                            require(
+                                source_stat.st_size == entry["bytes"],
+                                f"authority source size drifted before copy: {entry['path']}",
+                            )
+                            copied_hash = hashlib.sha256()
+                            copied_bytes = 0
+                            with os.fdopen(
+                                source_fd, "rb", closefd=False
+                            ) as source_file:
+                                with os.fdopen(
+                                    destination_fd, "wb", closefd=False
+                                ) as destination_file:
+                                    while True:
+                                        chunk = source_file.read(1024 * 1024)
+                                        if not chunk:
+                                            break
+                                        copied_hash.update(chunk)
+                                        copied_bytes += len(chunk)
+                                        destination_file.write(chunk)
+                                    destination_file.flush()
+                                    os.fsync(destination_fd)
+                            require(
+                                copied_bytes == entry["bytes"]
+                                and copied_hash.hexdigest() == entry["sha256"],
+                                f"authority source content drifted during copy: {entry['path']}",
+                            )
+                            os.fchmod(
+                                destination_fd, stat.S_IMODE(source_stat.st_mode)
+                            )
+                        finally:
+                            if destination_fd is not None:
+                                os.close(destination_fd)
+                            os.close(source_fd)
+                    finally:
+                        os.close(destination_directory_fd)
+                        os.close(source_parent_fd)
+            finally:
+                os.close(destination_root_fd)
         finally:
-            os.close(source_fd)
+            os.close(destination_parent_fd)
+    finally:
+        os.close(source_root_fd)
 
 
 def utc_now() -> str:
@@ -2368,6 +2452,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gsplat-wasm-package", type=pathlib.Path, required=True)
     parser.add_argument("--reference-authority", type=pathlib.Path, required=True)
     parser.add_argument("--reviewed-sha", required=True)
+    parser.add_argument("--predeclared-at-utc", required=True)
     parser.add_argument("--gsplat-port-base", type=int, default=43000)
     args = parser.parse_args(argv)
     args.series_root = args.series_root.resolve()
@@ -2381,6 +2466,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         and all(character in "0123456789abcdef" for character in args.reviewed_sha),
         "--reviewed-sha must be a full lowercase Git SHA",
     )
+    try:
+        predeclared_at = utc(args.predeclared_at_utc, "--predeclared-at-utc")
+    except ValidationError as error:
+        raise OrchestrationError(str(error)) from error
+    require(
+        predeclared_at <= datetime.now(timezone.utc),
+        "--predeclared-at-utc must not be in the future",
+    )
     require(
         1024 <= args.gsplat_port_base <= 65520,
         "--gsplat-port-base must leave room for 15 predeclared ports",
@@ -2391,7 +2484,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
-        args.predeclared_at_utc = utc_now()
         args.reference_authority_admission = validate_reference_authority_input(
             args, args.predeclared_at_utc
         )

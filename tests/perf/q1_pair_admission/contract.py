@@ -373,6 +373,119 @@ def _validate_command_environments(
             fail(f"schedule orchestration command {index} producer timeout is not frozen")
 
 
+def _authority_identity(
+    value: Any,
+    context: str,
+    *,
+    expected_root: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "root_path",
+        "receipt_path",
+        "receipt_sha256",
+        "repository_commit",
+        "release_binary_sha256",
+        "generated_at_utc",
+        "tree",
+        "views",
+    }:
+        fail(f"{context} fields are not frozen")
+    root_path = string(value, "root_path", context)
+    if expected_root is not None and root_path != expected_root:
+        fail(f"{context}.root_path mismatch")
+    if value.get("receipt_path") != "reference.json":
+        fail(f"{context}.receipt_path mismatch")
+    sha256(value.get("receipt_sha256"), f"{context}.receipt_sha256")
+    commit = string(value, "repository_commit", context)
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        fail(f"{context}.repository_commit must be a full lowercase Git SHA")
+    sha256(value.get("release_binary_sha256"), f"{context}.release_binary_sha256")
+    utc(value.get("generated_at_utc"), f"{context}.generated_at_utc")
+    tree = obj(value, "tree", context)
+    if set(tree) != {"file_count", "bytes", "sha256", "files"}:
+        fail(f"{context}.tree fields are not frozen")
+    files = array(tree, "files", f"{context}.tree")
+    paths: set[str] = set()
+    for index, entry in enumerate(files):
+        item_context = f"{context}.tree.files[{index}]"
+        if not isinstance(entry, dict) or set(entry) != {"path", "bytes", "sha256"}:
+            fail(f"{item_context} fields are not frozen")
+        path = string(entry, "path", item_context)
+        relative = pathlib.PurePosixPath(path)
+        if relative.is_absolute() or ".." in relative.parts or path in paths:
+            fail(f"{item_context}.path is unsafe or repeated")
+        paths.add(path)
+        if integer(entry, "bytes", item_context) < 0:
+            fail(f"{item_context}.bytes must be non-negative")
+        sha256(entry.get("sha256"), f"{item_context}.sha256")
+    if (
+        integer(tree, "file_count", f"{context}.tree") != len(files)
+        or integer(tree, "bytes", f"{context}.tree")
+        != sum(entry["bytes"] for entry in files)
+        or sha256(tree.get("sha256"), f"{context}.tree.sha256")
+        != canonical_sha256(files)
+        or "reference.json" not in paths
+    ):
+        fail(f"{context}.tree identity mismatch")
+    views = array(value, "views", context)
+    seen: set[int] = set()
+    for index, view in enumerate(views):
+        view_context = f"{context}.views[{index}]"
+        if not isinstance(view, dict) or set(view) != {
+            "trace_frame_index",
+            "path",
+            "sha256",
+            "decoded_rgba8_sha256",
+            "pose_intrinsics_sha256",
+        }:
+            fail(f"{view_context} fields are not frozen")
+        trace = integer(view, "trace_frame_index", view_context)
+        path = string(view, "path", view_context)
+        if trace not in {0, 1} or trace in seen or path not in paths:
+            fail(f"{view_context} trace/path identity mismatch")
+        seen.add(trace)
+        sha256(view.get("sha256"), f"{view_context}.sha256")
+        sha256(view.get("decoded_rgba8_sha256"), f"{view_context}.decoded_rgba8_sha256")
+        sha256(view.get("pose_intrinsics_sha256"), f"{view_context}.pose_intrinsics_sha256")
+    if seen != {0, 1}:
+        fail(f"{context}.views must bind both frozen traces")
+    return value
+
+
+def _retained_authority_identity(root: pathlib.Path) -> dict[str, Any]:
+    # Import lazily because artifacts owns the semantic authority parser and
+    # imports this module's frozen schedule constants.
+    from .artifacts import reference_authority
+
+    authority_root = root / "reference-authority"
+    authority = reference_authority(authority_root)
+    return {
+        "root_path": "reference-authority",
+        "receipt_path": "reference.json",
+        "receipt_sha256": authority["receipt_sha256"],
+        "repository_commit": authority["repository_commit"],
+        "release_binary_sha256": authority["release_binary_sha256"],
+        "generated_at_utc": authority["generated_at_utc"],
+        "tree": authority["tree"],
+        "views": [
+            {
+                "trace_frame_index": trace,
+                "path": pathlib.Path(authority["views"][trace]["path"])
+                .relative_to(authority_root)
+                .as_posix(),
+                "sha256": authority["views"][trace]["sha256"],
+                "decoded_rgba8_sha256": authority["views"][trace][
+                    "decoded_rgba8_sha256"
+                ],
+                "pose_intrinsics_sha256": authority["views"][trace][
+                    "pose_intrinsics_sha256"
+                ],
+            }
+            for trace in (0, 1)
+        ],
+    }
+
+
 def validate_orchestration(
     document: dict[str, Any],
     root: pathlib.Path,
@@ -486,6 +599,12 @@ def validate_orchestration(
         fail("schedule orchestration Puppeteer production module graph is not closed")
     if puppeteer_modules.get("sha256") != canonical_sha256(module_packages):
         fail("schedule orchestration Puppeteer production module digest mismatch")
+    formal_authority = _authority_identity(
+        formal.get("reference_authority"),
+        "schedule.orchestration.formal_inputs.reference_authority",
+    )
+    if formal_authority["repository_commit"] != reviewed:
+        fail("schedule orchestration reference authority commit mismatch")
     references = array(formal, "references", "schedule.orchestration.formal_inputs")
     scheduled_references = {
         value.get("trace_frame_index"): value
@@ -503,7 +622,30 @@ def validate_orchestration(
             fail("schedule orchestration reference path/trace mismatch")
         if sha256(value.get("sha256"), "reference sha256") != scheduled.get("sha256"):
             fail("schedule orchestration reference digest mismatch")
-        sha256(value.get("rgba8_sha256"), "reference RGBA8 sha256")
+        authority_view = next(
+            item for item in formal_authority["views"]
+            if item["trace_frame_index"] == trace
+        )
+        expected_series_path = f"reference-authority/{authority_view['path']}"
+        expected_receipt_path = "reference-authority/reference.json"
+        if (
+            value.get("sha256") != authority_view["sha256"]
+            or value.get("rgba8_sha256") != authority_view["decoded_rgba8_sha256"]
+            or value.get("pose_intrinsics_sha256") != authority_view["pose_intrinsics_sha256"]
+            or value.get("series_path") != expected_series_path
+            or scheduled.get("path") != expected_series_path
+            or value.get("authority_receipt_path") != expected_receipt_path
+            or scheduled.get("authority_receipt_path") != expected_receipt_path
+            or value.get("authority_receipt_sha256")
+            != formal_authority["receipt_sha256"]
+            or scheduled.get("decoded_rgba8_sha256")
+            != authority_view["decoded_rgba8_sha256"]
+            or scheduled.get("pose_intrinsics_sha256")
+            != authority_view["pose_intrinsics_sha256"]
+            or scheduled.get("authority_receipt_sha256")
+            != formal_authority["receipt_sha256"]
+        ):
+            fail("schedule orchestration reference authority join mismatch")
         if (value.get("width"), value.get("height"), value.get("pixel_format")) != (
             WIDTH,
             HEIGHT,
@@ -516,6 +658,18 @@ def validate_orchestration(
     if file_sha256(command_path) != command_sha or command.get("invocation_count") != 30:
         fail("schedule orchestration command receipt identity mismatch")
     commands = load_json(command_path, "schedule orchestration command receipt")
+    expected_commands_authority = {
+        "source": formal_authority,
+        "series_root": "reference-authority",
+        "series_receipt_path": "reference-authority/reference.json",
+        "series_files": [
+            {
+                **entry,
+                "destination": f"reference-authority/{entry['path']}",
+            }
+            for entry in formal_authority["tree"]["files"]
+        ],
+    }
     if (
         commands.get("schema") != COMMANDS_SCHEMA
         or commands.get("reviewed_commit") != reviewed
@@ -524,11 +678,31 @@ def validate_orchestration(
         or commands.get("protocol_sha256") != protocol_sha
         or commands.get("invocation_count") != 30
         or len(commands.get("invocations", [])) != 30
+        or commands.get("reference_authority") != expected_commands_authority
     ):
         fail("schedule orchestration command receipt is not frozen to this series")
     _validate_command_environments(commands, browser["path"], root)
     if locked.get("timeouts_seconds") != PROCESS_TIMEOUTS_SECONDS:
         fail("schedule orchestration execution lock timeouts are not frozen")
+    authority_lock = obj(
+        locked, "reference_authority", "schedule.orchestration.formal_execution_lock"
+    )
+    claimed_pre = _authority_identity(
+        authority_lock.get("claimed_pre"),
+        "schedule.orchestration.formal_execution_lock.reference_authority.claimed_pre",
+        expected_root="reference-authority",
+    )
+    expected_claimed = {**formal_authority, "root_path": "reference-authority"}
+    if (
+        set(authority_lock)
+        != {"source_pre_sha256", "claimed_pre", "claimed_pre_sha256"}
+        or authority_lock.get("source_pre_sha256") != canonical_sha256(formal_authority)
+        or claimed_pre != expected_claimed
+        or authority_lock.get("claimed_pre_sha256") != canonical_sha256(claimed_pre)
+    ):
+        fail("schedule orchestration formal authority lock mismatch")
+    if claimed_pre != _retained_authority_identity(root):
+        fail("schedule orchestration retained authority does not match its formal lock")
     lock_path = root / "formal-execution-lock.json"
     if load_json(lock_path, "formal execution lock file") != locked:
         fail("schedule orchestration embedded/file lock mismatch")
@@ -543,6 +717,18 @@ def validate_orchestration(
         or post.get("formal_lock_sha256") != file_sha256(lock_path)
     ):
         fail("schedule orchestration post-run verification does not rebind the formal lock")
+    post_authority = obj(
+        post, "reference_authority", "schedule.orchestration.post_run_verification"
+    )
+    if post_authority != {
+        "source_pre_sha256": authority_lock["source_pre_sha256"],
+        "source_post_sha256": authority_lock["source_pre_sha256"],
+        "claimed_pre_sha256": authority_lock["claimed_pre_sha256"],
+        "claimed_post_sha256": authority_lock["claimed_pre_sha256"],
+        "receipt_sha256": formal_authority["receipt_sha256"],
+        "tree_sha256": formal_authority["tree"]["sha256"],
+    }:
+        fail("schedule orchestration post-run authority join mismatch")
     utc(post.get("verified_at_utc"), "schedule.orchestration.post_run_verification.verified_at_utc")
     return {
         "reviewed_commit": reviewed,
@@ -553,6 +739,7 @@ def validate_orchestration(
         "repository_files": repository_files,
         "repository_trees": repository_trees,
         "puppeteer_production_modules": puppeteer_modules,
+        "reference_authority": formal_authority,
     }
 
 
