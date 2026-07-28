@@ -132,7 +132,7 @@ pub(crate) fn configure(
 pub(crate) fn run_surface_event_loop<F>(
     event_loop: EventLoop<()>,
     window: Arc<winit::window::Window>,
-    expected_size: (u32, u32),
+    expected_window_size: (u32, u32),
     label: &'static str,
     error: Arc<Mutex<Option<String>>>,
     completed: Arc<AtomicBool>,
@@ -161,15 +161,15 @@ where
             Event::WindowEvent {
                 window_id: id,
                 event: WindowEvent::Resized(size),
-            } if id == window_id && (size.width, size.height) != expected_size => {
-                store_error(
-                    &error,
-                    format!(
-                        "{label} resize {}x{} violates {}x{}",
-                        size.width, size.height, expected_size.0, expected_size.1
-                    ),
-                );
-                target.exit();
+            } if id == window_id => {
+                if let Err(message) = validate_window_container_size(
+                    expected_window_size,
+                    (size.width, size.height),
+                    label,
+                ) {
+                    store_error(&error, message);
+                    target.exit();
+                }
             }
             Event::WindowEvent {
                 window_id: id,
@@ -180,6 +180,20 @@ where
             _ => {}
         })
         .map_err(|error| format!("{label} event loop failed: {error}"))
+}
+
+fn validate_window_container_size(
+    expected: (u32, u32),
+    actual: (u32, u32),
+    label: &str,
+) -> Result<(), String> {
+    if actual != expected {
+        return Err(format!(
+            "{label} window resize {}x{} violates frozen container {}x{}",
+            actual.0, actual.1, expected.0, expected.1
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1179,10 +1193,11 @@ pub(crate) fn run(
     ))]
     let mut validated_multi_captures = Vec::<ValidatedDiagnosticCapture>::new();
 
+    let window_container = window.inner_size();
     run_surface_event_loop(
         event_loop,
         Arc::clone(&window),
-        identity.resolution.requested,
+        (window_container.width, window_container.height),
         "surface evidence",
         Arc::clone(&shared_error),
         Arc::clone(&shared_completed),
@@ -2385,6 +2400,26 @@ fn nonempty_adapter_field(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viewer::SurfaceResolutionReceipt;
+
+    #[test]
+    fn odd_width_window_container_is_independent_from_exact_drawable_receipt() {
+        let render =
+            SurfaceResolutionReceipt::validated((979, 546), (979, 546), (979, 546)).unwrap();
+        assert!(render.full_resolution());
+
+        // AppKit may round a 979px request to a 980px top-level container at
+        // 2x backing scale. Freeze the observed container; do not rewrite the
+        // independently configured Surface/drawable receipt.
+        assert_eq!(
+            validate_window_container_size((980, 546), (980, 546), "surface evidence"),
+            Ok(())
+        );
+        let error =
+            validate_window_container_size((980, 546), (979, 546), "surface evidence").unwrap_err();
+        assert!(error.contains("979x546"));
+        assert!(error.contains("frozen container 980x546"));
+    }
 
     #[test]
     fn live_f32_matrices_are_recomputed_close_to_frozen_trace() {

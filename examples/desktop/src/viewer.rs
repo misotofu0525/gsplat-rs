@@ -25,8 +25,6 @@ use gsplat_render_wgpu::{
     SurfaceOrderMeasurementUnsampledReason, SurfaceProjectedDrawPolicy, SurfaceRasterExecutionPlan,
     SurfaceRenderSession, SurfaceTimingSource,
 };
-#[cfg(all(feature = "interactive-viewer", target_os = "macos"))]
-use winit::platform::macos::WindowAttributesExtMacOS;
 #[cfg(feature = "interactive-viewer")]
 use winit::{
     dpi::PhysicalSize,
@@ -55,11 +53,6 @@ pub(crate) fn run(args: &Args, trace_playback: Option<&CameraTracePlayback>) -> 
     run_interactive(args, renderer, camera, trace_playback)
 }
 
-#[cfg(all(feature = "interactive-viewer", target_os = "macos"))]
-pub(crate) fn uses_macos_dpr1_evidence_backing(args: &Args) -> bool {
-    args.surface_diagnostic_capture_receipt
-}
-
 #[cfg(feature = "interactive-viewer")]
 #[allow(deprecated)] // winit 0.30 compatibility; migrate both loops to ApplicationHandler together.
 fn run_interactive(
@@ -70,24 +63,14 @@ fn run_interactive(
 ) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|err| format!("event loop creation failed: {err}"))?;
-    let window_attributes = WindowAttributes::default()
-        .with_title("gsplat-rs viewer")
-        .with_visible(trace_playback.is_none())
-        .with_inner_size(PhysicalSize::new(args.config.width, args.config.height));
-    #[cfg(target_os = "macos")]
-    let window_attributes = if uses_macos_dpr1_evidence_backing(args) {
-        // A 979px high-DPI width becomes 489.5 AppKit points and is rounded to
-        // 980px for a top-level window. Formal quality already uses a DPR-1
-        // backing in both endpoints, so request the same 1x backing here. The
-        // wgpu Surface, presented drawable and renderer-owned capture remain
-        // exactly 979x546; no crop or resample is introduced.
-        window_attributes.with_disallow_hidpi(true)
-    } else {
-        window_attributes
-    };
     let window = Arc::new(
         event_loop
-            .create_window(window_attributes)
+            .create_window(
+                WindowAttributes::default()
+                    .with_title("gsplat-rs viewer")
+                    .with_visible(trace_playback.is_none())
+                    .with_inner_size(PhysicalSize::new(args.config.width, args.config.height)),
+            )
             .map_err(|err| format!("window creation failed: {err}"))?,
     );
     let orbit_target = renderer

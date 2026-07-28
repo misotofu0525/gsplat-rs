@@ -1736,10 +1736,20 @@ backing conversion: a 979-pixel width at the default 2x backing scale becomes a
 half logical point and AppKit reports 980. It is not Truck admission, Metal
 capacity, sorting or raster failure.
 
-The narrow correction applies only to the macOS renderer-owned diagnostic
-capture host: it asks winit for a 1x backing window, matching the browser
-quality endpoint's DPR-1 backing contract. The wgpu Surface, presented drawable
-and renderer-owned capture remain the requested 979x546. No endpoint image is
-cropped, resized or resampled, and ordinary interactive windows retain their
-existing high-DPI behavior. A new endpoint execution remains deferred until
-this platform correction passes compile/tests and fixed-SHA review.
+The narrow correction separates the OS window container from the render
+resolution instead of disabling high DPI. The diagnostic event loop freezes
+the actual container size reported immediately after creation and rejects any
+later resize. Independently, wgpu Metal configures `CAMetalLayer.drawableSize`
+from the exact Surface extent, and renderer receipts still require Surface,
+presented drawable and capture to be 979x546. No endpoint image is cropped,
+resized or resampled, and ordinary interactive rendering is unchanged. A new
+endpoint execution remains deferred until this platform correction passes
+compile/tests and fixed-SHA review.
+
+The preceding `18131f6` attempt to use winit's macOS
+`with_disallow_hidpi(true)` was rejected before another endpoint execution.
+Inspection of locked winit 0.30.12 showed that the option only changes the
+NSView OpenGL-surface preference after NSWindow creation; it does not control
+the `backingScaleFactor` conversion that produced the 980-pixel container.
+That commit is therefore superseded by the container/drawable separation above
+and is not endpoint evidence.

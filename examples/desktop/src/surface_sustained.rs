@@ -632,10 +632,11 @@ pub(crate) fn run(
     let mut cadence = Cadence::starting_now();
     let mut drain_started_ns = None::<u64>;
 
+    let window_container = window.inner_size();
     run_surface_event_loop(
         event_loop,
         Arc::clone(&window),
-        identity.resolution.requested,
+        (window_container.width, window_container.height),
         "Q1 sustained",
         Arc::clone(&shared_error),
         Arc::clone(&shared_completed),
