@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import dataclasses
-import datetime
+import ctypes
+import errno
 import hashlib
 import json
+import math
 import os
 import pathlib
 import shutil
 import struct
+import sys
 from fractions import Fraction
 from typing import Any
 
 
 SCHEMA = "gsplat-q1-product-quality-authority/v1"
 AUTHORITY_CLASS = "upstream_source_camera_images"
+MAX_RECEIPT_BYTES = 64 * 1024
 
 
 class AuthorityError(ValueError):
@@ -83,12 +87,83 @@ def fail(message: str) -> None:
     raise AuthorityError(message)
 
 
+def validate_spec(spec: AuthoritySpec) -> None:
+    file_specs = (spec.archive, *spec.files)
+    names = [item.name for item in file_specs]
+    if len(set(names)) != len(names):
+        fail("authority spec file names must be unique")
+    for item in file_specs:
+        path = pathlib.PurePosixPath(item.name)
+        if (
+            not item.name
+            or path.name != item.name
+            or "\\" in item.name
+            or any(ord(character) < 32 for character in item.name)
+            or item.bytes <= 0
+            or len(item.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in item.sha256)
+        ):
+            fail("authority spec contains an invalid file identity")
+    if (
+        len(set(spec.image_names)) != len(spec.image_names)
+        or not set(spec.image_names).issubset({item.name for item in spec.files})
+    ):
+        fail("authority spec image names are invalid")
+
+
+def publish_directory_noreplace(staging: pathlib.Path, output: pathlib.Path) -> None:
+    """Atomically publish a directory without ever replacing an existing path."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    source = os.fsencode(staging)
+    destination = os.fsencode(output)
+    if sys.platform == "darwin" and hasattr(libc, "renamex_np"):
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(source, destination, 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(-100, source, -100, destination, 0x00000001)
+    elif os.name == "nt":
+        try:
+            os.rename(staging, output)
+        except FileExistsError:
+            fail(f"output already exists: {output}")
+        return
+    else:
+        fail("atomic no-replace directory publication is unsupported")
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        fail(f"output already exists: {output}")
+    raise OSError(error, os.strerror(error), output)
+
+
 def sha256(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_json(value: Any) -> str:
+    try:
+        return json.dumps(
+            value, allow_nan=False, separators=(",", ":"), sort_keys=True
+        )
+    except (TypeError, ValueError) as error:
+        fail(f"authority contains non-canonical JSON: {error}")
 
 
 def checked_file(root: pathlib.Path, spec: FileSpec) -> pathlib.Path:
@@ -150,7 +225,14 @@ def parse_pinhole_camera(path: pathlib.Path) -> dict[str, Any]:
         offset += 56
         if model_id != 1:
             fail("cameras.bin: product authority requires COLMAP PINHOLE")
-        if camera_id in cameras or width <= 0 or height <= 0:
+        if (
+            camera_id in cameras
+            or width <= 0
+            or height <= 0
+            or not all(math.isfinite(value) for value in params)
+            or params[0] <= 0.0
+            or params[1] <= 0.0
+        ):
             fail("cameras.bin: invalid or duplicate camera")
         cameras[camera_id] = {
             "camera_id": camera_id,
@@ -179,6 +261,9 @@ def parse_selected_images(
     offset = 8
     found: dict[str, dict[str, Any]] = {}
     seen_names: set[str] = set()
+    seen_ids: set[int] = set()
+    if len(set(selected)) != len(selected):
+        fail("selected image names must be unique")
     for metadata_index in range(count):
         if offset + 64 > len(data):
             fail("images.bin: truncated image record")
@@ -204,9 +289,17 @@ def parse_selected_images(
         if point_bytes > len(data) - offset:
             fail("images.bin: truncated points2D")
         offset += point_bytes
-        if name in seen_names:
-            fail(f"images.bin: duplicate image name {name}")
+        if name in seen_names or image_id in seen_ids:
+            fail(f"images.bin: duplicate image identity {name}")
         seen_names.add(name)
+        seen_ids.add(image_id)
+        quaternion_norm = math.sqrt(sum(value * value for value in qvec))
+        if (
+            not all(math.isfinite(value) for value in (*qvec, *tvec))
+            or not math.isfinite(quaternion_norm)
+            or abs(quaternion_norm - 1.0) > 1.0e-9
+        ):
+            fail(f"images.bin: {name} has invalid pose")
         if name in selected:
             camera = cameras.get(camera_id)
             if camera is None:
@@ -231,6 +324,9 @@ def receipt_for_source(
     *,
     spec: AuthoritySpec = OFFICIAL_SPEC,
 ) -> dict[str, Any]:
+    validate_spec(spec)
+    if source.is_symlink() or not source.is_dir():
+        fail("authority source must be a regular directory")
     files = {item.name: checked_file(source, item) for item in spec.files}
     cameras = parse_pinhole_camera(files["cameras.bin"])
     images = parse_selected_images(files["images.bin"], cameras, spec.image_names)
@@ -295,6 +391,7 @@ def receipt_for_inputs(
     *,
     spec: AuthoritySpec = OFFICIAL_SPEC,
 ) -> dict[str, Any]:
+    validate_spec(spec)
     checked_file(
         archive.parent, dataclasses.replace(spec.archive, name=archive.name)
     )
@@ -302,6 +399,7 @@ def receipt_for_inputs(
 
 
 def validate_receipt(receipt: Any, *, spec: AuthoritySpec = OFFICIAL_SPEC) -> None:
+    validate_spec(spec)
     if not isinstance(receipt, dict):
         fail("authority receipt must be an object")
     if receipt.get("schema") != SCHEMA or receipt.get("authority_class") != AUTHORITY_CLASS:
@@ -311,12 +409,13 @@ def validate_receipt(receipt: Any, *, spec: AuthoritySpec = OFFICIAL_SPEC) -> No
     if receipt.get("image_transform") != "none_source_jpeg_pixels":
         fail("authority image transform mismatch")
     scene = receipt.get("scene")
-    if not isinstance(scene, dict) or (
-        scene.get("id") != "inria-3dgs-truck-iteration-30000"
-        or scene.get("sha256") != spec.scene_sha256
-        or scene.get("splat_count") != spec.scene_splat_count
-        or scene.get("sh_degree") != spec.scene_sh_degree
-    ):
+    expected_scene = {
+        "id": "inria-3dgs-truck-iteration-30000",
+        "sha256": spec.scene_sha256,
+        "splat_count": spec.scene_splat_count,
+        "sh_degree": spec.scene_sh_degree,
+    }
+    if canonical_json(scene) != canonical_json(expected_scene):
         fail("authority scene identity mismatch")
     views = receipt.get("views")
     if not isinstance(views, list) or [
@@ -328,12 +427,12 @@ def validate_receipt(receipt: Any, *, spec: AuthoritySpec = OFFICIAL_SPEC) -> No
         {"path": f"source/{item.name}", "bytes": item.bytes, "sha256": item.sha256}
         for item in spec.files
     ]
-    if not isinstance(source, dict) or (
-        source.get("url") != spec.archive_url
-        or source.get("archive")
-        != {"bytes": spec.archive.bytes, "sha256": spec.archive.sha256}
-        or source.get("files") != expected_files
-    ):
+    expected_source = {
+        "url": spec.archive_url,
+        "archive": {"bytes": spec.archive.bytes, "sha256": spec.archive.sha256},
+        "files": expected_files,
+    }
+    if canonical_json(source) != canonical_json(expected_source):
         fail("authority source identity mismatch")
 
 
@@ -352,19 +451,17 @@ def build_authority(
         fail(f"staging path already exists: {staging}")
     receipt = receipt_for_inputs(archive, source, spec=spec)
     validate_receipt(receipt, spec=spec)
-    receipt["generated_at_utc"] = datetime.datetime.now(
-        datetime.timezone.utc
-    ).isoformat().replace("+00:00", "Z")
     try:
         (staging / "source").mkdir(parents=True)
         for item in spec.files:
             shutil.copyfile(source / item.name, staging / "source" / item.name)
-        encoded = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+        encoded = json.dumps(receipt, allow_nan=False, indent=2, sort_keys=True) + "\n"
         with (staging / "authority.json").open("x", encoding="utf-8") as handle:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(staging, output)
+        validate_authority(staging, spec=spec)
+        publish_directory_noreplace(staging, output)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -374,6 +471,7 @@ def build_authority(
 def validate_authority(
     root: pathlib.Path, *, spec: AuthoritySpec = OFFICIAL_SPEC
 ) -> dict[str, Any]:
+    validate_spec(spec)
     if root.is_symlink() or not root.is_dir():
         fail("authority root must be a regular directory")
     expected = {"authority.json", "source"}
@@ -382,20 +480,13 @@ def validate_authority(
     receipt_path = root / "authority.json"
     if receipt_path.is_symlink() or not receipt_path.is_file():
         fail("authority.json must be a regular file")
+    if receipt_path.stat().st_size > MAX_RECEIPT_BYTES:
+        fail("authority.json exceeds the bounded receipt size")
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, ValueError) as error:
         fail(f"cannot read authority receipt: {error}")
     validate_receipt(receipt, spec=spec)
-    generated = receipt.get("generated_at_utc")
-    if not isinstance(generated, str) or not generated.endswith("Z"):
-        fail("authority generated_at_utc must be UTC")
-    try:
-        parsed = datetime.datetime.fromisoformat(generated[:-1] + "+00:00")
-    except ValueError:
-        fail("authority generated_at_utc is invalid")
-    if parsed.tzinfo != datetime.timezone.utc:
-        fail("authority generated_at_utc must be UTC")
     source = root / "source"
     if source.is_symlink() or not source.is_dir():
         fail("authority source must be a regular directory")
@@ -404,8 +495,6 @@ def validate_authority(
     for item in spec.files:
         checked_file(source, item)
     expected = receipt_for_source(source, spec=spec)
-    observed = dict(receipt)
-    observed.pop("generated_at_utc", None)
-    if observed != expected:
+    if canonical_json(receipt) != canonical_json(expected):
         fail("authority receipt does not match retained source")
     return receipt

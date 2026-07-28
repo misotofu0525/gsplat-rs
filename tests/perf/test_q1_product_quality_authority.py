@@ -8,6 +8,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -33,19 +34,33 @@ def jpeg(width: int, height: int) -> bytes:
     return b"\xff\xd8\xff\xc0" + struct.pack(">H", len(sof) + 2) + sof + b"\xff\xd9"
 
 
-def cameras(*, model_id: int = 1) -> bytes:
+def cameras(*, model_id: int = 1, fx: float = 12.0) -> bytes:
     return (
         struct.pack("<QiiQQ", 1, 7, model_id, 20, 10)
-        + struct.pack("<4d", 12.0, 13.0, 10.0, 5.0)
+        + struct.pack("<4d", fx, 13.0, 10.0, 5.0)
     )
 
 
-def images(*, duplicate: bool = False) -> bytes:
+def images(
+    *,
+    duplicate: bool = False,
+    duplicate_id: bool = False,
+    qvec: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+) -> bytes:
     records = []
     names = ["000001.jpg", "000001.jpg" if duplicate else "000108.jpg"]
     for image_id, name in enumerate(names, 1):
+        stored_image_id = 1 if duplicate_id else image_id
         records.append(
-            struct.pack("<i4d3di", image_id, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(image_id), 7)
+            struct.pack(
+                "<i4d3di",
+                stored_image_id,
+                *qvec,
+                0.0,
+                0.0,
+                float(image_id),
+                7,
+            )
             + name.encode()
             + b"\0"
             + struct.pack("<Q", 0)
@@ -54,7 +69,16 @@ def images(*, duplicate: bool = False) -> bytes:
 
 
 class AuthorityFixture:
-    def __init__(self, root: pathlib.Path, *, model_id: int = 1, duplicate: bool = False):
+    def __init__(
+        self,
+        root: pathlib.Path,
+        *,
+        model_id: int = 1,
+        duplicate: bool = False,
+        duplicate_id: bool = False,
+        fx: float = 12.0,
+        qvec: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+    ):
         self.archive = root / "archive.zip"
         self.source = root / "input"
         self.output = root / "authority"
@@ -62,8 +86,10 @@ class AuthorityFixture:
         values = {
             "000001.jpg": jpeg(10, 5),
             "000108.jpg": jpeg(10, 5),
-            "cameras.bin": cameras(model_id=model_id),
-            "images.bin": images(duplicate=duplicate),
+            "cameras.bin": cameras(model_id=model_id, fx=fx),
+            "images.bin": images(
+                duplicate=duplicate, duplicate_id=duplicate_id, qvec=qvec
+            ),
         }
         self.archive.write_bytes(b"archive")
         for name, data in values.items():
@@ -138,6 +164,21 @@ class ProductAuthorityTests(unittest.TestCase):
             with self.assertRaisesRegex(AuthorityError, "missing regular file"):
                 build_authority(fixture.archive, fixture.source, fixture.output, spec=fixture.spec)
 
+    def test_symlink_source_directory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            fixture = AuthorityFixture(root)
+            real_source = fixture.source.with_name("real-input")
+            fixture.source.rename(real_source)
+            fixture.source.symlink_to(real_source.name, target_is_directory=True)
+            with self.assertRaisesRegex(AuthorityError, "regular directory"):
+                build_authority(
+                    fixture.archive,
+                    fixture.source,
+                    fixture.output,
+                    spec=fixture.spec,
+                )
+
     def test_wrong_camera_model_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = AuthorityFixture(pathlib.Path(directory), model_id=0)
@@ -147,8 +188,70 @@ class ProductAuthorityTests(unittest.TestCase):
     def test_duplicate_image_name_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = AuthorityFixture(pathlib.Path(directory), duplicate=True)
-            with self.assertRaisesRegex(AuthorityError, "duplicate image name"):
+            with self.assertRaisesRegex(AuthorityError, "duplicate image identity"):
                 build_authority(fixture.archive, fixture.source, fixture.output, spec=fixture.spec)
+
+    def test_duplicate_image_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(pathlib.Path(directory), duplicate_id=True)
+            with self.assertRaisesRegex(AuthorityError, "duplicate image identity"):
+                build_authority(
+                    fixture.archive,
+                    fixture.source,
+                    fixture.output,
+                    spec=fixture.spec,
+                )
+
+    def test_non_finite_camera_parameter_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(pathlib.Path(directory), fx=float("nan"))
+            with self.assertRaisesRegex(AuthorityError, "invalid or duplicate camera"):
+                build_authority(
+                    fixture.archive,
+                    fixture.source,
+                    fixture.output,
+                    spec=fixture.spec,
+                )
+
+    def test_non_finite_or_non_unit_pose_is_rejected(self) -> None:
+        for qvec in (
+            (float("inf"), 0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0, 0.0),
+        ):
+            with self.subTest(qvec=qvec), tempfile.TemporaryDirectory() as directory:
+                fixture = AuthorityFixture(pathlib.Path(directory), qvec=qvec)
+                with self.assertRaisesRegex(AuthorityError, "invalid pose"):
+                    build_authority(
+                        fixture.archive,
+                        fixture.source,
+                        fixture.output,
+                        spec=fixture.spec,
+                    )
+
+    def test_publish_race_never_replaces_existing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(pathlib.Path(directory))
+            original_validate = validate_authority
+
+            def validate_then_race(root: pathlib.Path, *, spec: AuthoritySpec):
+                receipt = original_validate(root, spec=spec)
+                fixture.output.mkdir()
+                (fixture.output / "keep").write_text("unchanged")
+                return receipt
+
+            module = sys.modules[build_authority.__module__]
+            with mock.patch.object(
+                module, "validate_authority", side_effect=validate_then_race
+            ):
+                with self.assertRaisesRegex(AuthorityError, "already exists"):
+                    build_authority(
+                        fixture.archive,
+                        fixture.source,
+                        fixture.output,
+                        spec=fixture.spec,
+                    )
+            self.assertEqual((fixture.output / "keep").read_text(), "unchanged")
 
     def test_mutated_authority_class_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -170,6 +273,26 @@ class ProductAuthorityTests(unittest.TestCase):
             receipt["views"][0]["colmap"]["tvec"][0] = 99.0
             receipt_path.write_text(json.dumps(receipt))
             with self.assertRaisesRegex(AuthorityError, "retained source"):
+                validate_authority(fixture.output, spec=fixture.spec)
+
+    def test_equal_numeric_value_with_wrong_json_type_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(pathlib.Path(directory))
+            build_authority(fixture.archive, fixture.source, fixture.output, spec=fixture.spec)
+            receipt_path = fixture.output / "authority.json"
+            receipt = json.loads(receipt_path.read_text())
+            receipt["views"][0]["colmap"]["camera"]["width"] = 20.0
+            receipt_path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(AuthorityError, "retained source"):
+                validate_authority(fixture.output, spec=fixture.spec)
+
+    def test_oversized_or_invalid_json_receipt_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(pathlib.Path(directory))
+            build_authority(fixture.archive, fixture.source, fixture.output, spec=fixture.spec)
+            receipt_path = fixture.output / "authority.json"
+            receipt_path.write_bytes(b"{" + b" " * (64 * 1024) + b"}")
+            with self.assertRaisesRegex(AuthorityError, "bounded receipt size"):
                 validate_authority(fixture.output, spec=fixture.spec)
 
     def test_copied_source_drift_and_extra_files_are_rejected(self) -> None:
