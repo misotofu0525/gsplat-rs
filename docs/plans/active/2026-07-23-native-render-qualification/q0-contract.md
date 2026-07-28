@@ -287,8 +287,15 @@ fixed-frame result may describe cache/raster cost, but only the moving sequence
 is eligible for an ordering-throughput comparison.
 
 An image miss does not trigger open-ended tuning. The run remains a valid
-quality observation but is Rejected from a same-quality performance claim. Q1
-closes with a scoped Accepted report, or a finite Rejected/Deferred matrix.
+quality observation but is Rejected from a same-quality performance claim. If
+and only if structure, both real producers, thermal state and identity were all
+admitted first, Q1 may also retain a non-aggregate workload-timing observation:
+the two absolute terminal-mean medians and the same two absolute values for all
+five predeclared pairs. That observation cannot contain deltas, ratios, FPS,
+direction or a winner; `performance` and `claim_scope` remain null and both
+`same_quality_performance_eligible` and `aggregate_eligible` are false. Invalid
+or Deferred evidence retains no such observation. Q1 closes with a scoped
+Accepted report, or a finite Rejected/Deferred matrix.
 
 ### 6.2 Q2 — Balanced product throughput
 

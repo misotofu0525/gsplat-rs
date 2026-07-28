@@ -194,8 +194,8 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         if frozen_commit != orchestration["reviewed_commit"]:
             fail("formal lock reviewed commit differs from endpoint build commit")
         if (
-            frozen_environment is None
-            or frozen_environment.get("browser_executable_sha256")
+            frozen_cross_environment is None
+            or frozen_cross_environment.get("browser_executable_sha256")
             != orchestration["browser"]["sha256"]
         ):
             fail("formal browser binary lock differs from endpoint environment")
@@ -290,6 +290,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
             "minimum_observed_ssim": None,
             "quality_passed": None,
             "performance": None,
+            "workload_timing_observation": None,
             "reasons": ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
             "pairs": [
                 {
@@ -314,8 +315,37 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
     median_delta = statistics.median(pair["gsplat_rs_minus_playcanvas_ms"] for pair in pair_results)
     reasons: list[str] = []
     performance = None
+    workload_timing_observation = None
     if not quality_passed:
         reasons.append("common_reference_image_gate_failed")
+        workload_timing_observation = {
+            "schema": "gsplat-q1-workload-timing-observation/v1",
+            "scope": "matched_workload_not_same_quality",
+            "metric": "absolute_terminal_mean_ms",
+            "same_quality_performance_eligible": False,
+            "aggregate_eligible": False,
+            "median": {
+                "playcanvas_terminal_mean_ms": statistics.median(
+                    pair["playcanvas_terminal_mean_ms"] for pair in pair_results
+                ),
+                "gsplat_rs_terminal_mean_ms": statistics.median(
+                    pair["gsplat_rs_terminal_mean_ms"] for pair in pair_results
+                ),
+            },
+            "pairs": [
+                {
+                    "pair_id": pair["pair_id"],
+                    "run_order": pair["run_order"],
+                    "playcanvas_terminal_mean_ms": pair[
+                        "playcanvas_terminal_mean_ms"
+                    ],
+                    "gsplat_rs_terminal_mean_ms": pair[
+                        "gsplat_rs_terminal_mean_ms"
+                    ],
+                }
+                for pair in pair_results
+            ],
+        }
     else:
         performance = {
             "metric": "paired_median_terminal_mean_ms",
@@ -344,7 +374,11 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         "series_id": series_id,
         "state": "Accepted" if not reasons else "Rejected",
         "evidence_admitted": True,
-        "claim_scope": "chrome_webgpu_truck_1080p_near_contract",
+        "claim_scope": (
+            "chrome_webgpu_truck_1080p_near_contract"
+            if quality_passed
+            else None
+        ),
         "schedule_sha256": schedule_sha,
         "protocol_sha256": protocol_sha,
         "formal_execution": formal_execution,
@@ -354,6 +388,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
         "minimum_observed_ssim": min(scores),
         "quality_passed": quality_passed,
         "performance": performance,
+        "workload_timing_observation": workload_timing_observation,
         "reasons": reasons,
         "pairs": published_pairs,
         "limitations": [
@@ -366,7 +401,7 @@ def evaluate(path: pathlib.Path) -> dict[str, Any]:
 
 
 def admission_rejection(series_id: str | None, reason: str) -> dict[str, Any]:
-    return {"schema": RESULT_SCHEMA, "series_id": series_id, "state": "Rejected", "evidence_admitted": False, "claim_scope": None, "performance": None, "reasons": [reason], "retry_authorized": False}
+    return {"schema": RESULT_SCHEMA, "series_id": series_id, "state": "Rejected", "evidence_admitted": False, "claim_scope": None, "performance": None, "workload_timing_observation": None, "reasons": [reason], "retry_authorized": False}
 
 
 def write_result(path: pathlib.Path | None, result: dict[str, Any]) -> None:

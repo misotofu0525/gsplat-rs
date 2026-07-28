@@ -211,7 +211,7 @@ do not become an admitted quality pass/miss or unlock a performance result.
 
 ## Result semantics
 
-The result schema is `gsplat-q1-truck-paired-result/v1`.
+The result schema is `gsplat-q1-truck-paired-result/v2`.
 
 - malformed, missing or mismatched evidence: `Rejected`,
   `evidence_admitted=false`, `performance=null`, `retry_authorized=false`;
@@ -219,13 +219,26 @@ The result schema is `gsplat-q1-truck-paired-result/v1`.
   `Deferred`, `evidence_admitted=false`, `candidate_evidence_valid=true`,
   `performance=null`, `retry_authorized=false`.
 
+Both paths set `workload_timing_observation=null`. The observation is created
+only after structural, producer, thermal and identity admission all succeed and
+the common-reference image gate misses. That finite result remains `Rejected`
+with `performance=null` and `claim_scope=null`. Its observation contains only
+the two endpoints' absolute terminal-mean medians and the same two absolute
+values plus predeclared run order for each of the five pairs. The nested
+receipt is versioned as `gsplat-q1-workload-timing-observation/v1` with scope
+`matched_workload_not_same_quality`. It explicitly sets
+`same_quality_performance_eligible=false` and `aggregate_eligible=false`; it
+contains no delta, ratio, FPS, direction or winner field. It is a workload-cost
+observation under unequal admitted image quality, not a comparison claim.
+
 When all ten trace-specific PlayCanvas controls and all ten gsplat-rs controls
 carry their respective real producers and pass the same host joins, this
 revision may admit the predeclared series and emit a finite Accepted/Rejected
 comparative verdict. It cannot report a winner or quality pass from host-only
 PlayCanvas pixels.
 
-- admitted image miss: finite `Rejected`, no performance comparison, no retry;
+- admitted image miss: finite `Rejected`, no same-quality performance
+  comparison, one non-aggregate absolute workload-timing observation, no retry;
 - admitted image pass with slower gsplat-rs paired median terminal mean: finite
   `Rejected`, measured values retained, no retry;
 - admitted image pass with gsplat-rs no slower on the paired median terminal
@@ -233,6 +246,7 @@ PlayCanvas pixels.
 
 There is deliberately no required lead percentage or “must beat PlayCanvas”
 completion gate. Deferred is not a tuning or automatic-rerun trigger.
+Historical immutable attempts are never rewritten or backfilled into v2.
 
 The current historical unpaired PlayCanvas prerequisite and fixed-gsplat-rs
 candidate are not input-compatible: they lack the five fresh pair identities,

@@ -24,7 +24,7 @@ from .common import (
 
 
 SCHEMA = "gsplat-q1-truck-paired-comparison/v1"
-RESULT_SCHEMA = "gsplat-q1-truck-paired-result/v1"
+RESULT_SCHEMA = "gsplat-q1-truck-paired-result/v2"
 TERMINAL_SCHEMA = "gsplat-q1-webgpu-terminal-window/v1"
 IMAGE_SCHEMA = "gsplat-q1-reference-image-comparison/v1"
 FORMAL_INPUTS_SCHEMA = "gsplat-q1-truck-formal-inputs/v1"

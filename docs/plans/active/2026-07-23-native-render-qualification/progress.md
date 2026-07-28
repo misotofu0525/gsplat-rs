@@ -1338,3 +1338,23 @@ boundaries have focused coverage.
 A later formal attempt still requires a new reviewed SHA, regenerated same-SHA
 authority and Wasm assets, a fresh root, two identical dry runs and a separate
 go/no-go decision. Attempt 8 is retained unchanged and is never reused.
+
+### Q1 forward-only absolute workload observation contract (2026-07-28)
+
+The Q1 result schema advances to
+`gsplat-q1-truck-paired-result/v2`. A fully admitted series that misses the
+predeclared image gate still terminates `Rejected` with `performance=null` and
+`claim_scope=null`; it may now retain only the two endpoints' absolute
+terminal-mean medians and five pairs of absolute terminal means plus their
+predeclared order under the versioned `workload_timing_observation`. The
+receipt marks both same-quality performance
+and aggregate eligibility false and publishes no delta, ratio, FPS, direction
+or winner. Deferred, structurally invalid, producer-incomplete, thermally
+inadmissible or identity-invalid evidence retains a null observation. An image
+pass keeps the existing performance semantics and has no workload-only
+observation.
+
+This is a forward-only evidence-contract slice. It ran no browser or device and
+does not rewrite attempt 8's immutable v1 rejection or derive observations from
+its retained files. A later formal attempt still needs a new reviewed SHA and
+the existing one-shot execution gates.

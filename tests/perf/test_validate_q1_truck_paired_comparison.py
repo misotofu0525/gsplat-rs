@@ -40,6 +40,7 @@ from q1_pair_admission.contract import (
     IMAGE_SCHEMA,
     MEASURED,
     PLAYCANVAS,
+    RESULT_SCHEMA,
     SCHEMA,
     TERMINAL_SCHEMA,
     TRACE,
@@ -1256,6 +1257,7 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         self.assertTrue(result["candidate_evidence_valid"])
         self.assertEqual(result["pair_count"], 5)
         self.assertIsNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
         self.assertEqual(
             result["reasons"],
             ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
@@ -1560,9 +1562,96 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         self.assertTrue(result["evidence_admitted"])
         self.assertTrue(result["quality_passed"])
         self.assertIsNotNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
         self.assertEqual(
             result["reference_authority"]["repository_commit"], COMMIT
         )
+
+    def test_admitted_quality_miss_retains_only_absolute_workload_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch(
+                "q1_pair_admission.artifacts.recompute_image_score",
+                return_value=0.98,
+            ):
+                result = evaluate(
+                    build_series(
+                        pathlib.Path(directory),
+                        score=0.98,
+                        playcanvas_producer=True,
+                    )
+                )
+
+        self.assertEqual(result["schema"], RESULT_SCHEMA)
+        self.assertEqual(result["state"], "Rejected")
+        self.assertTrue(result["evidence_admitted"])
+        self.assertFalse(result["quality_passed"])
+        self.assertIsNone(result["performance"])
+        self.assertIsNone(result["claim_scope"])
+        self.assertEqual(result["reasons"], ["common_reference_image_gate_failed"])
+
+        observation = result["workload_timing_observation"]
+        self.assertEqual(
+            observation,
+            {
+                "schema": "gsplat-q1-workload-timing-observation/v1",
+                "scope": "matched_workload_not_same_quality",
+                "metric": "absolute_terminal_mean_ms",
+                "same_quality_performance_eligible": False,
+                "aggregate_eligible": False,
+                "median": {
+                    "playcanvas_terminal_mean_ms": 12.5,
+                    "gsplat_rs_terminal_mean_ms": 10.0,
+                },
+                "pairs": [
+                    {
+                        "pair_id": f"pair-{index:02d}",
+                        "run_order": ORDERS[index - 1],
+                        "playcanvas_terminal_mean_ms": 12.5,
+                        "gsplat_rs_terminal_mean_ms": 10.0,
+                    }
+                    for index in range(1, 6)
+                ],
+            },
+        )
+        encoded = json.dumps(observation, sort_keys=True).lower()
+        for forbidden in ("delta", "ratio", "fps", "faster", "slower", "winner", "lead"):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_formal_environment_lock_uses_the_admitted_cross_endpoint_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            schedule = build_series(
+                root,
+                playcanvas_producer=True,
+            )
+            browser_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            for comparison_path in root.glob("pairs/*/*/view-*-comparison.json"):
+                comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+                comparison["browser_executable_path"] = browser_path
+                comparison["browser_executable_sha256"] = SHA_A
+                write_json(comparison_path, comparison)
+            formal = {
+                "reviewed_commit": COMMIT,
+                "formal_inputs_sha256": SHA_A,
+                "command_receipt_sha256": SHA_B,
+                "browser": {"path": browser_path, "sha256": SHA_A},
+                "wasm_files": [
+                    {"name": "gsplat_web.js", "sha256": SHA_A},
+                    {"name": "gsplat_web_bg.wasm", "sha256": SHA_A},
+                    {"name": "gsplat_web_build_receipt.json", "sha256": SHA_A},
+                ],
+                "repository_files": [],
+                "repository_trees": [],
+            }
+            with mock.patch(
+                "q1_pair_admission.evaluate.validate_orchestration",
+                return_value=formal,
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError,
+                    "formal WASM lock differs",
+                ):
+                    evaluate(schedule)
 
     def test_device_effective_limit_mutation_is_rejected_against_actual_receipt(self) -> None:
         self.mutate_manifest(
@@ -2033,6 +2122,7 @@ class FiniteVerdictTests(unittest.TestCase):
         self.assertFalse(result["evidence_admitted"])
         self.assertTrue(result["candidate_evidence_valid"])
         self.assertIsNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
 
     def test_cli_admission_failure_is_exit_two_and_no_performance_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2052,6 +2142,7 @@ class FiniteVerdictTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertFalse(result["evidence_admitted"])
         self.assertIsNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
         self.assertFalse(result["retry_authorized"])
 
     def test_slower_candidate_cannot_publish_comparison_without_both_producers(self) -> None:
@@ -2060,6 +2151,7 @@ class FiniteVerdictTests(unittest.TestCase):
         self.assertEqual(result["state"], "Deferred")
         self.assertFalse(result["evidence_admitted"])
         self.assertIsNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
         self.assertEqual(
             result["reasons"],
             ["playcanvas_renderer_same_present_rgba_receipt_unavailable"],
@@ -2075,6 +2167,7 @@ class FiniteVerdictTests(unittest.TestCase):
         self.assertEqual(result["state"], "Deferred")
         self.assertFalse(result["evidence_admitted"])
         self.assertIsNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
         self.assertIsNone(result["quality_passed"])
         self.assertEqual(
             result["reasons"],
@@ -2093,6 +2186,7 @@ class FiniteVerdictTests(unittest.TestCase):
         result = admission_rejection("series", "missing common terminal")
         self.assertFalse(result["evidence_admitted"])
         self.assertIsNone(result["performance"])
+        self.assertIsNone(result["workload_timing_observation"])
         self.assertFalse(result["retry_authorized"])
 
 
