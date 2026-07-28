@@ -42,11 +42,17 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             "truck": truck,
             "output": output,
             "protocol_sha256": "b" * 64,
-            "trace_content_sha256": "c" * 64,
-            "trace_receipt_sha256": "d" * 64,
-            "evaluation_receipt_sha256": "e" * 64,
+            "immutable_binding": {
+                "formal_trace": {"receipt_sha256": "c" * 64},
+                "evaluation_authority": {"receipt_sha256": "d" * 64},
+                "complete_truck": {"bytes": 5, "sha256": "e" * 64},
+            },
         }
         return args, inputs
+
+    @staticmethod
+    def accepted_revalidation(inputs):
+        return lambda _: inputs["immutable_binding"]
 
     @staticmethod
     def successful_invoke(calls: list[tuple[str, ...]]):
@@ -83,6 +89,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                     args,
                     invoke=self.successful_invoke(calls),
                     preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
                 )
             self.assertEqual(result, args.output)
             self.assertEqual(len(calls), 3)
@@ -119,7 +126,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 23, "", "failed")
 
             with self.assertRaisesRegex(COLLECTOR.CollectionError, "native_quality_only exited"):
-                COLLECTOR.collect(args, invoke=invoke, preflight=lambda _: inputs)
+                COLLECTOR.collect(
+                    args,
+                    invoke=invoke,
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
             self.assertEqual(len(calls), 1)
             self.assertFalse(args.output.exists())
             failures = list(root.glob("published.failed-*"))
@@ -152,7 +164,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 mock.patch.object(COLLECTOR, "require_clean_exact"),
                 self.assertRaisesRegex(COLLECTOR.CollectionError, "playcanvas_quality_only exited"),
             ):
-                COLLECTOR.collect(args, invoke=invoke, preflight=lambda _: inputs)
+                COLLECTOR.collect(
+                    args,
+                    invoke=invoke,
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
             self.assertEqual(len(calls), 2)
             self.assertFalse(args.output.exists())
             failures = list(root.glob("published.failed-*"))
@@ -180,7 +197,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 mock.patch.object(COLLECTOR, "require_clean_exact"),
                 self.assertRaisesRegex(COLLECTOR.CollectionError, "offline_quality_gate exited"),
             ):
-                COLLECTOR.collect(args, invoke=invoke, preflight=lambda _: inputs)
+                COLLECTOR.collect(
+                    args,
+                    invoke=invoke,
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
             self.assertEqual(len(calls), 3)
             self.assertFalse(args.output.exists())
 
@@ -195,12 +217,114 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 raise RuntimeError("launch failed")
 
             with self.assertRaisesRegex(COLLECTOR.CollectionError, "raised before completion"):
-                COLLECTOR.collect(args, invoke=invoke, preflight=lambda _: inputs)
+                COLLECTOR.collect(
+                    args,
+                    invoke=invoke,
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
             self.assertEqual(len(calls), 1)
             self.assertFalse(args.output.exists())
 
-    def test_preflight_rejects_existing_or_overlapping_output(self) -> None:
+    def test_final_no_replace_race_retains_failure_without_hidden_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args, inputs = self.fixture(root)
+            calls = []
+            original_publish = COLLECTOR.Q1._publish_directory_noreplace
+
+            def racing_publish(stage, destination):
+                if pathlib.Path(destination) == args.output:
+                    args.output.mkdir()
+                    (args.output / "concurrent-owner.txt").write_text(
+                        "not this transaction", encoding="utf-8"
+                    )
+                    raise COLLECTOR.Q1.OneViewQualityError(
+                        f"output already exists: {destination}"
+                    )
+                return original_publish(stage, destination)
+
+            with (
+                mock.patch.object(COLLECTOR, "require_clean_exact"),
+                mock.patch.object(COLLECTOR.Q1, "validate_result"),
+                mock.patch.object(
+                    COLLECTOR.Q1,
+                    "_publish_directory_noreplace",
+                    side_effect=racing_publish,
+                ),
+                self.assertRaisesRegex(COLLECTOR.CollectionError, "retained failure"),
+            ):
+                COLLECTOR.collect(
+                    args,
+                    invoke=self.successful_invoke(calls),
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
+
+            self.assertEqual(
+                (args.output / "concurrent-owner.txt").read_text(encoding="utf-8"),
+                "not this transaction",
+            )
+            failures = list(root.glob("published.failed-*"))
+            self.assertEqual(len(failures), 1)
+            blocker = json.loads((failures[0] / "blocker.json").read_text())
+            self.assertEqual(blocker["failed_step"], "final_publication")
+            self.assertEqual(list(root.glob(".published.staging-*")), [])
+
+    def test_post_gate_truck_or_authority_drift_fails_closed(self) -> None:
+        for drift_kind in ("truck", "authority"):
+            with self.subTest(drift_kind=drift_kind), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                args, inputs = self.fixture(root)
+                calls = []
+                invoke_success = self.successful_invoke(calls)
+
+                def invoke(argv, cwd, env):
+                    completed = invoke_success(argv, cwd, env)
+                    if "validate-q1-product-quality-smoke.py" in " ".join(argv):
+                        if drift_kind == "truck":
+                            inputs["truck"].write_bytes(b"drifted-truck")
+                        else:
+                            (inputs["formal"] / "receipt.json").write_text(
+                                "drifted-authority", encoding="utf-8"
+                            )
+                    return completed
+
+                def observed_binding(formal, evaluation, truck):
+                    if truck.read_bytes() != b"truck" or (formal / "receipt.json").exists():
+                        return {"drifted": drift_kind}
+                    return inputs["immutable_binding"]
+
+                with (
+                    mock.patch.object(COLLECTOR, "require_clean_exact"),
+                    mock.patch.object(COLLECTOR.Q1, "validate_result"),
+                    mock.patch.object(
+                        COLLECTOR,
+                        "immutable_input_binding",
+                        side_effect=observed_binding,
+                    ),
+                    self.assertRaisesRegex(
+                        COLLECTOR.CollectionError, "immutable input binding drifted"
+                    ),
+                ):
+                    COLLECTOR.collect(
+                        args,
+                        invoke=invoke,
+                        preflight=lambda _: inputs,
+                        revalidate=COLLECTOR.revalidate_immutable_inputs,
+                    )
+
+                self.assertEqual(len(calls), 3)
+                self.assertFalse(args.output.exists())
+                failures = list(root.glob("published.failed-*"))
+                self.assertEqual(len(failures), 1)
+                blocker = json.loads((failures[0] / "blocker.json").read_text())
+                self.assertEqual(blocker["failed_step"], "final_input_revalidation")
+
+    def test_preflight_rejects_existing_or_overlapping_output(self) -> None:
+        target = COLLECTOR.REPO_ROOT / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target) as directory:
             root = pathlib.Path(directory)
             authority = root / "authority"
             authority.mkdir()
@@ -210,6 +334,19 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.require_disjoint_output(occupied, (authority,))
             with self.assertRaisesRegex(COLLECTOR.CollectionError, "overlaps"):
                 COLLECTOR.require_disjoint_output(authority / "child", (authority,))
+
+            dangling = root / "dangling-output"
+            dangling.symlink_to(root / "missing-target")
+            self.assertTrue(os.path.lexists(dangling))
+            with self.assertRaisesRegex(COLLECTOR.CollectionError, "already exists"):
+                COLLECTOR.require_disjoint_output(dangling, (authority,))
+
+            real_parent = root / "real-parent"
+            real_parent.mkdir()
+            alias_parent = root / "alias-parent"
+            alias_parent.symlink_to(real_parent, target_is_directory=True)
+            with self.assertRaisesRegex(COLLECTOR.CollectionError, "symlink ancestor"):
+                COLLECTOR.require_disjoint_output(alias_parent / "out", (authority,))
 
     def test_playcanvas_invocation_is_frozen_quality_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -233,7 +370,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 mock.patch.object(COLLECTOR, "require_clean_exact"),
                 mock.patch.object(COLLECTOR.Q1, "validate_result"),
             ):
-                COLLECTOR.collect(args, invoke=observing, preflight=lambda _: inputs)
+                COLLECTOR.collect(
+                    args,
+                    invoke=observing,
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
             playcanvas = environments[1]
             self.assertEqual(playcanvas["HEADLESS"], "0")
             self.assertEqual(len(requests), 1)

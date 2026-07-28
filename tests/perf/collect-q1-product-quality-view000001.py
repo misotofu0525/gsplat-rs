@@ -16,6 +16,7 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -146,11 +147,21 @@ def require_clean_exact(repo: pathlib.Path, expected_commit: str) -> None:
 
 
 def require_disjoint_output(output: pathlib.Path, inputs: Sequence[pathlib.Path]) -> pathlib.Path:
-    output = pathlib.Path(os.path.abspath(output)).resolve(strict=False)
-    if os.path.lexists(output):
-        fail(f"output already exists: {output}")
-    if output.parent.is_symlink() or not output.parent.is_dir():
+    requested = pathlib.Path(os.path.abspath(output))
+    # Check the caller's literal path before resolve(strict=False): resolving a
+    # dangling leaf symlink would otherwise turn it into an apparently fresh
+    # target.  Reject every symlink ancestor as well so an output cannot escape
+    # through an aliased parent between admission and publication.
+    if os.path.lexists(requested):
+        fail(f"output already exists: {requested}")
+    for ancestor in requested.parents:
+        if ancestor.is_symlink():
+            fail(f"output path has a symlink ancestor: {ancestor}")
+    if not requested.parent.is_dir():
         fail("output parent must be a real existing directory")
+    output = requested.resolve(strict=False)
+    if os.path.lexists(output):
+        fail(f"resolved output already exists: {output}")
     for source in inputs:
         resolved = source.resolve(strict=True)
         if output == resolved or output in resolved.parents or resolved in output.parents:
@@ -159,29 +170,64 @@ def require_disjoint_output(output: pathlib.Path, inputs: Sequence[pathlib.Path]
     return output
 
 
+def immutable_input_binding(
+    formal: pathlib.Path,
+    evaluation: pathlib.Path,
+    truck: pathlib.Path,
+) -> dict[str, Any]:
+    formal = resolve_existing(formal, "formal trace authority", directory=True)
+    evaluation = resolve_existing(evaluation, "evaluation authority", directory=True)
+    truck = resolve_existing(truck, "complete Truck", directory=False)
+    truck_bytes = truck.stat().st_size
+    truck_sha256 = file_sha256(truck)
+    if truck_bytes != TRUCK_BYTES or truck_sha256 != TRUCK_SHA256:
+        fail("complete Truck identity mismatch")
+    formal_receipt = Q1._formal_trace(formal, evaluation)
+    _, ground_truth = Q1._ground_truth(evaluation, formal_receipt)
+    return {
+        "formal_trace": {
+            "content_sha256": formal_receipt["trace"]["content_sha256"],
+            "file_sha256": formal_receipt["trace_file_sha256"],
+            "receipt_sha256": formal_receipt["trace_receipt_sha256"],
+        },
+        "evaluation_authority": {
+            "receipt_sha256": formal_receipt["evaluation_receipt_sha256"],
+            "ground_truth": ground_truth,
+        },
+        "complete_truck": {
+            "bytes": truck_bytes,
+            "sha256": truck_sha256,
+        },
+    }
+
+
+def revalidate_immutable_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    observed = immutable_input_binding(
+        inputs["formal"], inputs["evaluation"], inputs["truck"]
+    )
+    if observed != inputs["immutable_binding"]:
+        fail("immutable input binding drifted after endpoint collection")
+    return observed
+
+
 def preflight_inputs(args: argparse.Namespace) -> dict[str, Any]:
     require_clean_exact(REPO_ROOT, args.expected_commit)
     formal = resolve_existing(args.formal_trace_authority, "formal trace authority", directory=True)
     evaluation = resolve_existing(args.evaluation_authority, "evaluation authority", directory=True)
     truck = resolve_existing(args.dataset, "complete Truck", directory=False)
     output = require_disjoint_output(args.output, (formal, evaluation, truck))
-    if truck.stat().st_size != TRUCK_BYTES or file_sha256(truck) != TRUCK_SHA256:
-        fail("complete Truck identity mismatch")
     protocol = resolve_existing(QUALITY_PROTOCOL, "Q1 quality protocol", directory=False)
 
     # Validate every immutable authority before either expensive producer is
     # allowed to launch.  This also decodes the official GT once.
-    formal_receipt = Q1._formal_trace(formal, evaluation)
-    Q1._ground_truth(evaluation, formal_receipt)
+    immutable_binding = immutable_input_binding(formal, evaluation, truck)
     return {
         "formal": formal,
         "evaluation": evaluation,
         "truck": truck,
         "output": output,
         "protocol_sha256": file_sha256(protocol),
-        "trace_content_sha256": formal_receipt["trace"]["content_sha256"],
-        "trace_receipt_sha256": formal_receipt["trace_receipt_sha256"],
-        "evaluation_receipt_sha256": formal_receipt["evaluation_receipt_sha256"],
+        "immutable_binding": immutable_binding,
     }
 
 
@@ -261,6 +307,10 @@ def publish_failure(
     error: Exception,
 ) -> pathlib.Path:
     destination = failed_destination(output, session_id)
+    # A failed final no-replace publication happens after the staging root was
+    # frozen. Restore write permission only on that unpublished root so the
+    # failure ledger can be added; immutable producer children stay untouched.
+    os.chmod(stage, stage.stat().st_mode | stat.S_IWUSR)
     write_json(
         stage / "blocker.json",
         {
@@ -280,11 +330,24 @@ def publish_failure(
     return destination
 
 
+def discard_unpublished_stage(stage: pathlib.Path) -> None:
+    """Remove a hidden unpublished stage even if its directories were frozen."""
+
+    directories = [stage]
+    directories.extend(
+        path for path in stage.rglob("*") if path.is_dir() and not path.is_symlink()
+    )
+    for directory in directories:
+        os.chmod(directory, directory.stat().st_mode | stat.S_IWUSR | stat.S_IXUSR)
+    shutil.rmtree(stage)
+
+
 def collect(
     args: argparse.Namespace,
     *,
     invoke: Invoker = default_invoke,
     preflight: Callable[[argparse.Namespace], dict[str, Any]] = preflight_inputs,
+    revalidate: Callable[[dict[str, Any]], dict[str, Any]] = revalidate_immutable_inputs,
 ) -> pathlib.Path:
     inputs = preflight(args)
     output: pathlib.Path = inputs["output"]
@@ -374,6 +437,10 @@ def collect(
 
         result = Q1._load_json(result_output / "result.json", "one-view quality result")
         Q1.validate_result(result)
+        step = "final_input_revalidation"
+        final_binding = revalidate(inputs)
+        require_clean_exact(REPO_ROOT, args.expected_commit)
+        step = "final_publication"
         receipt = {
             "schema": SCHEMA,
             "status": "complete",
@@ -381,10 +448,7 @@ def collect(
             "expected_commit": args.expected_commit,
             "collection_session_id": session_id,
             "formal_inputs": {
-                "trace_content_sha256": inputs["trace_content_sha256"],
-                "trace_receipt_sha256": inputs["trace_receipt_sha256"],
-                "evaluation_receipt_sha256": inputs["evaluation_receipt_sha256"],
-                "truck_sha256": TRUCK_SHA256,
+                **final_binding,
                 "protocol_sha256": inputs["protocol_sha256"],
             },
             "steps": steps,
@@ -416,7 +480,7 @@ def collect(
         raise
     finally:
         if not published and stage.exists():
-            shutil.rmtree(stage, ignore_errors=True)
+            discard_unpublished_stage(stage)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
