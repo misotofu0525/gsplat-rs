@@ -1541,3 +1541,24 @@ per endpoint at SSIM `>=0.90`, normalized RGB MAE `<=0.05`, severe-tail
 fraction `<=0.10`, and exact opaque alpha. No averaging can hide a failed view.
 The old over-3/255 tail is intentionally not reused: even the official render
 has roughly 69-70% of pixels above that conformance-oriented threshold.
+
+### Q1 official Evaluation Images provenance authority (2026-07-28)
+
+The formal Evaluation Images input now has a narrow offline authority builder.
+It pins the exact official ZIP entry path and local extracted relative path,
+bytes and SHA-256 for `truck/results.json`, `truck/per_view.json`, and the
+`000001`/`000009` ground-truth plus `ours_30000` render PNGs. Publication is a
+fresh no-replace directory transaction: all six inputs, duplicate-free JSON,
+and strict 979x546 non-interlaced RGB8 PNG headers and CRCs are validated in
+the staging tree before it becomes visible. Missing, changed, aliased,
+escaping or symlink inputs fail closed.
+
+A real local build retained six entries at
+`target/qualification/q1-product-quality-evaluation-authority-v1` with class
+`upstream_evaluation_images`. The receipt deliberately reports only
+`pinned_extracted_entries_only`: the official 7,064,286,140-byte archive itself
+was not retained, so `archive_sha256_verified` is false rather than invented.
+Eight focused tests passed. This closes the local extracted-entry provenance
+mechanism only; Product Quality remains `Deferred`, performance stays
+unauthorized, and no browser, device, endpoint image, ratio, FPS or winner was
+produced.

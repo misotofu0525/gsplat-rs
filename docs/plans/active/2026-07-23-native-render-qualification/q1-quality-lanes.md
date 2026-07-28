@@ -107,6 +107,22 @@ authority, rather than introducing a browser JPEG decoder. The official
 `ours_30000` render is a threshold-calibration baseline, not an endpoint and
 not a competitor.
 
+The Evaluation Images provenance authority is separate from the earlier
+source-camera JPEG authority. Its first offline slice pins the exact archive
+entry path, extracted relative path, byte count and SHA-256 for
+`truck/results.json`, `truck/per_view.json`, and the `000001`/`000009` ground
+truth plus `ours_30000` render PNGs. Every retained PNG must be 979x546,
+non-interlaced RGB8. Duplicate JSON keys, missing or replaced files, path
+escapes, symlinks and non-fresh output fail closed before publication.
+
+The 7,064,286,140-byte archive was not retained locally. The receipt therefore
+records the official URL and HTTP content length, but says
+`archive_sha256_verified=false` and limits verification to the six pinned
+extracted entries. It must not be described as whole-archive SHA verification.
+Its class is `upstream_evaluation_images`; endpoint-generated or self-generated
+images cannot substitute for it. Building this authority keeps Product Quality
+`Deferred` and does not authorize performance.
+
 The raw PNG metric was extended to accept strict non-interlaced RGB8 as well
 as RGBA8, expanding RGB alpha to 255 without Canvas, color management or
 resampling. Its locked 8x8 sRGB-luma/RGB-byte results are:
