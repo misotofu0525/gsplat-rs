@@ -2,15 +2,18 @@ package com.gsplat.example
 
 import com.gsplat.android.GsplatSurfaceCurrentStatsAdapter
 import com.gsplat.android.GsplatSurfaceCurrentStatsCycle
+import com.gsplat.android.GsplatSurfaceCurrentStatsCycleV2
 import com.gsplat.android.GsplatSurfaceCurrentStatsFailure
 import com.gsplat.android.GsplatSurfaceCurrentStatsIdentity
 import com.gsplat.android.GsplatSurfaceCurrentStatsPollKind
 import com.gsplat.android.GsplatSurfaceCurrentStatsPollResult
+import com.gsplat.android.GsplatSurfaceCurrentStatsPollResultV2
 import com.gsplat.android.GsplatSurfaceCurrentStatsReceipt
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequest
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequestStatus
 import com.gsplat.android.GsplatSurfaceCurrentStatsState
 import com.gsplat.android.GsplatSurfaceCurrentStatsSubmissionStatus
+import com.gsplat.android.GsplatSurfaceCurrentStatsTimingV2
 
 internal data class SurfaceCurrentStatsFrameBinding(
     val frameId: Long,
@@ -20,7 +23,10 @@ internal data class SurfaceCurrentStatsFrameBinding(
 )
 
 internal sealed interface SurfaceCurrentStatsTerminal {
-    data class Ready(val receipt: GsplatSurfaceCurrentStatsReceipt) :
+    data class Ready(
+        val receipt: GsplatSurfaceCurrentStatsReceipt,
+        val timing: GsplatSurfaceCurrentStatsTimingV2? = null
+    ) :
         SurfaceCurrentStatsTerminal
 
     data class Failure(val failure: GsplatSurfaceCurrentStatsFailure) :
@@ -237,10 +243,26 @@ internal class SurfaceCurrentStatsConsumer(
     }
 
     fun afterSuccessfulRender(nativeHandle: Long): SurfaceCurrentStatsDisplay =
-        advanceAfterSuccessfulRender(
-            completeRequest = { request -> adapter.complete(nativeHandle, request) },
-            pollPending = { adapter.pollResult(nativeHandle) }
+        advanceAfterSuccessfulRenderV2(
+            completeRequest = { request -> adapter.completeV2(nativeHandle, request) },
+            pollPending = { adapter.pollResultV2(nativeHandle) }
         )
+
+    internal fun advanceAfterSuccessfulRenderV2(
+        completeRequest: (GsplatSurfaceCurrentStatsRequest) -> GsplatSurfaceCurrentStatsCycleV2,
+        pollPending: () -> GsplatSurfaceCurrentStatsPollResultV2
+    ): SurfaceCurrentStatsDisplay {
+        currentPresentationWatermark = PresentationWatermark()
+        val current = outstanding
+        if (current != null) {
+            consumeCycleV2(completeRequest(current.request))
+        } else if (issued.isNotEmpty()) {
+            consumePolledResultV2(pollPending(), readyIsCurrent = false)
+        } else {
+            publishState(GsplatSurfaceCurrentStatsState.NotRequested(pendingCount = 0))
+        }
+        return display
+    }
 
     internal fun advanceAfterSuccessfulRender(
         completeRequest: (GsplatSurfaceCurrentStatsRequest) -> GsplatSurfaceCurrentStatsCycle,
@@ -259,7 +281,16 @@ internal class SurfaceCurrentStatsConsumer(
     }
 
     fun pollPending(nativeHandle: Long): SurfaceCurrentStatsDisplay =
-        pollPending { adapter.pollResult(nativeHandle) }
+        pollPendingV2 { adapter.pollResultV2(nativeHandle) }
+
+    internal fun pollPendingV2(
+        readPoll: () -> GsplatSurfaceCurrentStatsPollResultV2
+    ): SurfaceCurrentStatsDisplay {
+        if (issued.isNotEmpty()) {
+            consumePolledResultV2(readPoll())
+        }
+        return display
+    }
 
     internal fun pollPending(
         readPoll: () -> GsplatSurfaceCurrentStatsPollResult
@@ -279,6 +310,30 @@ internal class SurfaceCurrentStatsConsumer(
         when (result.poll.kind) {
             GsplatSurfaceCurrentStatsPollKind.READY ->
                 readyTicket = recordReady(checkNotNull(result.poll.receipt))
+            GsplatSurfaceCurrentStatsPollKind.EMPTY,
+            GsplatSurfaceCurrentStatsPollKind.UNSAMPLED -> Unit
+            else -> recordFailure(checkNotNull(result.poll.failure))
+        }
+        if (state is GsplatSurfaceCurrentStatsState.Rejected) {
+            recordRejection(state.reason, state.ticket, null)
+        }
+        publishState(state, readyTicket, readyIsCurrent)
+    }
+
+    internal fun consumePolledResultV2(
+        result: GsplatSurfaceCurrentStatsPollResultV2,
+        readyIsCurrent: Boolean = true
+    ) {
+        val state = result.state
+        var readyTicket: IssuedTicket? = null
+        when (result.poll.kind) {
+            GsplatSurfaceCurrentStatsPollKind.READY -> {
+                val receipt = checkNotNull(result.poll.receipt)
+                readyTicket = recordReady(
+                    receipt.withoutTiming(),
+                    receipt.timing
+                )
+            }
             GsplatSurfaceCurrentStatsPollKind.EMPTY,
             GsplatSurfaceCurrentStatsPollKind.UNSAMPLED -> Unit
             else -> recordFailure(checkNotNull(result.poll.failure))
@@ -314,6 +369,44 @@ internal class SurfaceCurrentStatsConsumer(
             }
             GsplatSurfaceCurrentStatsPollKind.READY ->
                 readyTicket = recordReady(checkNotNull(cycle.poll.receipt))
+            else -> recordFailure(checkNotNull(cycle.poll.failure))
+        }
+        val cycleState = cycle.state
+        if (cycleState is GsplatSurfaceCurrentStatsState.Rejected) {
+            recordRejection(cycleState.reason, cycleState.ticket, intent.binding)
+        }
+        publishState(cycleState, readyTicket)
+    }
+
+    internal fun consumeCycleV2(cycle: GsplatSurfaceCurrentStatsCycleV2) {
+        val intent = checkNotNull(outstanding) {
+            "current-stats V2 cycle arrived without an outstanding intent"
+        }
+        check(outstanding == intent) { "current-stats V2 cycle does not match outstanding intent" }
+        check(cycle.request == intent.request) { "current-stats V2 cycle changed its request status" }
+
+        if (cycle.submission.status == GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED) {
+            val ticket = checkNotNull(cycle.submission.ticket)
+            val identity = checkNotNull(cycle.submission.identity)
+            recordSubmission(intent.binding, ticket, identity)
+            outstanding = null
+        }
+
+        var readyTicket: IssuedTicket? = null
+        when (cycle.poll.kind) {
+            GsplatSurfaceCurrentStatsPollKind.EMPTY -> Unit
+            GsplatSurfaceCurrentStatsPollKind.UNSAMPLED -> {
+                val status = checkNotNull(cycle.poll.requestStatus)
+                recordPreTicketTerminal(
+                    intent.binding,
+                    SurfaceCurrentStatsTerminal.Unavailable(status)
+                )
+                outstanding = null
+            }
+            GsplatSurfaceCurrentStatsPollKind.READY -> {
+                val receipt = checkNotNull(cycle.poll.receipt)
+                readyTicket = recordReady(receipt.withoutTiming(), receipt.timing)
+            }
             else -> recordFailure(checkNotNull(cycle.poll.failure))
         }
         val cycleState = cycle.state
@@ -469,7 +562,8 @@ internal class SurfaceCurrentStatsConsumer(
     }
 
     private fun recordReady(
-        receipt: GsplatSurfaceCurrentStatsReceipt
+        receipt: GsplatSurfaceCurrentStatsReceipt,
+        timing: GsplatSurfaceCurrentStatsTimingV2? = null
     ): IssuedTicket? {
         val issuedTicket = issued[receipt.ticket]
         if (issuedTicket == null) {
@@ -480,7 +574,7 @@ internal class SurfaceCurrentStatsConsumer(
             recordRejection("ready_identity_drift", receipt.ticket, issuedTicket.binding)
             return null
         }
-        val terminal = SurfaceCurrentStatsTerminal.Ready(receipt)
+        val terminal = SurfaceCurrentStatsTerminal.Ready(receipt, timing)
         issuedTicket.binding.sampleIndex?.let { sampleIndex ->
             checkNotNull(samples[sampleIndex]).terminal = terminal
         }

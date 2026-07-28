@@ -432,6 +432,16 @@ class GsplatSurfaceCurrentStatsAdapter {
         )
     }
 
+    /** Same transaction as [complete], retaining the timing-bearing V2 poll. */
+    fun completeV2(
+        nativeHandle: Long,
+        request: GsplatSurfaceCurrentStatsRequest
+    ): GsplatSurfaceCurrentStatsCycleV2 = completeAfterSuccessfulPresentationV2(
+        request = request,
+        readSubmission = { readSubmission(nativeHandle) },
+        readPoll = { readPollV2(nativeHandle) }
+    )
+
     internal fun reconcileAfterSuccessfulRender(
         readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
         readPoll: () -> GsplatSurfaceCurrentStatsPoll
@@ -473,6 +483,25 @@ class GsplatSurfaceCurrentStatsAdapter {
         return complete(request, readSubmission, readPoll)
     }
 
+    internal fun completeAfterSuccessfulPresentationV2(
+        request: GsplatSurfaceCurrentStatsRequest,
+        readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
+        readPoll: () -> GsplatSurfaceCurrentStatsPollV2
+    ): GsplatSurfaceCurrentStatsCycleV2 {
+        advancePresentationWatermark()
+        if (request.status == GsplatSurfaceCurrentStatsRequestStatus.REQUESTED &&
+            outstandingRequest == null
+        ) {
+            outstandingRequest = request
+        }
+        val submission = readSubmission()
+        val submissionRejection = observeSubmission(submission)
+        val poll = readPoll()
+        val pollState = consumePollValue(poll.withoutTiming(), request, submission)
+        state = submissionRejection ?: pollState
+        return GsplatSurfaceCurrentStatsCycleV2(request, submission, poll, state)
+    }
+
     private fun complete(
         request: GsplatSurfaceCurrentStatsRequest,
         readSubmission: () -> GsplatSurfaceCurrentStatsSubmission,
@@ -501,6 +530,15 @@ class GsplatSurfaceCurrentStatsAdapter {
      */
     fun pollResult(nativeHandle: Long): GsplatSurfaceCurrentStatsPollResult =
         consumePollResult(readPoll(nativeHandle))
+
+    /** Single destructive V2 poll retaining same-ticket timing when Ready. */
+    fun pollResultV2(nativeHandle: Long): GsplatSurfaceCurrentStatsPollResultV2 {
+        val poll = readPollV2(nativeHandle)
+        return GsplatSurfaceCurrentStatsPollResultV2(
+            poll = poll,
+            state = consumePoll(poll.withoutTiming())
+        )
+    }
 
     internal fun consumePollResult(
         poll: GsplatSurfaceCurrentStatsPoll
@@ -722,6 +760,12 @@ class GsplatSurfaceCurrentStatsAdapter {
         val raw = LongArray(GsplatSurfaceCurrentStatsPoll.RAW_VALUE_COUNT)
         checkNative(NativeBridge.pollSurfaceCurrentStatsV1(nativeHandle, raw))
         return GsplatSurfaceCurrentStatsPoll.fromRaw(raw)
+    }
+
+    private fun readPollV2(nativeHandle: Long): GsplatSurfaceCurrentStatsPollV2 {
+        val raw = LongArray(GsplatSurfaceCurrentStatsPollV2.RAW_VALUE_COUNT)
+        checkNative(NativeBridge.pollSurfaceCurrentStatsV2(nativeHandle, raw))
+        return GsplatSurfaceCurrentStatsPollV2.fromRaw(raw)
     }
 
     private fun checkNative(code: Int) {

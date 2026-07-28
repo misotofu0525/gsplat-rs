@@ -137,8 +137,15 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
         build_script = (
             COLLECTOR.BASE.REPO_ROOT / "bindings/android/scripts/build-native.sh"
         ).read_text(encoding="utf-8")
-        self.assertIn('  "")\n    CARGO_FEATURE_ARGS=()', build_script)
-        self.assertIn('"${CARGO_FEATURE_ARGS[@]}"', build_script)
+        self.assertIn(
+            "CARGO_BUILD_ARGS=(build -p gsplat-ffi-c --target aarch64-linux-android)",
+            build_script,
+        )
+        self.assertIn(
+            'CARGO_BUILD_ARGS+=(--features "qualification-q3-cpu-$GSPLAT_ANDROID_Q3_CPU_LANE")',
+            build_script,
+        )
+        self.assertNotIn("CARGO_FEATURE_ARGS", build_script)
 
     def test_native_build_rejects_arbitrary_lane_before_sdk_probe(self) -> None:
         environment = os.environ.copy()

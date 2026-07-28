@@ -172,7 +172,10 @@ namespaces. Current-stats alone owns same-present identity and `S/V/C/D`.
 never compared across namespaces, and only a real issued order ticket requires
 exactly one order terminal. Correctness artifacts may therefore carry null
 order fields and an empty order ledger. Optional order timing remains absent
-until its own producer issues a ticket; Q3 timing consumes a later V2 contract.
+until its own producer issues a ticket. Q3 timing instead consumes
+`current-stats/v2`, whose Ready value atomically adds frame-complete and
+validity-gated CPU preprocess/sort timing to the same current-stats ticket,
+identity, and `S/V/C/D` receipt.
 `pumpSurfaceReceiptsV1()` reports QueueComplete versus Timeout
 so device logs can separate pump failure/timeout from a queue-complete but
 unconsumed terminal or mismatched ledger.

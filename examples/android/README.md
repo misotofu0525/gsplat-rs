@@ -100,12 +100,13 @@ post-projection contributors `C`, and issued draw count `D`. The artifact
 requires `0 <= C <= V <= S`, `D=V` for CPU/GPU PostSort, and `D=C` for GPU
 Preproject. Fixed-camera samples still require unique ticket and presentation
 sequence identities. Legacy `GsplatSurfaceStats` values are not live evidence.
-Host transaction/iteration wall time remains available. Preprocess, sort, and
-queue-completion timing is emitted only from an independently issued matching
-order terminal; otherwise those fields are null and declared unavailable.
-Q3 correctness does not require that optional timing producer. Its timing lane
-remains Deferred to the separate V2 timing consumer. Raster timing is
-explicitly unavailable.
+Host transaction/iteration wall time remains available. Q3 preprocess, sort,
+and frame-start-to-queue-completion timing comes from the same
+`current-stats/v2` Ready terminal as the measured frame's identity and
+`S/V/C/D`; optional order telemetry is not used as a timing surrogate. CPU
+phase fields remain null when their V2 validity bits are absent. Q3 correctness
+does not require CPU phase timing, while its timing lane fails closed when any
+required V2 field is absent. Raster timing is explicitly unavailable.
 
 Android GPU-producer collection is Deferred to a separate real-window producer
 evidence slice. The collector rejects `--gpu-producer` before device work; its

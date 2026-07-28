@@ -1432,7 +1432,7 @@ def validate_current_stats_evidence(
     renderer = manifest.get("renderer", {})
     validate_android_environment_receipt(manifest)
     expected_renderer = {
-        "current_stats_schema": "gsplat-surface-current-stats/v1",
+        "current_stats_schema": "gsplat-surface-current-stats/v2",
         "current_stats_strict": True,
         "count_source": "matching_current_stats_ready",
     }
@@ -1451,8 +1451,10 @@ def validate_current_stats_evidence(
     expected_timing = {
         "call_ms": "host_camera_request_render_transaction_wall",
         "frame_wall_ms": "host_iteration_request_through_receipt_queries",
-        "preprocess_ms": "matching_cpu_order_terminal_only",
-        "sort_ms": "matching_cpu_order_terminal_only",
+        "preprocess_ms": "matching_current_stats_v2_ready_cpu_phase",
+        "sort_ms": "matching_current_stats_v2_ready_cpu_phase",
+        "cpu_frame_complete_ms":
+            "matching_current_stats_v2_ready_frame_start_to_queue_complete",
         "raster_ms": None,
     }
     if not isinstance(timing, dict) or any(
@@ -1744,6 +1746,39 @@ def validate_current_stats_evidence(
             "count_semantics"
         ) != "indirect_draw_equals_contributor":
             raise RuntimeError(f"current-stats frame {sample_index} Preproject requires D=C")
+        if entry.get("timing_source") != "same_ticket_v2_ready":
+            raise RuntimeError(
+                f"current-stats frame {sample_index} lacks same-ticket V2 timing provenance"
+            )
+        frame_complete = entry.get("frame_complete_ms")
+        if (
+            not isinstance(frame_complete, (int, float))
+            or isinstance(frame_complete, bool)
+            or not math.isfinite(float(frame_complete))
+            or float(frame_complete) < 0.0
+        ):
+            raise RuntimeError(
+                f"current-stats frame {sample_index} frame-complete timing is invalid"
+            )
+        cpu_preprocess = entry.get("cpu_preprocess_ms")
+        cpu_sort = entry.get("cpu_sort_ms")
+        if (cpu_preprocess is None) != (cpu_sort is None):
+            raise RuntimeError(
+                f"current-stats frame {sample_index} CPU phase timing is partial"
+            )
+        for field, value in (
+            ("cpu_preprocess_ms", cpu_preprocess),
+            ("cpu_sort_ms", cpu_sort),
+        ):
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+            ):
+                raise RuntimeError(
+                    f"current-stats frame {sample_index} {field} is invalid"
+                )
         if frame.get("exact_contributor_compaction") != (plan == "gpu_preproject"):
             raise RuntimeError(
                 f"current-stats frame {sample_index} compaction flag disagrees with plan"
@@ -1767,7 +1802,6 @@ def validate_current_stats_evidence(
         if frame.get("raster_ms") is not None:
             raise RuntimeError("legacy raster timing must remain unavailable")
 
-        order_ticket = frame.get("order_submission_ticket")
         preprocess = frame.get("preprocess_ms")
         sort = frame.get("sort_ms")
         if preprocess is None or sort is None:
@@ -1779,16 +1813,6 @@ def validate_current_stats_evidence(
             }.issubset(unavailable_set):
                 raise RuntimeError("unavailable CPU timing is not declared")
         else:
-            if (
-                not isinstance(order_ticket, int)
-                or isinstance(order_ticket, bool)
-                or order_ticket <= 0
-                or frame.get("order_measurement_ticket") != order_ticket
-                or frame.get("order_measurement_camera_revision") != camera_revision
-            ):
-                raise RuntimeError(
-                    "CPU timing is not joined to this sample's own order terminal"
-                )
             for field, value in (("preprocess_ms", preprocess), ("sort_ms", sort)):
                 if (
                     not isinstance(value, (int, float))
@@ -1797,22 +1821,38 @@ def validate_current_stats_evidence(
                     or float(value) < 0.0
                 ):
                     raise RuntimeError(f"{field} is not a trustworthy timing")
+            if (
+                plan != "cpu_post_sort"
+                or frame.get("current_stats_timing_source") != "same_ticket_v2_ready"
+                or cpu_preprocess is None
+                or cpu_sort is None
+                or float(preprocess) != float(cpu_preprocess)
+                or float(sort) != float(cpu_sort)
+            ):
+                raise RuntimeError(
+                    "CPU timing is not joined to this sample's current-stats V2 terminal"
+                )
 
         cpu_complete = frame.get("cpu_frame_complete_ms")
         if cpu_complete is None:
             if "frames[*].cpu_frame_complete_ms" not in unavailable_set:
                 raise RuntimeError("unavailable CPU completion timing is not declared")
-        elif (
-            preprocess is None
-            or not isinstance(cpu_complete, (int, float))
-            or isinstance(cpu_complete, bool)
-            or not math.isfinite(float(cpu_complete))
-            or float(cpu_complete) < 0.0
-        ):
-            raise RuntimeError(
-                "CPU completion timing is not joined to this sample's own order terminal"
-            )
+        else:
+            if (
+                not isinstance(cpu_complete, (int, float))
+                or isinstance(cpu_complete, bool)
+                or not math.isfinite(float(cpu_complete))
+                or float(cpu_complete) < 0.0
+                or plan != "cpu_post_sort"
+                or frame.get("current_stats_timing_source") != "same_ticket_v2_ready"
+                or float(cpu_complete) != float(frame_complete)
+            ):
+                raise RuntimeError(
+                    "CPU completion timing is not joined to this sample's "
+                    "current-stats V2 terminal"
+                )
 
+        order_ticket = frame.get("order_submission_ticket")
         gpu_complete = frame.get("gpu_complete_ms")
         if gpu_complete is None:
             if "frames[*].gpu_complete_ms" not in unavailable_set:

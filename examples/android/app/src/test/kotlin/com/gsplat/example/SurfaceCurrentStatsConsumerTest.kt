@@ -2,18 +2,22 @@ package com.gsplat.example
 
 import com.gsplat.android.GsplatSurfaceCurrentStatsCountSemantics
 import com.gsplat.android.GsplatSurfaceCurrentStatsCycle
+import com.gsplat.android.GsplatSurfaceCurrentStatsCycleV2
 import com.gsplat.android.GsplatSurfaceCurrentStatsFailure
 import com.gsplat.android.GsplatSurfaceCurrentStatsIdentity
 import com.gsplat.android.GsplatSurfaceCurrentStatsPlan
 import com.gsplat.android.GsplatSurfaceCurrentStatsPoll
 import com.gsplat.android.GsplatSurfaceCurrentStatsPollKind
 import com.gsplat.android.GsplatSurfaceCurrentStatsPollResult
+import com.gsplat.android.GsplatSurfaceCurrentStatsPollV2
 import com.gsplat.android.GsplatSurfaceCurrentStatsReceipt
+import com.gsplat.android.GsplatSurfaceCurrentStatsReceiptV2
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequest
 import com.gsplat.android.GsplatSurfaceCurrentStatsRequestStatus
 import com.gsplat.android.GsplatSurfaceCurrentStatsState
 import com.gsplat.android.GsplatSurfaceCurrentStatsSubmission
 import com.gsplat.android.GsplatSurfaceCurrentStatsSubmissionStatus
+import com.gsplat.android.GsplatSurfaceCurrentStatsTimingV2
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -21,6 +25,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SurfaceCurrentStatsConsumerTest {
+    @Test
+    fun v2ReadyRetainsTimingOnTheSameStrictSampleTicket() {
+        val consumer = SurfaceCurrentStatsConsumer()
+        val request = consumer.beginRequest(binding(0)) { requested() }
+        val sampleIdentity = identity(
+            cameraRevision = 7,
+            presentationSequence = 41,
+            plan = GsplatSurfaceCurrentStatsPlan.CPU_POST_SORT
+        )
+        val timing = GsplatSurfaceCurrentStatsTimingV2(6.5f, 1.25f, 2.75f)
+        val receipt = receipt(ticket = 11, identity = sampleIdentity)
+        consumer.consumeCycleV2(
+            GsplatSurfaceCurrentStatsCycleV2(
+                request = request,
+                submission = GsplatSurfaceCurrentStatsSubmission(
+                    GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED,
+                    11,
+                    sampleIdentity
+                ),
+                poll = GsplatSurfaceCurrentStatsPollV2(
+                    kind = GsplatSurfaceCurrentStatsPollKind.READY,
+                    receipt = GsplatSurfaceCurrentStatsReceiptV2(
+                        ticket = receipt.ticket,
+                        identity = receipt.identity,
+                        sourceCount = receipt.sourceCount,
+                        visibleCount = receipt.visibleCount,
+                        contributorCount = receipt.contributorCount,
+                        drawnCount = receipt.drawnCount,
+                        countSemantics = receipt.countSemantics,
+                        timing = timing
+                    )
+                ),
+                state = GsplatSurfaceCurrentStatsState.Ready(receipt, pendingCount = 0)
+            )
+        )
+
+        val ready = consumer.strictRecords(1).single().terminal as
+            SurfaceCurrentStatsTerminal.Ready
+        assertEquals(11L, ready.receipt.ticket)
+        assertEquals(timing, ready.timing)
+    }
+
     @Test
     fun requestSubmissionAndLaterReadyCloseOneMeasuredSample() {
         val consumer = SurfaceCurrentStatsConsumer()

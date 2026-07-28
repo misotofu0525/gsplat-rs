@@ -44,6 +44,17 @@ data class GsplatSurfaceCurrentStatsReceiptV2(
                 }
         }
     }
+
+    /** Count/identity projection used by the existing presentation-safe adapter. */
+    fun withoutTiming() = GsplatSurfaceCurrentStatsReceipt(
+        ticket = ticket,
+        identity = identity,
+        sourceCount = sourceCount,
+        visibleCount = visibleCount,
+        contributorCount = contributorCount,
+        drawnCount = drawnCount,
+        countSemantics = countSemantics
+    )
 }
 
 /** One destructive value from the Renderer-owned current-stats single-pop queue. */
@@ -72,7 +83,7 @@ data class GsplatSurfaceCurrentStatsPollV2(
         }
     }
 
-    internal fun withoutTiming(): GsplatSurfaceCurrentStatsPoll = when (kind) {
+    fun withoutTiming(): GsplatSurfaceCurrentStatsPoll = when (kind) {
         GsplatSurfaceCurrentStatsPollKind.EMPTY -> GsplatSurfaceCurrentStatsPoll(kind)
         GsplatSurfaceCurrentStatsPollKind.UNSAMPLED ->
             GsplatSurfaceCurrentStatsPoll(kind = kind, requestStatus = requestStatus)
@@ -80,15 +91,7 @@ data class GsplatSurfaceCurrentStatsPollV2(
             val ready = checkNotNull(receipt)
             GsplatSurfaceCurrentStatsPoll(
                 kind = kind,
-                receipt = GsplatSurfaceCurrentStatsReceipt(
-                    ticket = ready.ticket,
-                    identity = ready.identity,
-                    sourceCount = ready.sourceCount,
-                    visibleCount = ready.visibleCount,
-                    contributorCount = ready.contributorCount,
-                    drawnCount = ready.drawnCount,
-                    countSemantics = ready.countSemantics
-                )
+                receipt = ready.withoutTiming()
             )
         }
         else -> GsplatSurfaceCurrentStatsPoll(kind = kind, failure = failure)
@@ -183,3 +186,17 @@ data class GsplatSurfaceCurrentStatsPollV2(
         }
     }
 }
+
+/** One V2 request/render/submission/poll transaction over the V1 ticket owner. */
+data class GsplatSurfaceCurrentStatsCycleV2(
+    val request: GsplatSurfaceCurrentStatsRequest,
+    val submission: GsplatSurfaceCurrentStatsSubmission,
+    val poll: GsplatSurfaceCurrentStatsPollV2,
+    val state: GsplatSurfaceCurrentStatsState
+)
+
+/** One destructive V2 poll plus its presentation-safe adapter state. */
+data class GsplatSurfaceCurrentStatsPollResultV2(
+    val poll: GsplatSurfaceCurrentStatsPollV2,
+    val state: GsplatSurfaceCurrentStatsState
+)

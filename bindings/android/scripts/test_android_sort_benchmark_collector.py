@@ -126,7 +126,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "path": "packed_atlas",
             "backend": "vulkan",
             "gpu_producer_measurement_enabled": False,
-            "current_stats_schema": "gsplat-surface-current-stats/v1",
+            "current_stats_schema": "gsplat-surface-current-stats/v2",
             "current_stats_strict": True,
             "count_source": "matching_current_stats_ready",
         },
@@ -135,8 +135,10 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
         "timing_contract": {
             "call_ms": "host_camera_request_render_transaction_wall",
             "frame_wall_ms": "host_iteration_request_through_receipt_queries",
-            "preprocess_ms": "matching_cpu_order_terminal_only",
-            "sort_ms": "matching_cpu_order_terminal_only",
+            "preprocess_ms": "matching_current_stats_v2_ready_cpu_phase",
+            "sort_ms": "matching_current_stats_v2_ready_cpu_phase",
+            "cpu_frame_complete_ms":
+                "matching_current_stats_v2_ready_frame_start_to_queue_complete",
             "raster_ms": None,
         },
         "environment": {
@@ -153,10 +155,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "environment.adapter",
             "environment.driver",
             "environment.android_device_receipt.device_properties.gfx_driver_0_property.value",
-            "frames[*].preprocess_ms",
-            "frames[*].sort_ms",
             "frames[*].gpu_complete_ms",
-            "frames[*].cpu_frame_complete_ms",
             "frames[*].raster_ms",
         ],
         "trace": {
@@ -184,6 +183,14 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             },
         },
     }
+    if backend != "cpu":
+        manifest["unavailable_fields"].extend(
+            [
+                "frames[*].preprocess_ms",
+                "frames[*].sort_ms",
+                "frames[*].cpu_frame_complete_ms",
+            ]
+        )
     frames = []
     for index in range(sample_count):
         revision = 7
@@ -200,10 +207,10 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "exact_contributor_compaction": False,
                 "call_ms": 1.0,
                 "frame_wall_ms": 2.0,
-                "preprocess_ms": None,
-                "sort_ms": None,
+                "preprocess_ms": 0.5 if backend == "cpu" else None,
+                "sort_ms": 0.75 if backend == "cpu" else None,
                 "gpu_complete_ms": None,
-                "cpu_frame_complete_ms": None,
+                "cpu_frame_complete_ms": 2.25 if backend == "cpu" else None,
                 "raster_ms": None,
                 "sort_refreshed": False,
                 "order_measurement_ticket_issued": False,
@@ -215,6 +222,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "current_stats_executed_plan": (
                     "cpu_post_sort" if backend == "cpu" else "gpu_post_sort"
                 ),
+                "current_stats_timing_source": "same_ticket_v2_ready",
                 "order_backend": "cpu" if backend == "cpu" else "gpu",
                 "camera_receipt": {
                     "schema": COLLECTOR.CAMERA_RECEIPT_SCHEMA,
@@ -278,6 +286,10 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "contributor": 70,
                 "drawn": 80,
                 "count_semantics": "indirect_draw_equals_visible",
+                "timing_source": "same_ticket_v2_ready",
+                "frame_complete_ms": 2.25,
+                "cpu_preprocess_ms": 0.5 if backend == "cpu" else None,
+                "cpu_sort_ms": 0.75 if backend == "cpu" else None,
                 "exactness_receipt_id": "fixture-exactness",
             }
             for index in range(sample_count)
@@ -1194,6 +1206,39 @@ class ParsingTests(unittest.TestCase):
                 fixture[3],
                 fixture[4],
             )
+
+    def test_current_stats_v2_timing_is_same_ticket_and_fail_closed(self) -> None:
+        fixture = camera_validation_fixture("cpu")
+        COLLECTOR.validate_run_artifact(
+            fixture[0], fixture[1], fixture[2], "cpu", "packed",
+            {"sha256": "abc", "bytes": 123}, fixture[3], fixture[4]
+        )
+
+        mutations = {
+            "frame timing drift": lambda manifest, summary, frames: frames[0].__setitem__(
+                "sort_ms", 9.0
+            ),
+            "missing V2 provenance": lambda manifest, summary, frames: summary[
+                "current_stats_terminal_ledger"
+            ][0].__setitem__("timing_source", "legacy_order_terminal"),
+            "partial CPU phase": lambda manifest, summary, frames: summary[
+                "current_stats_terminal_ledger"
+            ][0].__setitem__("cpu_sort_ms", None),
+            "frame completion drift": lambda manifest, summary, frames: frames[0].__setitem__(
+                "cpu_frame_complete_ms", 99.0
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                manifest = copy.deepcopy(fixture[0])
+                summary = copy.deepcopy(fixture[1])
+                frames = copy.deepcopy(fixture[2])
+                mutate(manifest, summary, frames)
+                with self.assertRaises(RuntimeError):
+                    COLLECTOR.validate_run_artifact(
+                        manifest, summary, frames, "cpu", "packed",
+                        {"sha256": "abc", "bytes": 123}, fixture[3], fixture[4]
+                    )
 
     def test_order_and_current_stats_use_independent_ticket_namespaces(self) -> None:
         fixture = camera_validation_fixture("gpu")

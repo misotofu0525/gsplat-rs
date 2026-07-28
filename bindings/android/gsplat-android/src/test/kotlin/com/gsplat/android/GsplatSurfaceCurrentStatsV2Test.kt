@@ -74,6 +74,43 @@ class GsplatSurfaceCurrentStatsV2Test {
         }
     }
 
+    @Test
+    fun adapterConsumesOneV2TerminalAndPreservesPresentationState() {
+        val adapter = GsplatSurfaceCurrentStatsAdapter()
+        val request = adapter.observeRequest(
+            GsplatSurfaceCurrentStatsRequest(
+                GsplatSurfaceCurrentStatsRequestStatus.REQUESTED
+            )
+        )
+        val raw = baseTerminalRaw(GsplatSurfaceCurrentStatsPollKind.READY, ticket = 73)
+        raw[2] = GsplatSurfaceCurrentStatsCountSemantics.INDIRECT_DRAW_EQUALS_VISIBLE
+            .nativeValue.toLong()
+        raw[3] = 0b111
+        raw[15] = 10
+        raw[16] = 8
+        raw[17] = 6
+        raw[18] = 8
+        raw[19] = 6.5f.toRawBits().toLong() and 0xffff_ffffL
+        raw[20] = 1.25f.toRawBits().toLong() and 0xffff_ffffL
+        raw[21] = 2.75f.toRawBits().toLong() and 0xffff_ffffL
+
+        val cycle = adapter.completeAfterSuccessfulPresentationV2(
+            request = request,
+            readSubmission = {
+                GsplatSurfaceCurrentStatsSubmission(
+                    status = GsplatSurfaceCurrentStatsSubmissionStatus.ISSUED,
+                    ticket = 73,
+                    identity = identity()
+                )
+            },
+            readPoll = { GsplatSurfaceCurrentStatsPollV2.fromRaw(raw) }
+        )
+
+        assertEquals(6.5f, cycle.poll.receipt?.timing?.frameCompleteMs)
+        assertEquals(73L, (cycle.state as GsplatSurfaceCurrentStatsState.Ready).receipt.ticket)
+        assertEquals(0, adapter.pendingCount)
+    }
+
     private fun baseTerminalRaw(
         kind: GsplatSurfaceCurrentStatsPollKind,
         ticket: Long

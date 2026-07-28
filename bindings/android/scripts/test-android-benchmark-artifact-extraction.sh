@@ -219,7 +219,7 @@ frames = [
 manifest["renderer"].update(
     {
         "order_backend_requested": "cpu",
-        "current_stats_schema": "gsplat-surface-current-stats/v1",
+        "current_stats_schema": "gsplat-surface-current-stats/v2",
         "current_stats_strict": True,
         "count_source": "matching_current_stats_ready",
         "count_semantics": "candidate_visible_contributor_issued_v1",
@@ -294,14 +294,15 @@ mismatched_environment_receipt_destination.write_text(
 manifest["timing_contract"] = {
     "call_ms": "host_camera_request_render_transaction_wall",
     "frame_wall_ms": "host_iteration_request_through_receipt_queries",
-    "preprocess_ms": "matching_cpu_order_terminal_only",
-    "sort_ms": "matching_cpu_order_terminal_only",
+    "preprocess_ms": "matching_current_stats_v2_ready_cpu_phase",
+    "sort_ms": "matching_current_stats_v2_ready_cpu_phase",
+    "cpu_frame_complete_ms":
+        "matching_current_stats_v2_ready_frame_start_to_queue_complete",
     "raster_ms": None,
 }
 for unavailable in (
     "environment.adapter",
     "environment.driver",
-    "frames[*].cpu_frame_complete_ms",
     "frames[*].raster_ms",
 ):
     if unavailable not in manifest["unavailable_fields"]:
@@ -335,7 +336,7 @@ for index, frame in enumerate(frames):
             "sort_refreshed": True,
             "exact_contributor_compaction": False,
             "raster_ms": None,
-            "cpu_frame_complete_ms": None,
+            "cpu_frame_complete_ms": frame["call_ms"],
             "order_measurement_ticket_issued": True,
             "order_submission_ticket": order_ticket,
             "order_measurement_ticket": order_ticket,
@@ -343,6 +344,7 @@ for index, frame in enumerate(frames):
             "current_stats_ticket": current_stats_ticket,
             "current_stats_presentation_sequence": presentation_sequence,
             "current_stats_executed_plan": "cpu_post_sort",
+            "current_stats_timing_source": "same_ticket_v2_ready",
             "order_backend": "cpu",
             "camera_receipt": {
                 "camera_revision": revision,
@@ -365,6 +367,10 @@ for index, frame in enumerate(frames):
             "contributor": frame["contributor"],
             "drawn": frame["drawn"],
             "count_semantics": "indirect_draw_equals_visible",
+            "timing_source": "same_ticket_v2_ready",
+            "frame_complete_ms": frame["call_ms"],
+            "cpu_preprocess_ms": frame["preprocess_ms"],
+            "cpu_sort_ms": frame["sort_ms"],
             "exactness_receipt_id": "strict-fixture-exactness",
         }
     )
@@ -384,6 +390,9 @@ for index, frame in enumerate(frames):
     )
 summary["current_stats_terminal_ledger"] = ledger
 summary["order_terminal_ledger"] = order_ledger
+summary["distributions"]["cpu_frame_complete_ms"] = copy.deepcopy(
+    summary["distributions"]["call_ms"]
+)
 summary.setdefault("sort_telemetry", {}).update(
     {
         "order_measurement_scheduled_count": len(order_ledger),

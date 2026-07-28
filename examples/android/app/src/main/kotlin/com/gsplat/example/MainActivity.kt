@@ -58,7 +58,7 @@ private const val CPU_MEASUREMENT_EXACT_CONTRIBUTOR_DRAW = 1 shl 1
 private const val CPU_MEASUREMENT_CONTRIBUTOR_COUNT_VALID = 1 shl 2
 private const val ORDER_COUNTS_EXACT_CONTRIBUTOR_DRAW = 1 shl 0
 private const val COUNT_SEMANTICS = "candidate_visible_contributor_issued_v1"
-private const val CURRENT_STATS_SCHEMA = "gsplat-surface-current-stats/v1"
+private const val CURRENT_STATS_SCHEMA = "gsplat-surface-current-stats/v2"
 private const val RENDER_SHUTDOWN_TIMEOUT_MS = 1_000L
 private const val TERMINAL_RECEIPT_PUMP_TIMEOUT_NS = 100_000_000L
 
@@ -3160,6 +3160,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         ) = (currentStats.recordForSample(index)?.terminal as?
             SurfaceCurrentStatsTerminal.Ready)?.receipt
 
+        private fun currentStatsTiming(
+            index: Int,
+            currentStats: SurfaceCurrentStatsConsumer
+        ) = (currentStats.recordForSample(index)?.terminal as?
+            SurfaceCurrentStatsTerminal.Ready)?.timing
+
+        private fun currentStatsCpuTiming(
+            index: Int,
+            currentStats: SurfaceCurrentStatsConsumer
+        ) = currentStatsTiming(index, currentStats).takeIf {
+            currentStatsReady(index, currentStats)?.identity?.executedPlan ==
+                GsplatSurfaceCurrentStatsPlan.CPU_POST_SORT
+        }
+
         private fun resolvedVisible(
             index: Int,
             currentStats: SurfaceCurrentStatsConsumer
@@ -3385,11 +3399,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             var gpuQueueCompleteMs = 0.0
             var gpuQueueCompleteSamples = 0
             for (index in 0 until samples) {
-                cpuOrderMeasurementForFrame(index)?.let { measurement ->
-                    cpuTimingSamples += 1
-                    cpuPreprocessMs += measurement.preprocessMs
-                    cpuSortMs += measurement.sortMs
-                    cpuQueueCompleteMs += measurement.frameCompleteMs
+                currentStatsCpuTiming(index, currentStats)?.let { timing ->
+                    val preprocessMs = timing.cpuPreprocessMs
+                    val sortMs = timing.cpuSortMs
+                    if (preprocessMs != null && sortMs != null) {
+                        cpuTimingSamples += 1
+                        cpuPreprocessMs += preprocessMs
+                        cpuSortMs += sortMs
+                    }
+                    cpuQueueCompleteMs += timing.frameCompleteMs
                     cpuQueueCompleteSamples += 1
                 }
                 orderMeasurementForFrame(index)?.let { measurement ->
@@ -3509,7 +3527,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "frames[*].raster_ms",
                 "summary.distributions.raster_ms"
             )
-            if ((0 until samples).any { cpuOrderMeasurementForFrame(it) == null }) {
+            if ((0 until samples).any {
+                    val timing = currentStatsCpuTiming(it, currentStats)
+                    timing?.cpuPreprocessMs == null || timing.cpuSortMs == null
+                }
+            ) {
                 unavailable += "frames[*].preprocess_ms"
                 unavailable += "frames[*].sort_ms"
             }
@@ -3519,12 +3541,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if (orderMeasurementsByTicket.isEmpty()) {
                 unavailable += "summary.distributions.gpu_complete_ms"
             }
-            if ((0 until samples).any { cpuOrderMeasurementForFrame(it) == null }) {
+            if ((0 until samples).any { currentStatsCpuTiming(it, currentStats) == null }) {
                 unavailable += "frames[*].cpu_frame_complete_ms"
             }
-            if (cpuOrderMeasurementsByTicket.isEmpty()) {
+            if ((0 until samples).none {
+                    val timing = currentStatsCpuTiming(it, currentStats)
+                    timing?.cpuPreprocessMs != null && timing.cpuSortMs != null
+                }
+            ) {
                 unavailable += "summary.distributions.preprocess_ms"
                 unavailable += "summary.distributions.sort_ms"
+            }
+            if ((0 until samples).none { currentStatsCpuTiming(it, currentStats) != null }) {
                 unavailable += "summary.distributions.cpu_frame_complete_ms"
             }
             if (thermalStatusStart == null) unavailable += "environment.thermal_status_start"
@@ -3711,8 +3739,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         "frame_wall_ms",
                         "host_iteration_request_through_receipt_queries"
                     )
-                    .put("preprocess_ms", "matching_cpu_order_terminal_only")
-                    .put("sort_ms", "matching_cpu_order_terminal_only")
+                    .put("preprocess_ms", "matching_current_stats_v2_ready_cpu_phase")
+                    .put("sort_ms", "matching_current_stats_v2_ready_cpu_phase")
+                    .put(
+                        "cpu_frame_complete_ms",
+                        "matching_current_stats_v2_ready_frame_start_to_queue_complete"
+                    )
                     .put("raster_ms", JSONObject.NULL))
                 .put("environment", JSONObject()
                     .put("platform", "android-native")
@@ -3745,6 +3777,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 val producerMeasurement = gpuProducerMeasurement(index)
                 val currentRecord = currentStatsRecords[index]
                 val currentIdentity = checkNotNull(currentRecord.identity)
+                val currentTiming = checkNotNull(
+                    (currentRecord.terminal as? SurfaceCurrentStatsTerminal.Ready)?.timing
+                ) { "frame $index lacks its timing-bearing current-stats V2 terminal" }
+                val currentCpuTiming = currentTiming.takeIf {
+                    currentIdentity.executedPlan == GsplatSurfaceCurrentStatsPlan.CPU_POST_SORT
+                }
                 val frame = JSONObject()
                     .put("schema", "gsplat-benchmark/v1")
                     .put("record_type", "frame")
@@ -3753,12 +3791,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("elapsed_ns", elapsedNs[index])
                     .put("call_ms", callNs[index].toDouble() / 1_000_000.0)
                     .put("frame_wall_ms", frameWallNs[index].toDouble() / 1_000_000.0)
-                    .put("preprocess_ms", cpuMeasurement?.preprocessMs?.toDouble() ?: JSONObject.NULL)
-                    .put("sort_ms", cpuMeasurement?.sortMs?.toDouble() ?: JSONObject.NULL)
+                    .put(
+                        "preprocess_ms",
+                        currentCpuTiming?.cpuPreprocessMs?.toDouble() ?: JSONObject.NULL
+                    )
+                    .put("sort_ms", currentCpuTiming?.cpuSortMs?.toDouble() ?: JSONObject.NULL)
                     .put("geometry_submit_ms", JSONObject.NULL)
                     .put("gpu_wait_ms", JSONObject.NULL)
                     .put("gpu_complete_ms", orderMeasurement?.gpuCompleteMs?.toDouble() ?: JSONObject.NULL)
-                    .put("cpu_frame_complete_ms", cpuMeasurement?.frameCompleteMs?.toDouble() ?: JSONObject.NULL)
+                    .put(
+                        "cpu_frame_complete_ms",
+                        currentCpuTiming?.frameCompleteMs?.toDouble() ?: JSONObject.NULL
+                    )
                     .put("visible", resolvedVisible(index, currentStats))
                     .put("drawn", resolvedDrawn(index, currentStats))
                     .put("sort_refreshed", flags and 1L != 0L)
@@ -3805,6 +3849,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         "current_stats_executed_plan",
                         currentStatsPlanName(currentIdentity.executedPlan)
                     )
+                    .put("current_stats_timing_source", "same_ticket_v2_ready")
                     .also { frameJson ->
                         frameJson
                             .put("contributor", contributor)
@@ -3866,16 +3911,25 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("frame_wall_ms", distributionJson(frameWallNs, samples, 1_000_000.0))
                     .put(
                         "preprocess_ms",
-                        cpuMeasurementDistribution { it.preprocessMs.toDouble() }
+                        currentStatsTimingDistribution(currentStats) {
+                            it.cpuPreprocessMs?.toDouble()
+                        }
                     )
                     .put(
                         "sort_ms",
-                        cpuMeasurementDistribution { it.sortMs.toDouble() }
+                        currentStatsTimingDistribution(currentStats) {
+                            it.cpuSortMs?.toDouble()
+                        }
                     )
                     .put("geometry_submit_ms", JSONObject.NULL)
                     .put("gpu_wait_ms", JSONObject.NULL)
                     .put("gpu_complete_ms", gpuMeasurementDistribution { it.gpuCompleteMs.toDouble() })
-                    .put("cpu_frame_complete_ms", cpuMeasurementDistribution())
+                    .put(
+                        "cpu_frame_complete_ms",
+                        currentStatsTimingDistribution(currentStats) {
+                            it.frameCompleteMs.toDouble()
+                        }
+                    )
                     .put("gpu_preprocess_ms", gpuMeasurementDistribution { it.gpuPreprocessMs?.toDouble() })
                     .put("gpu_radix_ms", gpuMeasurementDistribution { it.gpuRadixMs?.toDouble() })
                     .put("gpu_order_ms", gpuMeasurementDistribution { it.gpuOrderMs?.toDouble() }))
@@ -4002,9 +4056,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         ): JSONArray = JSONArray().also { ledger ->
             records.forEachIndexed { index, record ->
                 val identity = checkNotNull(record.identity)
-                val ready = checkNotNull(
-                    (record.terminal as? SurfaceCurrentStatsTerminal.Ready)?.receipt
+                val terminal = checkNotNull(
+                    record.terminal as? SurfaceCurrentStatsTerminal.Ready
                 )
+                val ready = terminal.receipt
+                val timing = checkNotNull(terminal.timing) {
+                    "current-stats record $index lacks a V2 timing receipt"
+                }
                 ledger.put(
                     JSONObject()
                         .put("sample_index", index)
@@ -4025,6 +4083,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         .put(
                             "count_semantics",
                             currentStatsCountSemanticsName(ready.countSemantics)
+                        )
+                        .put("timing_source", "same_ticket_v2_ready")
+                        .put("frame_complete_ms", timing.frameCompleteMs.toDouble())
+                        .put(
+                            "cpu_preprocess_ms",
+                            timing.cpuPreprocessMs?.toDouble() ?: JSONObject.NULL
+                        )
+                        .put(
+                            "cpu_sort_ms",
+                            timing.cpuSortMs?.toDouble() ?: JSONObject.NULL
                         )
                         .put("exactness_receipt_id", exactnessReceiptId)
                 )
@@ -4321,31 +4389,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 .put("max", values.last())
         }
 
-        private fun cpuMeasurementDistribution(
-            select: (BenchmarkCpuOrderMeasurement) -> Double = {
-                it.frameCompleteMs.toDouble()
-            }
+        private fun currentStatsTimingDistribution(
+            currentStats: SurfaceCurrentStatsConsumer,
+            select: (com.gsplat.android.GsplatSurfaceCurrentStatsTimingV2) -> Double?
         ): Any {
-            val values = ArrayList<Double>()
-            for (index in 0 until samples) {
-                cpuOrderMeasurementForFrame(index)?.let { measurement ->
-                    values += select(measurement)
-                }
+            val values = (0 until samples).mapNotNull { index ->
+                currentStatsCpuTiming(index, currentStats)?.let(select)
             }
-            values.sort()
-            if (values.isEmpty()) return JSONObject.NULL
-            fun nearestRank(fraction: Double): Double {
-                val index = maxOf(kotlin.math.ceil(fraction * values.size).toInt() - 1, 0)
-                return values[index]
-            }
-            return JSONObject()
-                .put("count", values.size)
-                .put("mean", values.sum() / values.size.toDouble())
-                .put("p50", nearestRank(0.50))
-                .put("p90", nearestRank(0.90))
-                .put("p95", nearestRank(0.95))
-                .put("p99", nearestRank(0.99))
-                .put("max", values.last())
+            return if (values.isEmpty()) JSONObject.NULL else doubleDistributionJson(values)
         }
 
         private fun utcTimestamp(epochMs: Long): String =
