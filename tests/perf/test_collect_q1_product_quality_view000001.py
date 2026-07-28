@@ -25,9 +25,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
         formal = root / "formal"
         evaluation = root / "evaluation"
         truck = root / "truck.ply"
+        chrome = root / "chrome"
         formal.mkdir()
         evaluation.mkdir()
         truck.write_bytes(b"truck")
+        chrome.write_text("#!/bin/sh\n", encoding="utf-8")
+        chrome.chmod(0o755)
         output = root / "published"
         args = argparse.Namespace(
             expected_commit="a" * 40,
@@ -40,6 +43,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             "formal": formal,
             "evaluation": evaluation,
             "truck": truck,
+            "chrome": chrome,
             "output": output,
             "protocol_sha256": "b" * 64,
             "immutable_binding": {
@@ -62,10 +66,6 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 output = pathlib.Path(argv[argv.index("--output") + 1])
                 output.mkdir()
                 (output / "manifest.json").write_text("{}\n", encoding="utf-8")
-            elif argv[:3] == ("npm", "run", "quality:truck-view000001"):
-                output = pathlib.Path(env["PLAYCANVAS_ARTIFACT_DIR"])
-                output.mkdir()
-                (output / "manifest.json").write_text("{}\n", encoding="utf-8")
             else:
                 output = pathlib.Path(argv[argv.index("--output") + 1])
                 output.mkdir()
@@ -73,6 +73,51 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                     json.dumps({"status": "Accepted"}) + "\n", encoding="utf-8"
                 )
             return subprocess.CompletedProcess(argv, 0, "", "")
+
+        return invoke
+
+    @staticmethod
+    def successful_owned_invoke(
+        calls: list[tuple[str, ...]],
+        *,
+        returncode: int = 0,
+        handshake_verified: bool = True,
+    ):
+        def invoke(argv, cwd, env, timeout_seconds, ownership):
+            calls.append(tuple(argv))
+            output = pathlib.Path(env["PLAYCANVAS_ARTIFACT_DIR"])
+            output.mkdir()
+            (output / "manifest.json").write_text("{}\n", encoding="utf-8")
+            profile = pathlib.Path(ownership["user_data_dir"])
+            profile.mkdir(parents=True)
+            (profile / "profile-state").write_text("owned\n", encoding="utf-8")
+            handshake = pathlib.Path(ownership["handshake_path"])
+            handshake.parent.mkdir(parents=True)
+            handshake.write_text("{}\n", encoding="utf-8")
+            return COLLECTOR.PROCESS_OWNER.ProcessOutcome(
+                argv=list(argv),
+                returncode=returncode,
+                stdout="playcanvas stdout\n",
+                stderr="playcanvas stderr\n" if returncode else "",
+                timed_out=False,
+                timeout_seconds=timeout_seconds,
+                cleanup={
+                    "isolated_process_group": True,
+                    "lineage_complete": True,
+                    "group_gone": True,
+                    "orphan_descendants_detected": False,
+                    "survivors": [],
+                    "surviving_process_groups": [],
+                    "browser_ownership": {
+                        **ownership,
+                        "handshake_verified": handshake_verified,
+                        "handshake": {
+                            "schema": "gsplat-q1-browser-process-ownership/v1"
+                        },
+                        "marker_processes_final": [],
+                    },
+                },
+            )
 
         return invoke
 
@@ -88,13 +133,20 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 result = COLLECTOR.collect(
                     args,
                     invoke=self.successful_invoke(calls),
+                    owned_invoke=self.successful_owned_invoke(calls),
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
             self.assertEqual(result, args.output)
             self.assertEqual(len(calls), 3)
             self.assertIn("collect-q1-product-quality-native.py", " ".join(calls[0]))
-            self.assertEqual(calls[1][:3], ("npm", "run", "quality:truck-view000001"))
+            self.assertEqual(
+                calls[1],
+                (
+                    "node",
+                    "tests/competitive/playcanvas/scripts/run-timed-benchmark.mjs",
+                ),
+            )
             self.assertIn("validate-q1-product-quality-smoke.py", " ".join(calls[2]))
             self.assertEqual(calls[2][0], sys.executable)
             self.assertEqual(calls[2][1], str(COLLECTOR.OFFLINE_GATE))
@@ -114,6 +166,16 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             self.assertEqual(receipt["product_quality"], "Deferred")
             self.assertFalse(receipt["performance_authorized"])
             self.assertTrue(all(not step["automatic_retry"] for step in receipt["steps"]))
+            process = json.loads(
+                (result / "requests/playcanvas-process/process.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(
+                process["cleanup"]["browser_ownership"]["handshake_verified"]
+            )
+            self.assertFalse((result / "process-home").exists())
+            self.assertFalse((result / "browser-handshakes").exists())
 
     def test_first_failure_stops_without_retry_and_preserves_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -134,6 +196,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.collect(
                     args,
                     invoke=invoke,
+                    owned_invoke=self.successful_owned_invoke(calls),
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
@@ -168,15 +231,13 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
 
             def invoke(argv, cwd, env):
                 calls.append(tuple(argv))
-                if len(calls) == 1:
-                    output = pathlib.Path(argv[argv.index("--output") + 1])
-                    output.mkdir()
-                    immutable = output / "manifest.json"
-                    immutable.write_text("{}\n", encoding="utf-8")
-                    os.chmod(immutable, 0o444)
-                    os.chmod(output, 0o555)
-                    return subprocess.CompletedProcess(argv, 0, "", "")
-                return subprocess.CompletedProcess(argv, 17, "", "")
+                output = pathlib.Path(argv[argv.index("--output") + 1])
+                output.mkdir()
+                immutable = output / "manifest.json"
+                immutable.write_text("{}\n", encoding="utf-8")
+                os.chmod(immutable, 0o444)
+                os.chmod(output, 0o555)
+                return subprocess.CompletedProcess(argv, 0, "", "")
 
             with (
                 mock.patch.object(COLLECTOR, "require_clean_exact"),
@@ -185,6 +246,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.collect(
                     args,
                     invoke=invoke,
+                    owned_invoke=self.successful_owned_invoke(calls, returncode=17),
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
@@ -193,6 +255,82 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             failures = list(root.glob("published.failed-*"))
             self.assertEqual(len(failures), 1)
             self.assertTrue((failures[0] / "native-view000001/manifest.json").is_file())
+
+    def test_playcanvas_zero_exit_without_handshake_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args, inputs = self.fixture(root)
+            calls = []
+
+            with (
+                mock.patch.object(COLLECTOR, "require_clean_exact"),
+                self.assertRaisesRegex(
+                    COLLECTOR.CollectionError,
+                    "lacks terminal browser ownership proof",
+                ),
+            ):
+                COLLECTOR.collect(
+                    args,
+                    invoke=self.successful_invoke(calls),
+                    owned_invoke=self.successful_owned_invoke(
+                        calls, handshake_verified=False
+                    ),
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
+
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(args.output.exists())
+            failures = list(root.glob("published.failed-*"))
+            self.assertEqual(len(failures), 1)
+            blocker = json.loads((failures[0] / "blocker.json").read_text())
+            self.assertEqual(blocker["failed_step"], "playcanvas_quality_only")
+            self.assertFalse(blocker["formal_output_published"])
+
+    def test_playcanvas_process_tree_failure_retains_receipt_and_stops_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args, inputs = self.fixture(root)
+            calls = []
+            successful_owned = self.successful_owned_invoke(calls)
+
+            def unproven_tree(argv, cwd, env, timeout_seconds, ownership):
+                outcome = successful_owned(
+                    argv, cwd, env, timeout_seconds, ownership
+                )
+                outcome.cleanup["lineage_complete"] = False
+                outcome.cleanup["runner_errors"] = ["synthetic process-table gap"]
+                return outcome
+
+            with (
+                mock.patch.object(COLLECTOR, "require_clean_exact"),
+                self.assertRaisesRegex(
+                    COLLECTOR.CollectionError, "descendant process tree"
+                ),
+            ):
+                COLLECTOR.collect(
+                    args,
+                    invoke=self.successful_invoke(calls),
+                    owned_invoke=unproven_tree,
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
+
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(args.output.exists())
+            failures = list(root.glob("published.failed-*"))
+            self.assertEqual(len(failures), 1)
+            process = json.loads(
+                (
+                    failures[0]
+                    / "failed-command/playcanvas_quality_only/process.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertFalse(process["cleanup"]["lineage_complete"])
+            self.assertTrue(
+                (failures[0] / "native-view000001/manifest.json").is_file()
+            )
+            self.assertFalse((failures[0] / "quality-result-view000001").exists())
 
     def test_offline_gate_failure_follows_two_producers_without_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -205,8 +343,6 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 if len(calls) == 1:
                     output = pathlib.Path(argv[argv.index("--output") + 1])
                     output.mkdir()
-                elif len(calls) == 2:
-                    pathlib.Path(env["PLAYCANVAS_ARTIFACT_DIR"]).mkdir()
                 return subprocess.CompletedProcess(
                     argv, 31 if len(calls) == 3 else 0, "", ""
                 )
@@ -218,6 +354,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.collect(
                     args,
                     invoke=invoke,
+                    owned_invoke=self.successful_owned_invoke(calls),
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
@@ -238,6 +375,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.collect(
                     args,
                     invoke=invoke,
+                    owned_invoke=self.successful_owned_invoke(calls),
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
@@ -275,6 +413,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.collect(
                     args,
                     invoke=self.successful_invoke(calls),
+                    owned_invoke=self.successful_owned_invoke(calls),
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
@@ -332,6 +471,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                     COLLECTOR.collect(
                         args,
                         invoke=invoke,
+                        owned_invoke=self.successful_owned_invoke(calls),
                         preflight=lambda _: inputs,
                         revalidate=COLLECTOR.revalidate_immutable_inputs,
                     )
@@ -389,6 +529,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                     COLLECTOR.collect(
                         args,
                         invoke=self.successful_invoke(calls),
+                        owned_invoke=self.successful_owned_invoke(calls),
                         preflight=lambda _: inputs,
                         revalidate=observed_binding,
                     )
@@ -471,6 +612,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                     result = COLLECTOR.collect(
                         args,
                         invoke=self.successful_invoke(calls),
+                        owned_invoke=self.successful_owned_invoke(calls),
                         preflight=lambda _: inputs,
                         revalidate=revalidate,
                     )
@@ -518,6 +660,7 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             requests = []
             calls = []
             invoke = self.successful_invoke(calls)
+            owned_invoke = self.successful_owned_invoke(calls)
 
             def observing(argv, cwd, env):
                 environments.append(dict(env))
@@ -528,6 +671,17 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                     )
                 return invoke(argv, cwd, env)
 
+            def observing_owned(argv, cwd, env, timeout_seconds, ownership):
+                environments.append(dict(env))
+                request_path = env.get("PLAYCANVAS_Q1_PRODUCER_REQUEST")
+                if request_path:
+                    requests.append(
+                        json.loads(pathlib.Path(request_path).read_text(encoding="utf-8"))
+                    )
+                return owned_invoke(
+                    argv, cwd, env, timeout_seconds, ownership
+                )
+
             with (
                 mock.patch.object(COLLECTOR, "require_clean_exact"),
                 mock.patch.object(COLLECTOR.Q1, "validate_result"),
@@ -535,11 +689,26 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 COLLECTOR.collect(
                     args,
                     invoke=observing,
+                    owned_invoke=observing_owned,
                     preflight=lambda _: inputs,
                     revalidate=self.accepted_revalidation(inputs),
                 )
             playcanvas = environments[1]
             self.assertEqual(playcanvas["HEADLESS"], "0")
+            self.assertEqual(playcanvas["PHASE_E_QUALIFICATION"], "truck-formal-quality-979x546-v1")
+            self.assertEqual(playcanvas["PLAYCANVAS_MEASURED_FRAMES"], "0")
+            self.assertEqual(playcanvas["PLAYCANVAS_VIEWPORT_WIDTH"], "979")
+            self.assertEqual(playcanvas["PLAYCANVAS_VIEWPORT_HEIGHT"], "546")
+            self.assertRegex(
+                playcanvas["GSPLAT_Q1_BROWSER_OWNER_MARKER"],
+                r"^gsplat-q1-[0-9a-f]{32}$",
+            )
+            self.assertTrue(
+                pathlib.Path(playcanvas["GSPLAT_Q1_BROWSER_USER_DATA_DIR"]).is_absolute()
+            )
+            self.assertTrue(
+                pathlib.Path(playcanvas["GSPLAT_Q1_BROWSER_HANDSHAKE_PATH"]).is_absolute()
+            )
             self.assertEqual(len(requests), 1)
             request = requests[0]
             self.assertEqual(request["formal_view_id"], "000001")

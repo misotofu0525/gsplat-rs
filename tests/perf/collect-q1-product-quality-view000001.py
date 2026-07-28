@@ -69,6 +69,10 @@ SHARED = load_module(
     "q1_view000001_transaction_shared",
     PERF_ROOT / "collect-desktop-surface-evidence.py",
 )
+PROCESS_OWNER = load_module(
+    "q1_view000001_process_owner",
+    PERF_ROOT / "q1_browser_process_owner.py",
+)
 
 
 def canonical_json(value: Any) -> str:
@@ -216,6 +220,18 @@ def preflight_inputs(args: argparse.Namespace) -> dict[str, Any]:
     evaluation = resolve_existing(args.evaluation_authority, "evaluation authority", directory=True)
     truck = resolve_existing(args.dataset, "complete Truck", directory=False)
     output = require_disjoint_output(args.output, (formal, evaluation, truck))
+    if any(character.isspace() for character in str(output)):
+        fail("formal browser ownership output path cannot contain whitespace")
+    chrome_value = os.environ.get("CHROME_PATH", "").strip()
+    if not chrome_value:
+        fail("CHROME_PATH is required for formal browser ownership")
+    chrome = resolve_existing(pathlib.Path(chrome_value), "formal Chrome", directory=False)
+    if not os.access(chrome, os.X_OK):
+        fail("formal Chrome must be executable")
+    try:
+        PROCESS_OWNER.require_process_table_commandlines()
+    except PROCESS_OWNER.ProcessOwnershipError as error:
+        fail(str(error))
     protocol = resolve_existing(QUALITY_PROTOCOL, "Q1 quality protocol", directory=False)
 
     # Validate every immutable authority before either expensive producer is
@@ -225,6 +241,7 @@ def preflight_inputs(args: argparse.Namespace) -> dict[str, Any]:
         "formal": formal,
         "evaluation": evaluation,
         "truck": truck,
+        "chrome": chrome,
         "output": output,
         "protocol_sha256": file_sha256(protocol),
         "immutable_binding": immutable_binding,
@@ -232,6 +249,10 @@ def preflight_inputs(args: argparse.Namespace) -> dict[str, Any]:
 
 
 Invoker = Callable[[Sequence[str], pathlib.Path, dict[str, str]], subprocess.CompletedProcess[str]]
+OwnedInvoker = Callable[
+    [Sequence[str], pathlib.Path, dict[str, str], int, dict[str, Any]],
+    Any,
+]
 
 
 def default_invoke(
@@ -245,6 +266,22 @@ def default_invoke(
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+    )
+
+
+def default_owned_invoke(
+    argv: Sequence[str],
+    cwd: pathlib.Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+    ownership: dict[str, Any],
+) -> Any:
+    return PROCESS_OWNER.run_process_group(
+        list(argv),
+        cwd=cwd,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        browser_ownership=ownership,
     )
 
 
@@ -269,6 +306,26 @@ def retain_failed_command(
     write_json(step_root / "command.json", command_receipt(argv, completed.returncode))
     (step_root / "stdout.log").write_text(completed.stdout, encoding="utf-8")
     (step_root / "stderr.log").write_text(completed.stderr, encoding="utf-8")
+
+
+def write_owned_process_receipt(
+    root: pathlib.Path,
+    argv: Sequence[str],
+    outcome: Any,
+) -> None:
+    root.mkdir(parents=True)
+    write_json(root / "command.json", command_receipt(argv, outcome.returncode))
+    (root / "stdout.log").write_text(outcome.stdout, encoding="utf-8")
+    (root / "stderr.log").write_text(outcome.stderr, encoding="utf-8")
+    write_json(
+        root / "process.json",
+        {
+            "timed_out": outcome.timed_out,
+            "timeout_seconds": outcome.timeout_seconds,
+            "returncode": outcome.returncode,
+            "cleanup": outcome.cleanup,
+        },
+    )
 
 
 def run_once(
@@ -367,10 +424,82 @@ def discard_unpublished_stage(stage: pathlib.Path) -> None:
     shutil.rmtree(stage)
 
 
+def discard_stopped_browser_files(ownership: dict[str, Any]) -> None:
+    """Remove only the profile/handshake after process ownership proved gone."""
+
+    user_data_dir = pathlib.Path(ownership["user_data_dir"])
+    handshake_path = pathlib.Path(ownership["handshake_path"])
+    if os.path.lexists(user_data_dir):
+        discard_unpublished_stage(user_data_dir)
+    if os.path.lexists(handshake_path):
+        if handshake_path.is_symlink() or not handshake_path.is_file():
+            fail("browser ownership handshake cleanup target is invalid")
+        handshake_path.unlink()
+    for directory in (
+        user_data_dir.parent,
+        user_data_dir.parent.parent,
+        handshake_path.parent,
+    ):
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            if directory.exists() and next(directory.iterdir(), None) is not None:
+                continue
+            raise
+
+
+def run_owned_playcanvas_once(
+    *,
+    argv: Sequence[str],
+    env: dict[str, str],
+    ownership: dict[str, Any],
+    request_root: pathlib.Path,
+    failure_log_root: pathlib.Path,
+    invoke: OwnedInvoker,
+) -> dict[str, Any]:
+    """Run the direct Node producer once with the shared formal owner."""
+
+    outcome = invoke(argv, REPO_ROOT, env, 1800, ownership)
+    pending_receipt = failure_log_root / "playcanvas_quality_only"
+    write_owned_process_receipt(pending_receipt, argv, outcome)
+    try:
+        PROCESS_OWNER.require_process_completed(outcome, "playcanvas_quality_only")
+    except PROCESS_OWNER.ProcessOwnershipError as error:
+        raise CollectionError(str(error)) from error
+    browser = outcome.cleanup.get("browser_ownership")
+    browser_proven = (
+        isinstance(browser, dict)
+        and browser.get("handshake_verified") is True
+        and browser.get("marker_processes_final") == []
+    )
+    # Process completion proved the owner is gone, so its large profile can be
+    # removed even when the producer itself returned a finite rejection.
+    discard_stopped_browser_files(ownership)
+    if outcome.returncode != 0:
+        raise CollectionError(
+            f"playcanvas_quality_only exited with {outcome.returncode}"
+        )
+    if not browser_proven:
+        fail("playcanvas_quality_only lacks terminal browser ownership proof")
+    retained_receipt = request_root / "playcanvas-process"
+    pending_receipt.rename(retained_receipt)
+    try:
+        failure_log_root.rmdir()
+    except OSError:
+        pass
+    receipt = command_receipt(argv, outcome.returncode)
+    receipt["process_receipt"] = "requests/playcanvas-process/process.json"
+    receipt["browser_ownership"] = "marker_handshake_group_gone"
+    return receipt
+
+
 def collect(
     args: argparse.Namespace,
     *,
     invoke: Invoker = default_invoke,
+    owned_invoke: OwnedInvoker = default_owned_invoke,
     preflight: Callable[[argparse.Namespace], dict[str, Any]] = preflight_inputs,
     revalidate: Callable[[dict[str, Any]], dict[str, Any]] = revalidate_immutable_inputs,
 ) -> pathlib.Path:
@@ -383,6 +512,13 @@ def collect(
     step = "prepare"
     published = False
     try:
+        # Validate the invocation-scoped browser paths before the expensive
+        # Native producer starts, even though Chrome launches second.
+        playcanvas_ownership = PROCESS_OWNER.browser_ownership(
+            stage,
+            "playcanvas-view000001",
+            inputs["chrome"],
+        )
         native_output = stage / "native-view000001"
         playcanvas_output = stage / "playcanvas-view000001"
         result_output = stage / "quality-result-view000001"
@@ -432,29 +568,35 @@ def collect(
 
         step = "playcanvas_quality_only"
         playcanvas_argv = (
-            "npm",
-            "run",
-            "quality:truck-view000001",
-            "--prefix",
-            "tests/competitive/playcanvas",
+            "node",
+            "tests/competitive/playcanvas/scripts/run-timed-benchmark.mjs",
         )
         playcanvas_env = dict(environment)
         playcanvas_env.update(
             {
+                "PHASE_E_QUALIFICATION": "truck-formal-quality-979x546-v1",
                 "PLAYCANVAS_Q1_SERIES_ROOT": str(stage),
                 "PLAYCANVAS_Q1_PRODUCER_REQUEST": str(request),
                 "PLAYCANVAS_ARTIFACT_DIR": str(playcanvas_output),
                 "HEADLESS": "0",
+                "PLAYCANVAS_CAMERA_MODE": "static",
+                "PLAYCANVAS_TRACE_FRAME": "0",
+                "PLAYCANVAS_CAPTURE_TRACE_FRAME": "0",
+                "PLAYCANVAS_WARMUP_FRAMES": "0",
+                "PLAYCANVAS_MEASURED_FRAMES": "0",
+                "PLAYCANVAS_VIEWPORT_WIDTH": "979",
+                "PLAYCANVAS_VIEWPORT_HEIGHT": "546",
+                **playcanvas_ownership["environment"],
             }
         )
         steps.append(
-            run_once(
-                step,
-                playcanvas_argv,
-                REPO_ROOT,
-                playcanvas_env,
-                failure_log_root,
-                invoke,
+            run_owned_playcanvas_once(
+                argv=playcanvas_argv,
+                env=playcanvas_env,
+                ownership=playcanvas_ownership,
+                request_root=request_root,
+                failure_log_root=failure_log_root,
+                invoke=owned_invoke,
             )
         )
         require_clean_exact(REPO_ROOT, args.expected_commit)

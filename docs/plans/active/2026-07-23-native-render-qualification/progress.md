@@ -1810,3 +1810,35 @@ ledger records the hidden candidate name and cleanup error explicitly instead
 of presenting it as formal evidence. The focused Q1 protocol suite passes 75
 tests, source architecture policy passes, and the diff is clean. Endpoint work
 remains deferred pending a fixed-SHA review of this atomic change.
+
+Fixed-SHA review accepted `4171bd2` with no P0/P1 and one non-blocking P2
+about dedicated negative staging-input tests. Its single authorized endpoint
+attempt completed and published the full Native 979x546 Truck capture inside
+the retained failed transaction: all 2,541,226 SH3 splats remained resident,
+with 1,886,298 visible and drawn. PlayCanvas then rejected before Chrome launch
+because the one-view coordinator had not supplied the formal browser owner
+marker, isolated user-data directory, or producer/browser handshake path. The
+offline gate did not run, the requested formal destination remained absent,
+and the attempt was not retried. The retained failure is
+`target/qualification/q1-product-quality-view000001-4171bd2-attempt1.failed-q1-view000001-4171bd27f41a-be218139b117`.
+
+The correction extracts the paired-series process owner into one stdlib-only
+module shared by paired and one-view collection. The one-view path now invokes
+the direct Node producer under an isolated process group, provides a unique
+marker/profile/handshake, retains stdout, stderr and the terminal process-tree
+receipt, and requires both a validated producer/browser handshake and proof
+that the owned process tree and exact marker are gone. A timeout, nonzero exit,
+bad handshake, snapshot gap, surviving process or cleanup failure rejects the
+one-shot transaction before the offline gate and never authorizes an automatic
+retry. The profile and handshake are removed only after terminal ownership is
+proved. The paired collector delegates to the same implementation instead of
+maintaining a second cleanup algorithm.
+
+Focused verification passes 97 Q1 tests, including nine shared process-owner
+tests and thirteen one-view transaction tests; source architecture policy,
+Python compilation and diff hygiene also pass. The full paired collector test
+module remains independently Deferred at import because its pre-existing
+PlayCanvas camera-authority fixture is stale. That authority is outside this
+browser-ownership repair and was not regenerated or weakened. Another endpoint
+execution remains deferred until this new atomic candidate receives a fixed-SHA
+independent review.
