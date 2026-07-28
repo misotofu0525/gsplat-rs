@@ -1727,3 +1727,19 @@ cleanup unable to reverse success. It adds fault-injection coverage for both
 exception classes, build failure before host launch, environment redaction and
 post-publication cleanup failure. No endpoint is authorized until the new SHA
 passes another independent review.
+
+The next authorized run at reviewed SHA `6426c38` stopped before its first
+render with the retained host error `surface evidence resize 980x546 violates
+979x546`. Native had emitted only the begin receipt; PlayCanvas and the offline
+gate did not start. This isolates the failure to AppKit/winit top-level-window
+backing conversion: a 979-pixel width at the default 2x backing scale becomes a
+half logical point and AppKit reports 980. It is not Truck admission, Metal
+capacity, sorting or raster failure.
+
+The narrow correction applies only to the macOS renderer-owned diagnostic
+capture host: it asks winit for a 1x backing window, matching the browser
+quality endpoint's DPR-1 backing contract. The wgpu Surface, presented drawable
+and renderer-owned capture remain the requested 979x546. No endpoint image is
+cropped, resized or resampled, and ordinary interactive windows retain their
+existing high-DPI behavior. A new endpoint execution remains deferred until
+this platform correction passes compile/tests and fixed-SHA review.

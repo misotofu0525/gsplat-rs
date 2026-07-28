@@ -90,6 +90,10 @@ Timeout partial streams are retained, absent streams are represented by empty
 logs, and the retained build command is stripped of task-local environment
 values. Cleanup after a successful no-replace publication cannot reverse that
 success into an endpoint failure.
+The macOS native diagnostic host uses a 1x backing window for the formal odd
+979-pixel width. AppKit otherwise rounds that top-level 2x backing width to
+980. The configured wgpu Surface and renderer-owned same-present capture stay
+979x546; no crop, resize, or post-render resampling is admitted.
 
 ```bash
 python3 tests/perf/collect-q1-product-quality-view000001.py \

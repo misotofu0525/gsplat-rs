@@ -16,6 +16,8 @@ use crate::image_output::write_png;
 use crate::scene::{auto_camera, load_ply_path_into_renderer, scene_bounds};
 #[cfg(not(feature = "diagnostic-surface-depth-key-candidate24"))]
 use crate::trace::{CameraTracePlayback, load_camera_trace};
+#[cfg(all(feature = "diagnostic-surface-capture-receipt", target_os = "macos"))]
+use crate::viewer::uses_macos_dpr1_evidence_backing;
 #[cfg(feature = "interactive-viewer")]
 use crate::viewer::{
     SurfaceBenchmarkAction, SurfaceBenchmarkProducerTicket, SurfaceBenchmarkSummary,
@@ -664,6 +666,14 @@ fn diagnostic_surface_capture_receipt_flag_requires_strict_surface_evidence() {
     .unwrap();
     assert!(args.surface_diagnostic_capture_receipt);
     assert!(!args.surface_diagnostic_multi_capture);
+    #[cfg(target_os = "macos")]
+    assert!(uses_macos_dpr1_evidence_backing(&args));
+
+    #[cfg(target_os = "macos")]
+    {
+        let ordinary = parse_args(&["--interactive"]).unwrap();
+        assert!(!uses_macos_dpr1_evidence_backing(&ordinary));
+    }
 
     assert!(
         parse_args(&["--surface-diagnostic-multi-capture"])

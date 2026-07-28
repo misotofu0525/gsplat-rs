@@ -286,6 +286,10 @@ failure evidence stays small and cannot masquerade as formal quality output.
 Timeouts retain the subprocess partial streams; other subprocess failures
 retain explicit empty streams when none exist. The build argv remains, but its
 task-local environment values are removed before the failure tree is frozen.
+On macOS, the renderer-owned diagnostic capture host requests a 1x backing
+window. This avoids AppKit rounding the formal odd 979-pixel width to 980 at a
+2x scale factor while keeping the wgpu Surface, drawable and captured pixels at
+the exact requested 979x546; it does not crop or resample endpoint output.
 
 ### Q1 WebGPU Truck 1080p prerequisite
 
