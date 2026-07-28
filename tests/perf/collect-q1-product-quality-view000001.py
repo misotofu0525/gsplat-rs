@@ -473,11 +473,12 @@ def collect(
         write_json(stage / "receipt.json", receipt)
         SHARED.fsync_tree(stage)
         SHARED.make_tree_immutable(stage)
+        step = "final_frozen_clean_exact"
+        require_clean_exact(REPO_ROOT, args.expected_commit)
         step = "final_frozen_input_revalidation"
         terminal_binding = revalidate(inputs)
         if terminal_binding != final_binding:
             fail("final immutable input binding differs from staged receipt binding")
-        require_clean_exact(REPO_ROOT, args.expected_commit)
         step = "final_publication"
         Q1._publish_directory_noreplace(stage, output)
         published = True

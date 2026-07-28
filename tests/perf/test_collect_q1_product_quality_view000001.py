@@ -390,6 +390,81 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 self.assertFalse((failures[0] / "receipt.json").exists())
                 self.assertEqual(list(root.glob(".published.staging-*")), [])
 
+    def test_terminal_binding_is_the_last_external_observation_before_publish(self) -> None:
+        for drift_kind in ("truck", "authority"):
+            with self.subTest(drift_kind=drift_kind), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                args, inputs = self.fixture(root)
+                calls: list[tuple[str, ...]] = []
+                events: list[str] = []
+                clean_exact_calls = 0
+                revalidation_calls = 0
+                terminal_binding_returned = False
+                original_publish = COLLECTOR.Q1._publish_directory_noreplace
+
+                def clean_exact(*_args):
+                    nonlocal clean_exact_calls
+                    clean_exact_calls += 1
+                    if clean_exact_calls != 5:
+                        return
+                    events.append("terminal_clean_exact")
+                    # This models the former externally observable window: the
+                    # final git subprocess ran after terminal binding returned.
+                    # If that ordering regresses, mutate either protected input
+                    # before publication and make the test fail closed.
+                    if terminal_binding_returned:
+                        if drift_kind == "truck":
+                            inputs["truck"].write_bytes(b"drifted-after-terminal")
+                        else:
+                            (inputs["formal"] / "receipt.json").write_text(
+                                "drifted-after-terminal", encoding="utf-8"
+                            )
+
+                def revalidate(_):
+                    nonlocal revalidation_calls, terminal_binding_returned
+                    revalidation_calls += 1
+                    if revalidation_calls == 2:
+                        events.append("terminal_revalidate")
+                        terminal_binding_returned = True
+                    return inputs["immutable_binding"]
+
+                def publish(stage, destination):
+                    if pathlib.Path(destination) == args.output:
+                        self.assertEqual(
+                            events,
+                            ["terminal_clean_exact", "terminal_revalidate"],
+                        )
+                        self.assertEqual(inputs["truck"].read_bytes(), b"truck")
+                        self.assertFalse((inputs["formal"] / "receipt.json").exists())
+                        events.append("publish")
+                    return original_publish(stage, destination)
+
+                with (
+                    mock.patch.object(
+                        COLLECTOR, "require_clean_exact", side_effect=clean_exact
+                    ),
+                    mock.patch.object(COLLECTOR.Q1, "validate_result"),
+                    mock.patch.object(
+                        COLLECTOR.Q1,
+                        "_publish_directory_noreplace",
+                        side_effect=publish,
+                    ),
+                ):
+                    result = COLLECTOR.collect(
+                        args,
+                        invoke=self.successful_invoke(calls),
+                        preflight=lambda _: inputs,
+                        revalidate=revalidate,
+                    )
+
+                self.assertEqual(result, args.output)
+                self.assertEqual(clean_exact_calls, 5)
+                self.assertEqual(revalidation_calls, 2)
+                self.assertEqual(
+                    events,
+                    ["terminal_clean_exact", "terminal_revalidate", "publish"],
+                )
+
     def test_preflight_rejects_existing_or_overlapping_output(self) -> None:
         target = COLLECTOR.REPO_ROOT / "target"
         target.mkdir(exist_ok=True)
