@@ -311,6 +311,13 @@ def publish_failure(
     # frozen. Restore write permission only on that unpublished root so the
     # failure ledger can be added; immutable producer children stay untouched.
     os.chmod(stage, stage.stat().st_mode | stat.S_IWUSR)
+    formal_receipt = stage / "receipt.json"
+    candidate_receipt_removed = False
+    if os.path.lexists(formal_receipt):
+        if formal_receipt.is_symlink() or not formal_receipt.is_file():
+            fail("unpublished formal receipt is not a regular file")
+        formal_receipt.unlink()
+        candidate_receipt_removed = True
     write_json(
         stage / "blocker.json",
         {
@@ -320,6 +327,7 @@ def publish_failure(
             "reason": str(error),
             "automatic_retry": False,
             "formal_output_published": False,
+            "unpublished_candidate_receipt_removed": candidate_receipt_removed,
             "product_quality": "Deferred",
             "performance_authorized": False,
         },
@@ -465,6 +473,12 @@ def collect(
         write_json(stage / "receipt.json", receipt)
         SHARED.fsync_tree(stage)
         SHARED.make_tree_immutable(stage)
+        step = "final_frozen_input_revalidation"
+        terminal_binding = revalidate(inputs)
+        if terminal_binding != final_binding:
+            fail("final immutable input binding differs from staged receipt binding")
+        require_clean_exact(REPO_ROOT, args.expected_commit)
+        step = "final_publication"
         Q1._publish_directory_noreplace(stage, output)
         published = True
         return output

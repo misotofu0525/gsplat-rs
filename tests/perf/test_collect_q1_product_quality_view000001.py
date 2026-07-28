@@ -269,6 +269,10 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             self.assertEqual(len(failures), 1)
             blocker = json.loads((failures[0] / "blocker.json").read_text())
             self.assertEqual(blocker["failed_step"], "final_publication")
+            self.assertEqual(blocker["status"], "failed_attempt")
+            self.assertFalse(blocker["formal_output_published"])
+            self.assertTrue(blocker["unpublished_candidate_receipt_removed"])
+            self.assertFalse((failures[0] / "receipt.json").exists())
             self.assertEqual(list(root.glob(".published.staging-*")), [])
 
     def test_post_gate_truck_or_authority_drift_fails_closed(self) -> None:
@@ -320,6 +324,71 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 self.assertEqual(len(failures), 1)
                 blocker = json.loads((failures[0] / "blocker.json").read_text())
                 self.assertEqual(blocker["failed_step"], "final_input_revalidation")
+
+    def test_frozen_publication_window_drift_invalidates_staged_receipt(self) -> None:
+        for drift_kind in ("truck", "authority"):
+            with self.subTest(drift_kind=drift_kind), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                args, inputs = self.fixture(root)
+                calls: list[tuple[str, ...]] = []
+                original_freeze = COLLECTOR.SHARED.make_tree_immutable
+                freeze_calls = 0
+
+                def freeze_then_drift(path):
+                    nonlocal freeze_calls
+                    original_freeze(path)
+                    freeze_calls += 1
+                    if freeze_calls != 1:
+                        return
+                    if drift_kind == "truck":
+                        inputs["truck"].write_bytes(b"drifted-after-freeze")
+                    else:
+                        (inputs["formal"] / "receipt.json").write_text(
+                            "drifted-after-freeze", encoding="utf-8"
+                        )
+
+                def observed_binding(_):
+                    if (
+                        inputs["truck"].read_bytes() != b"truck"
+                        or (inputs["formal"] / "receipt.json").exists()
+                    ):
+                        return {"drifted_after_freeze": drift_kind}
+                    return inputs["immutable_binding"]
+
+                with (
+                    mock.patch.object(COLLECTOR, "require_clean_exact"),
+                    mock.patch.object(COLLECTOR.Q1, "validate_result"),
+                    mock.patch.object(
+                        COLLECTOR.SHARED,
+                        "make_tree_immutable",
+                        side_effect=freeze_then_drift,
+                    ),
+                    self.assertRaisesRegex(
+                        COLLECTOR.CollectionError,
+                        "final immutable input binding differs from staged receipt binding",
+                    ),
+                ):
+                    COLLECTOR.collect(
+                        args,
+                        invoke=self.successful_invoke(calls),
+                        preflight=lambda _: inputs,
+                        revalidate=observed_binding,
+                    )
+
+                self.assertEqual(len(calls), 3)
+                self.assertGreaterEqual(freeze_calls, 2)
+                self.assertFalse(args.output.exists())
+                failures = list(root.glob("published.failed-*"))
+                self.assertEqual(len(failures), 1)
+                blocker = json.loads((failures[0] / "blocker.json").read_text())
+                self.assertEqual(
+                    blocker["failed_step"], "final_frozen_input_revalidation"
+                )
+                self.assertEqual(blocker["status"], "failed_attempt")
+                self.assertFalse(blocker["formal_output_published"])
+                self.assertTrue(blocker["unpublished_candidate_receipt_removed"])
+                self.assertFalse((failures[0] / "receipt.json").exists())
+                self.assertEqual(list(root.glob(".published.staging-*")), [])
 
     def test_preflight_rejects_existing_or_overlapping_output(self) -> None:
         target = COLLECTOR.REPO_ROOT / "target"
