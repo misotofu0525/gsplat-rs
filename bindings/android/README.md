@@ -166,12 +166,14 @@ already-submitted queue work, and never borrows a later frame's receipt. Its
 per-pump wait and total retry count are finite; callback-pump failure or flush
 exhaustion rejects the run.
 
-For a strict Exact frame whose order was refreshed, the already-issued
-current-stats ticket is also the compatibility order ticket. Its one atomic
-terminal supplies the same V/C/D plus queue-completion timing; CPU plans retain
-their same-frame preprocess/sort timing, while GPU phase timings remain absent
-under CompletionOnly. This projection issues no second ticket and adds no
-render or submit. `pumpSurfaceReceiptsV1()` reports QueueComplete versus Timeout
+Strict current-stats and compatibility order telemetry are independent
+namespaces. Current-stats alone owns same-present identity and `S/V/C/D`.
+`sort_refreshed` does not imply that an order ticket exists, ticket numbers are
+never compared across namespaces, and only a real issued order ticket requires
+exactly one order terminal. Correctness artifacts may therefore carry null
+order fields and an empty order ledger. Optional order timing remains absent
+until its own producer issues a ticket; Q3 timing consumes a later V2 contract.
+`pumpSurfaceReceiptsV1()` reports QueueComplete versus Timeout
 so device logs can separate pump failure/timeout from a queue-complete but
 unconsumed terminal or mismatched ledger.
 
@@ -191,10 +193,10 @@ fields null instead of presenting submit-wall time as GPU work.
 `exactness().isFullQuality` is true only when all source splats were decoded,
 encoded, resident, and GPU-addressable at the source SH degree with sampling
 and LOD disabled. The diagnostic Paged path intentionally does not set it.
-Every explicitly sampled exact non-Paged refresh publishes its current-stats
-ticket as the same frame's order measurement ticket. CPU tickets report
-frame-start-to-queue-completion timing, not submit wall time. Every issued
-CPU/GPU ticket must appear in exactly one success or failure queue.
+CPU order tickets report frame-start-to-queue-completion timing, not submit
+wall time. Every actually issued CPU/GPU order ticket must appear in exactly
+one success or failure queue; no ticket is synthesized from current-stats or
+refresh state.
 `orderStatus().adaptiveGpuFailure` also exposes an eager GPU
 preparation failure when Adaptive correctly stays on CPU and no ticket exists.
 Strict benchmark collectors call `orderSubmission()` after every successful

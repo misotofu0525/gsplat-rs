@@ -311,7 +311,8 @@ ledger = []
 order_ledger = []
 for index, frame in enumerate(frames):
     revision = index + 1
-    ticket = 1_000 + index
+    current_stats_ticket = 1_000 + index
+    order_ticket = 10_000 + index
     presentation_sequence = 2_000 + index
     identity = {
         "scene_generation": 1,
@@ -335,10 +336,11 @@ for index, frame in enumerate(frames):
             "exact_contributor_compaction": False,
             "raster_ms": None,
             "cpu_frame_complete_ms": None,
-            "order_submission_ticket": ticket,
-            "order_measurement_ticket": ticket,
+            "order_measurement_ticket_issued": True,
+            "order_submission_ticket": order_ticket,
+            "order_measurement_ticket": order_ticket,
             "order_measurement_camera_revision": revision,
-            "current_stats_ticket": ticket,
+            "current_stats_ticket": current_stats_ticket,
             "current_stats_presentation_sequence": presentation_sequence,
             "current_stats_executed_plan": "cpu_post_sort",
             "order_backend": "cpu",
@@ -355,7 +357,7 @@ for index, frame in enumerate(frames):
             "trace_timestamp_ns": None,
             "request_status": "requested",
             "submission_status": "issued",
-            "ticket": ticket,
+            "ticket": current_stats_ticket,
             "identity": identity,
             "outcome": "ready",
             "source": manifest["dataset"]["splat_count"],
@@ -368,7 +370,7 @@ for index, frame in enumerate(frames):
     )
     order_ledger.append(
         {
-            "ticket": ticket,
+            "ticket": order_ticket,
             "camera_revision": revision,
             "backend": "cpu",
             "exactness_receipt_id": "strict-fixture-exactness",
@@ -382,6 +384,14 @@ for index, frame in enumerate(frames):
     )
 summary["current_stats_terminal_ledger"] = ledger
 summary["order_terminal_ledger"] = order_ledger
+summary.setdefault("sort_telemetry", {}).update(
+    {
+        "order_measurement_scheduled_count": len(order_ledger),
+        "cpu_order_measurement_completed_count": len(order_ledger),
+        "gpu_order_measurement_completed_count": 0,
+        "order_measurement_terminal_failure_count": 0,
+    }
+)
 
 
 def write_log(destination, manifest_value, frames_value, summary_value):
@@ -407,9 +417,6 @@ mismatched_refresh_ticket_summary = copy.deepcopy(summary)
 mismatched_order_ticket = 9_000_000
 mismatched_refresh_ticket_frames[0]["order_submission_ticket"] = mismatched_order_ticket
 mismatched_refresh_ticket_frames[0]["order_measurement_ticket"] = mismatched_order_ticket
-mismatched_refresh_ticket_summary["order_terminal_ledger"][0][
-    "ticket"
-] = mismatched_order_ticket
 write_log(
     mismatched_refresh_ticket_destination,
     manifest,
@@ -754,11 +761,11 @@ if python3 "$ROOT/bindings/android/scripts/extract-android-benchmark-artifacts.p
   --validator "$ROOT/tests/perf/validate-benchmark-artifacts.py" \
   --android-environment-receipt "$ANDROID_ENVIRONMENT_RECEIPT" \
   2>"$TMP_DIR/strict-mismatched-refresh-ticket.stderr"; then
-  echo "extractor accepted refreshed current-stats/order ticket identity drift" >&2
+  echo "extractor accepted an issued order ticket without a terminal" >&2
   exit 1
 fi
 grep -F \
-  "refreshed order/current-stats ticket identity drifted" \
+  "issued ticket lacks a terminal" \
   "$TMP_DIR/strict-mismatched-refresh-ticket.stderr"
 [[ ! -e "$TMP_DIR/strict-mismatched-refresh-ticket-artifact" ]]
 

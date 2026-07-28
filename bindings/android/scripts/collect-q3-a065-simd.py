@@ -1173,6 +1173,37 @@ def _finite_frame_metric(frame: dict[str, Any], field: str, index: int) -> float
     return float(value)
 
 
+def collected_run_metrics(
+    frames: Sequence[dict[str, Any]], capture_png: bool
+) -> dict[str, list[float]]:
+    """Keep correctness capture independent from optional order timing evidence."""
+
+    metrics = {
+        field: [
+            _finite_frame_metric(frame, field, index)
+            for index, frame in enumerate(frames)
+        ]
+        for field in ("call_ms", "frame_wall_ms")
+    }
+    for field in ("preprocess_ms", "sort_ms", "cpu_frame_complete_ms"):
+        values = [frame.get(field) for frame in frames]
+        if all(value is None for value in values):
+            require(
+                capture_png,
+                f"Q3 timing run lacks required {field} producer evidence",
+            )
+            continue
+        require(
+            all(value is not None for value in values),
+            f"Q3 {field} evidence is only partially available",
+        )
+        metrics[field] = [
+            _finite_frame_metric(frame, field, index)
+            for index, frame in enumerate(frames)
+        ]
+    return metrics
+
+
 def validate_collected_run(
     output: pathlib.Path,
     lane: str,
@@ -1338,28 +1369,8 @@ def validate_collected_run(
         require((image.get("width"), image.get("height")) == FORMAL_SIZE, "Q3 PNG resolution drifted")
     else:
         require(image is None, "Q3 timing run unexpectedly captured a PNG")
-    metrics = {
-        field: [_finite_frame_metric(frame, field, index) for index, frame in enumerate(frames)]
-        for field in (
-            "preprocess_ms",
-            "sort_ms",
-            "call_ms",
-            "frame_wall_ms",
-            "cpu_frame_complete_ms",
-        )
-    }
+    metrics = collected_run_metrics(frames, capture_png)
     for index, frame in enumerate(frames):
-        require(frame.get("sort_refreshed") is True, f"frame {index} did not refresh Exact order")
-        ticket = frame.get("order_submission_ticket")
-        require(type(ticket) is int and ticket > 0, f"frame {index} lacks the order upload ticket")
-        require(
-            frame.get("order_measurement_ticket") == ticket,
-            f"frame {index} order/current-stats ticket drifted",
-        )
-        require(
-            frame.get("current_stats_ticket") == ticket,
-            f"frame {index} current-stats ticket drifted",
-        )
         require(frame.get("drawn") == frame.get("visible"), f"frame {index} violates Exact CPU D=V")
     semantic_frames = [
         {

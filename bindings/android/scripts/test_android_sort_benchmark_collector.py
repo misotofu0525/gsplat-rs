@@ -206,6 +206,7 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
                 "cpu_frame_complete_ms": None,
                 "raster_ms": None,
                 "sort_refreshed": False,
+                "order_measurement_ticket_issued": False,
                 "order_submission_ticket": None,
                 "order_measurement_ticket": None,
                 "order_measurement_camera_revision": None,
@@ -244,6 +245,10 @@ def camera_validation_fixture(backend: str = "gpu", sample_count: int = 1):
             "cpu_frame_count": cpu_frames,
             "gpu_frame_count": gpu_frames,
             "gpu_sort_fallback_count": 0,
+            "order_measurement_scheduled_count": 0,
+            "cpu_order_measurement_completed_count": 0,
+            "gpu_order_measurement_completed_count": 0,
+            "order_measurement_terminal_failure_count": 0,
         },
         "current_stats_terminal_ledger": [
             {
@@ -1190,23 +1195,30 @@ class ParsingTests(unittest.TestCase):
                 fixture[4],
             )
 
-    def test_refreshed_order_ticket_must_equal_current_stats_ticket(self) -> None:
+    def test_order_and_current_stats_use_independent_ticket_namespaces(self) -> None:
         fixture = camera_validation_fixture("gpu")
         frame = fixture[2][0]
-        current_stats_ticket = frame["current_stats_ticket"]
         current_stats_entry = fixture[1]["current_stats_terminal_ledger"][0]
+        order_ticket = 2_000
         frame.update(
             {
                 "sort_refreshed": True,
-                "order_submission_ticket": current_stats_ticket,
-                "order_measurement_ticket": current_stats_ticket,
+                "order_measurement_ticket_issued": True,
+                "order_submission_ticket": order_ticket,
+                "order_measurement_ticket": order_ticket,
                 "order_measurement_camera_revision": frame["camera_revision"],
                 "gpu_complete_ms": 1.0,
             }
         )
+        fixture[1]["sort_telemetry"].update(
+            {
+                "order_measurement_scheduled_count": 1,
+                "gpu_order_measurement_completed_count": 1,
+            }
+        )
         fixture[1]["order_terminal_ledger"] = [
             {
-                "ticket": current_stats_ticket,
+                "ticket": order_ticket,
                 "camera_revision": frame["camera_revision"],
                 "backend": "gpu",
                 "exactness_receipt_id": "fixture-exactness",
@@ -1229,57 +1241,67 @@ class ParsingTests(unittest.TestCase):
             fixture[4],
         )
 
-        frame["order_submission_ticket"] = 2_000
-        frame["order_measurement_ticket"] = 2_000
-        fixture[1]["order_terminal_ledger"][0]["ticket"] = 2_000
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "refreshed order/current-stats ticket identity drifted",
-        ):
-            COLLECTOR.validate_run_artifact(
-                fixture[0],
-                fixture[1],
-                fixture[2],
-                "gpu",
-                "packed",
-                {"sha256": "abc", "bytes": 123},
-                fixture[3],
-                fixture[4],
-            )
-
-    def test_unrefreshed_frame_requires_explicit_no_order_ticket_state(self) -> None:
+    def test_sort_refresh_does_not_manufacture_an_order_ticket(self) -> None:
         fixture = camera_validation_fixture("gpu")
         frame = fixture[2][0]
-        entry = fixture[1]["current_stats_terminal_ledger"][0]
-        frame["order_submission_ticket"] = 3_000
-        frame["order_measurement_ticket"] = 3_000
-        frame["order_measurement_camera_revision"] = frame["camera_revision"]
+        frame["sort_refreshed"] = True
+        COLLECTOR.validate_run_artifact(
+            fixture[0],
+            fixture[1],
+            fixture[2],
+            "gpu",
+            "packed",
+            {"sha256": "abc", "bytes": 123},
+            fixture[3],
+            fixture[4],
+        )
+
+    def test_issued_order_ticket_requires_exactly_one_terminal(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        frame = fixture[2][0]
+        frame.update(
+            {
+                "order_measurement_ticket_issued": True,
+                "order_submission_ticket": 3_000,
+            }
+        )
+        fixture[1]["sort_telemetry"]["order_measurement_scheduled_count"] = 1
+        with self.assertRaisesRegex(RuntimeError, "exactly one terminal per ticket"):
+            COLLECTOR.validate_run_artifact(
+                fixture[0], fixture[1], fixture[2], "gpu", "packed",
+                {"sha256": "abc", "bytes": 123}, fixture[3], fixture[4]
+            )
+
+    def test_issued_order_failure_is_a_terminal_not_current_stats_failure(self) -> None:
+        fixture = camera_validation_fixture("gpu")
+        frame = fixture[2][0]
+        frame.update(
+            {
+                "sort_refreshed": True,
+                "order_measurement_ticket_issued": True,
+                "order_submission_ticket": 4_000,
+            }
+        )
+        fixture[1]["sort_telemetry"].update(
+            {
+                "order_measurement_scheduled_count": 1,
+                "order_measurement_terminal_failure_count": 1,
+            }
+        )
         fixture[1]["order_terminal_ledger"] = [
             {
-                "ticket": 3_000,
+                "ticket": 4_000,
                 "camera_revision": frame["camera_revision"],
                 "backend": "gpu",
                 "exactness_receipt_id": "fixture-exactness",
-                "outcome": "success",
-                "frame_complete_ms": 1.0,
-                "visible": entry["visible"],
-                "contributor": entry["contributor"],
-                "drawn": entry["drawn"],
-                "exact_contributor_compaction": False,
+                "outcome": "failure",
+                "failure_reason": "generation_invalidated",
             }
         ]
-
-        with self.assertRaisesRegex(RuntimeError, "explicit no-ticket state"):
-            COLLECTOR.validate_run_artifact(
-                fixture[0],
-                fixture[1],
-                fixture[2],
-                "gpu",
-                "packed",
-                {"sha256": "abc", "bytes": 123},
-                fixture[3],
-                fixture[4],
-            )
+        COLLECTOR.validate_run_artifact(
+            fixture[0], fixture[1], fixture[2], "gpu", "packed",
+            {"sha256": "abc", "bytes": 123}, fixture[3], fixture[4]
+        )
 
     def test_rejects_ACCEPTED_ADAPTIVE_PLAN_BACKEND_DRIFT(self) -> None:
         fixture = camera_validation_fixture("adaptive")

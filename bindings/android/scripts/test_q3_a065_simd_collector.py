@@ -1156,6 +1156,48 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             "Rejected",
         )
 
+    def test_correctness_capture_accepts_absent_independent_order_timing(self) -> None:
+        frames = [
+            {
+                "call_ms": 1.0,
+                "frame_wall_ms": 2.0,
+                "preprocess_ms": None,
+                "sort_ms": None,
+                "cpu_frame_complete_ms": None,
+            }
+        ]
+        metrics = COLLECTOR.collected_run_metrics(frames, capture_png=True)
+        self.assertEqual(set(metrics), {"call_ms", "frame_wall_ms"})
+
+        with self.assertRaisesRegex(
+            COLLECTOR.IntegrityRejectedError,
+            "timing run lacks required preprocess_ms",
+        ):
+            COLLECTOR.collected_run_metrics(frames, capture_png=False)
+
+    def test_correctness_capture_rejects_partial_order_timing(self) -> None:
+        frames = [
+            {
+                "call_ms": 1.0,
+                "frame_wall_ms": 2.0,
+                "preprocess_ms": 0.1,
+                "sort_ms": None,
+                "cpu_frame_complete_ms": None,
+            },
+            {
+                "call_ms": 1.1,
+                "frame_wall_ms": 2.1,
+                "preprocess_ms": None,
+                "sort_ms": None,
+                "cpu_frame_complete_ms": None,
+            },
+        ]
+        with self.assertRaisesRegex(
+            COLLECTOR.IntegrityRejectedError,
+            "preprocess_ms evidence is only partially available",
+        ):
+            COLLECTOR.collected_run_metrics(frames, capture_png=True)
+
     def test_collector_command_reuses_strict_android_collector(self) -> None:
         args = argparse.Namespace(
             serial="fixture-serial",

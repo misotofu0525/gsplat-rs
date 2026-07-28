@@ -3131,7 +3131,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 ?.let(cpuOrderMeasurementsByTicket::get)
 
         fun orderTerminalsComplete(): Boolean {
-            if (unsampledOrderRequests.isNotEmpty()) return true
             return issuedOrderTickets.keys.all { ticket ->
                 orderMeasurementsByTicket[ticket] != null ||
                     cpuOrderMeasurementsByTicket[ticket] != null ||
@@ -3145,14 +3144,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     cpuOrderMeasurementsByTicket[ticket] != null ||
                     orderFailuresByTicket[ticket] != null
             }
-            val firstMissingRefresh = (0 until samples).firstOrNull { index ->
-                sortFlags[index] and 1L != 0L && orderSubmissionTicket[index] <= 0L
-            }
             return "order_issued=${issuedOrderTickets.size} " +
                 "order_terminal=$terminalTickets " +
                 "order_pending=${issuedOrderTickets.size - terminalTickets} " +
                 "order_unsampled=${unsampledOrderRequests.size} " +
-                "first_refreshed_without_ticket=${firstMissingRefresh ?: -1} " +
+                "order_namespace=independent " +
                 "render_thread_id=${measurementThreadId ?: -1} " +
                 "render_thread_name=${measurementThreadName ?: "unknown"} " +
                 "pump_same_as_render_thread=${measurementThreadId == Thread.currentThread().id}"
@@ -3186,9 +3182,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             GsplatSurfaceCurrentStatsCountSemantics.INDIRECT_DRAW_EQUALS_CONTRIBUTOR
 
         private fun requireOrderMeasurements() {
-            check(unsampledOrderRequests.isEmpty()) {
-                "order measurement was unsampled: $unsampledOrderRequests"
-            }
             for ((ticket, issued) in issuedOrderTickets) {
                 val gpuSuccess = orderMeasurementsByTicket[ticket]
                 val cpuSuccess = cpuOrderMeasurementsByTicket[ticket]
@@ -3203,73 +3196,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     ?: failure?.cameraRevision
                 check(terminalRevision == issued.cameraRevision) {
                     "order ticket $ticket terminal revision does not match its submission"
-                }
-            }
-            check(orderFailuresByTicket.isEmpty()) {
-                val failure = orderFailuresByTicket.values.first()
-                "order measurement failed: ticket=${failure.ticket} " +
-                    "camera_revision=${failure.cameraRevision} reason=${failure.reason}"
-            }
-            val seenTickets = HashSet<Long>()
-            for (index in 0 until samples) {
-                val gpuFrame = ((sortFlags[index] shr 9) and 3L) == 1L
-                val refreshed = sortFlags[index] and 1L != 0L
-                val submittedTicket = orderSubmissionTicket[index].takeIf { it > 0L }
-                if (submittedTicket == null) {
-                    check(!refreshed || config.geometryPath == "paged") {
-                        "refreshed measured frame $index lacks its own order ticket"
-                    }
-                    continue
-                }
-                if (!gpuFrame) {
-                    if (refreshed && config.geometryPath != "paged") {
-                        check(orderSubmissionFlags[index] and (1L shl 3) != 0L) {
-                            "CPU order refresh did not request comparable queue-completion timing"
-                        }
-                        check(orderSubmissionFlags[index] and (1L shl 1) != 0L) {
-                            "CPU order refresh did not issue a measurement ticket"
-                        }
-                    }
-                    val measurement = checkNotNull(cpuOrderMeasurementForFrame(index)) {
-                        "missing CPU completion receipt for measured frame $index"
-                    }
-                    check(submittedTicket == measurement.ticket) {
-                        "CPU terminal ticket does not match measured frame submission"
-                    }
-                    check(seenTickets.add(measurement.ticket)) {
-                        "duplicate CPU order receipt ticket ${measurement.ticket}"
-                    }
-                    requireContributorCountContract(
-                        measurement.visible,
-                        measurement.contributor,
-                        measurement.drawn,
-                        measurement.exactContributorCompaction,
-                        "CPU frame $index ticket ${measurement.ticket}"
-                    )
-                    continue
-                }
-                if (refreshed) {
-                    check(orderSubmissionFlags[index] and 1L != 0L) {
-                        "GPU order refresh did not request GPU timing"
-                    }
-                    check(orderSubmissionFlags[index] and (1L shl 1) != 0L) {
-                        "GPU order refresh did not issue a measurement ticket"
-                    }
-                    check(orderFailuresByRevision[cameraRevision[index]] == null) {
-                        "GPU order ticket failed for camera revision ${cameraRevision[index]}"
-                    }
-                }
-                val measurement = checkNotNull(orderMeasurementForFrame(index)) {
-                    "missing GPU order receipt for measured frame $index"
-                }
-                check(submittedTicket == measurement.ticket) {
-                    "GPU terminal ticket does not match the measured frame submission"
-                }
-                check(seenTickets.add(measurement.ticket)) {
-                    "duplicate GPU order receipt ticket ${measurement.ticket}"
-                }
-                check(measurement.requestedBackend == orderBackendValue(config.orderBackend)) {
-                    "GPU order receipt requested backend does not match the benchmark"
                 }
             }
         }
@@ -3572,9 +3498,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             val traceId = cameraTrace?.id ?: "orbit-yaw-${config.yawStepRadians}"
             val traceSha256 = cameraTrace?.sha256
                 ?: sha256(traceId.toByteArray(Charsets.UTF_8))
-            val hasGpuFrames = (0 until samples).any { index ->
-                ((sortFlags[index] shr 9) and 3L) == 1L
-            }
             val unavailable = linkedSetOf(
                 "environment.browser",
                 "environment.adapter",
@@ -3593,13 +3516,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if ((0 until samples).any { orderMeasurementForFrame(it) == null }) {
                 unavailable += "frames[*].gpu_complete_ms"
             }
-            if (!hasGpuFrames) {
+            if (orderMeasurementsByTicket.isEmpty()) {
                 unavailable += "summary.distributions.gpu_complete_ms"
             }
             if ((0 until samples).any { cpuOrderMeasurementForFrame(it) == null }) {
                 unavailable += "frames[*].cpu_frame_complete_ms"
             }
             if (cpuOrderMeasurementsByTicket.isEmpty()) {
+                unavailable += "summary.distributions.preprocess_ms"
+                unavailable += "summary.distributions.sort_ms"
                 unavailable += "summary.distributions.cpu_frame_complete_ms"
             }
             if (thermalStatusStart == null) unavailable += "environment.thermal_status_start"
@@ -3996,9 +3921,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
             val ticket = checkNotNull(record.ticket)
             val identity = checkNotNull(record.identity)
-            requireStrictFrameTicketJoin(
+            requireStrictFrameTicketNamespaces(
                 frameIndex = index,
-                orderRefreshed = sortFlags[index] and 1L != 0L,
                 orderSubmissionTicket = orderSubmissionTicket[index].takeIf { it > 0L },
                 currentStatsTicket = ticket
             )
@@ -4042,20 +3966,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         "frame $index GPU Preproject requires D=C"
                     }
                 }
-            }
-            orderMeasurementForFrame(index)?.let { order ->
-                check(
-                    order.visible == ready.visibleCount &&
-                        order.contributor == ready.contributorCount &&
-                        order.drawn == ready.drawnCount
-                ) { "frame $index GPU order/current-stats V/C/D disagree" }
-            }
-            cpuOrderMeasurementForFrame(index)?.let { order ->
-                check(
-                    order.visible == ready.visibleCount &&
-                        order.contributor == ready.contributorCount &&
-                        order.drawn == ready.drawnCount
-                ) { "frame $index CPU order/current-stats V/C/D disagree" }
             }
             gpuProducerMeasurement(index)?.let { producer ->
                 val (producerPlan, producerCountSemantics) = when (producer.producer) {

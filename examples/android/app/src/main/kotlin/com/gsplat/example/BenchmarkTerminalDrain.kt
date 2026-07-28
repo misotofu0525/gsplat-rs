@@ -28,15 +28,15 @@ internal fun drainBenchmarkTerminalReceipts(
 }
 
 /**
- * Requires the strict order/current-stats receipt join before artifact output.
+ * Requires independent strict ticket namespaces before artifact output.
  *
- * Exact refreshed frames project the renderer-owned current-stats ticket into
- * the immutable order terminal lane. Frames without an order refresh must keep
- * the order lane explicitly empty; they may not borrow another frame's ticket.
+ * Current-stats owns the presented-frame identity and S/V/C/D receipt. Order
+ * telemetry is optional compatibility evidence with its own ticket namespace;
+ * its ticket is validated only when the renderer actually issued one. Neither
+ * order refresh state nor numeric ticket equality can manufacture a join.
  */
-internal fun requireStrictFrameTicketJoin(
+internal fun requireStrictFrameTicketNamespaces(
     frameIndex: Int,
-    orderRefreshed: Boolean,
     orderSubmissionTicket: Long?,
     currentStatsTicket: Long
 ) {
@@ -44,13 +44,9 @@ internal fun requireStrictFrameTicketJoin(
     check(currentStatsTicket > 0L) {
         "strict frame $frameIndex has an invalid current-stats ticket"
     }
-    if (orderRefreshed) {
-        check(orderSubmissionTicket == currentStatsTicket) {
-            "strict frame $frameIndex refreshed order/current-stats ticket identity drifted"
-        }
-    } else {
-        check(orderSubmissionTicket == null) {
-            "strict frame $frameIndex without an order refresh must use the explicit no-ticket state"
+    if (orderSubmissionTicket != null) {
+        check(orderSubmissionTicket > 0L) {
+            "strict frame $frameIndex has an invalid issued order ticket"
         }
     }
 }

@@ -159,31 +159,29 @@ class BenchmarkTerminalDrainTest {
     }
 
     @Test
-    fun strictTicketJoinRejectsDriftAndRequiresExplicitNoTicketWithoutRefresh() {
-        requireStrictFrameTicketJoin(
+    fun strictTicketNamespacesAllowIndependentOrAbsentOrderTelemetry() {
+        requireStrictFrameTicketNamespaces(
             frameIndex = 0,
-            orderRefreshed = true,
             orderSubmissionTicket = 201,
-            currentStatsTicket = 201
+            currentStatsTicket = 901
         )
-        requireStrictFrameTicketJoin(
+        requireStrictFrameTicketNamespaces(
             frameIndex = 1,
-            orderRefreshed = false,
             orderSubmissionTicket = null,
             currentStatsTicket = 202
         )
 
-        val drift = runCatching {
-            requireStrictFrameTicketJoin(2, true, 203, 204)
+        val invalidCurrentStats = runCatching {
+            requireStrictFrameTicketNamespaces(2, 203, 0)
         }.exceptionOrNull()
-        assertTrue(drift is IllegalStateException)
-        assertTrue(drift?.message?.contains("ticket identity drifted") == true)
+        assertTrue(invalidCurrentStats is IllegalStateException)
+        assertTrue(invalidCurrentStats?.message?.contains("current-stats ticket") == true)
 
-        val borrowed = runCatching {
-            requireStrictFrameTicketJoin(3, false, 205, 205)
+        val invalidOrder = runCatching {
+            requireStrictFrameTicketNamespaces(3, 0, 205)
         }.exceptionOrNull()
-        assertTrue(borrowed is IllegalStateException)
-        assertTrue(borrowed?.message?.contains("explicit no-ticket state") == true)
+        assertTrue(invalidOrder is IllegalStateException)
+        assertTrue(invalidOrder?.message?.contains("issued order ticket") == true)
     }
 
     private fun binding(sampleIndex: Int) = SurfaceCurrentStatsFrameBinding(

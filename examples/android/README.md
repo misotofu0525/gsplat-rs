@@ -76,9 +76,13 @@ display state. A Ready terminal from an older presentation therefore closes
 only its exact ticket/identity in the strict ledger even when the display state
 correctly remains Pending for a newer ticket. This neither republishes stale UI
 counts nor converts Pending into Ready.
-When that Exact frame refreshed order, its issued current-stats ticket is also
-the required order ticket; the terminal is projected into both strict ledgers
-without another render, submit, or ticket. Terminal-drain log lines include
+Compatibility order telemetry and current-stats use independent ticket
+namespaces. `sort_refreshed` never manufactures an order ticket, and numeric
+ticket equality is not a join. Only an order ticket actually issued by the
+renderer must reach exactly one order terminal; a correctness capture may
+honestly publish null per-frame order fields and an empty order ledger while
+current-stats still proves same-present identity and `S/V/C/D`. Terminal-drain
+log lines include
 QueueComplete versus Timeout, the render-thread id/name, and issued/terminal/
 pending counts for both ledgers. QueueComplete with pending terminals is
 reported separately from repeated pump timeout and native pump error.
@@ -96,9 +100,12 @@ post-projection contributors `C`, and issued draw count `D`. The artifact
 requires `0 <= C <= V <= S`, `D=V` for CPU/GPU PostSort, and `D=C` for GPU
 Preproject. Fixed-camera samples still require unique ticket and presentation
 sequence identities. Legacy `GsplatSurfaceStats` values are not live evidence.
-Host transaction/iteration wall time remains available; preprocess, sort, and
-queue-completion timing is emitted only from the same sample's order terminal,
-while raster timing is explicitly unavailable.
+Host transaction/iteration wall time remains available. Preprocess, sort, and
+queue-completion timing is emitted only from an independently issued matching
+order terminal; otherwise those fields are null and declared unavailable.
+Q3 correctness does not require that optional timing producer. Its timing lane
+remains Deferred to the separate V2 timing consumer. Raster timing is
+explicitly unavailable.
 
 Android GPU-producer collection is Deferred to a separate real-window producer
 evidence slice. The collector rejects `--gpu-producer` before device work; its
