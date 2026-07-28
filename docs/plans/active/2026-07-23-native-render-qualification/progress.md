@@ -1753,3 +1753,18 @@ NSView OpenGL-surface preference after NSWindow creation; it does not control
 the `backingScaleFactor` conversion that produced the 980-pixel container.
 That commit is therefore superseded by the container/drawable separation above
 and is not endpoint evidence.
+
+Fixed-SHA review accepted the replacement `270ba02` with no P0/P1/P2. Its
+single authorized endpoint execution passed the odd-width container boundary,
+then stopped before presentation with
+`live camera projection_matrix[0] mismatch: actual=1.1821657419204712
+expected=1.188814234062581`. PlayCanvas and the offline gate did not start and
+no formal output was published. The retained failure proves a diagnostic-oracle
+drift: the renderer and formal trace both apply Truck's calibrated
+`focal_length_x_over_y=1.005624...`, while the desktop live-camera receipt
+recomputed projection X with the historical square-pixel `focal/aspect`
+formula. The correction uses `CameraIntrinsics::effective_projection_aspect`
+in that receipt only and adds the exact 979x546 calibrated projection as a
+regression test. Renderer projection, authority inputs and endpoint pixels are
+unchanged. Another endpoint remains deferred until this new candidate passes
+focused verification and fixed-SHA review.

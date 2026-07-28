@@ -2213,10 +2213,11 @@ fn canonical_view_matrix_f32(camera: Camera) -> [f32; 16] {
 
 fn canonical_projection_matrix_f32(camera: Camera, aspect: f32) -> [f32; 16] {
     let focal = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let projection_aspect = camera.intrinsics.effective_projection_aspect(aspect);
     let depth =
         camera.intrinsics.far_plane / (camera.intrinsics.far_plane - camera.intrinsics.near_plane);
     [
-        focal / aspect,
+        focal / projection_aspect,
         0.0,
         0.0,
         0.0,
@@ -2467,6 +2468,33 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn live_projection_receipt_preserves_calibrated_focal_length_ratio() {
+        let mut camera = Camera::default();
+        camera.intrinsics.vertical_fov_radians = 0.881_621_54;
+        camera.intrinsics.focal_length_x_over_y = 581.924_56 / 578.670_1;
+
+        let projection = canonical_projection_matrix_f32(camera, 979.0 / 546.0);
+        assert!((projection[0] - 1.188_814_2).abs() <= 1.0e-6);
+        assert!((projection[5] - 2.119_670_9).abs() <= 1.0e-6);
+
+        let square_pixel_projection = canonical_projection_matrix_f32(
+            Camera {
+                intrinsics: gsplat_core::CameraIntrinsics {
+                    focal_length_x_over_y: 1.0,
+                    ..camera.intrinsics
+                },
+                ..camera
+            },
+            979.0 / 546.0,
+        );
+        assert!((square_pixel_projection[0] - 1.182_165_7).abs() <= 1.0e-6);
+        assert_ne!(
+            projection[0].to_bits(),
+            square_pixel_projection[0].to_bits()
+        );
     }
 
     #[test]
