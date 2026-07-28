@@ -1558,7 +1558,7 @@ A real local build retained six entries at
 `upstream_evaluation_images`. The receipt deliberately reports only
 `pinned_extracted_entries_only`: the official 7,064,286,140-byte archive itself
 was not retained, so `archive_sha256_verified` is false rather than invented.
-Eight focused tests passed. This closes the local extracted-entry provenance
+Nine focused tests passed. This closes the local extracted-entry provenance
 mechanism only; Product Quality remains `Deferred`, performance stays
 unauthorized, and no browser, device, endpoint image, ratio, FPS or winner was
 produced.
