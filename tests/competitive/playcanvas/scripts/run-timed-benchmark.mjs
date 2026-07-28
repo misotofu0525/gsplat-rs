@@ -634,7 +634,6 @@ try {
     gpu_wait_ms: null,
     gpu_complete_ms: null,
     visible: null,
-    contributor: null,
     drawn: null,
     active_splats: sample.activeSplats,
     // The pinned GSplatHybridRenderer calls sortAndProjectForCamera for every

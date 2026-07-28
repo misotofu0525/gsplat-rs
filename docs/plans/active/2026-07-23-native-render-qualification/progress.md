@@ -1129,3 +1129,28 @@ resolution, timing policy or either competitor endpoint. It authorizes no
 automatic retry. A new attempt requires a new reviewed SHA, regenerated
 same-SHA authority and Wasm artifacts, a fresh immutable series root and a new
 successful dry-run/go-no-go review.
+
+### Q1 formal attempt 2 terminal and optional contributor repair (2026-07-28)
+
+The separately declared attempt 2 at reviewed root SHA
+`acfb7bf6d94b5e8316f5a6b81d698b096ac5caf8` stopped fail-closed on invocation
+1 of 30, the PlayCanvas trace-0 control. No gsplat-rs endpoint or later
+PlayCanvas invocation ran, so this immutable attempt supports no quality or
+performance comparison. Its top-level blocker records exit status 2 and keeps
+automatic retry disabled.
+
+The renderer capture itself completed, but PlayCanvas artifact materialization
+emitted `contributor: null` without `exact_contributor_compaction`. The shared
+artifact contract makes contributor evidence optional; presence means the
+producer claims the explicit contributor contract, so the canonical validator
+correctly rejected the unmatched field. PlayCanvas does not expose this count.
+The producer now omits both optional contributor fields while retaining
+`frames[*].contributor` in `unavailable_fields`; it continues to report
+`visible` and `drawn` as unavailable rather than inventing counts.
+
+Focused tests run the canonical validator against both sides of that boundary:
+null visible/drawn with omitted contributor evidence passes, while a lone null
+contributor remains rejected. This is a producer artifact repair only. It does
+not modify the validator, competitor engine, rendering, timing, camera, or
+quality policy; it ran no browser or formal experiment and authorizes no
+automatic retry.
