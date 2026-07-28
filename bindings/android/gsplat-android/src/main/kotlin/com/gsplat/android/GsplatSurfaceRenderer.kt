@@ -164,6 +164,24 @@ class GsplatSurfaceRenderer private constructor(
     }
 
     /**
+     * Destructively polls the additive timing-bearing V2 current-stats value.
+     * This consumes the same native single-pop queue as [pollCurrentStats], so
+     * a caller must choose one API for each expected terminal. The result is
+     * also projected into the existing V1 adapter bookkeeping without timing,
+     * preserving pending/tombstone and presentation-watermark behavior.
+     */
+    fun pollCurrentStatsV2(): GsplatSurfaceCurrentStatsPollV2 {
+        synchronized(lock) {
+            checkOpen()
+            val raw = LongArray(GsplatSurfaceCurrentStatsPollV2.RAW_VALUE_COUNT)
+            checkResult(NativeBridge.pollSurfaceCurrentStatsV2(nativeHandle, raw))
+            val poll = GsplatSurfaceCurrentStatsPollV2.fromRaw(raw)
+            currentStatsAdapter.consumePollResult(poll.withoutTiming())
+            return poll
+        }
+    }
+
+    /**
      * Returns this adapter's latest current-stats state. Counts exist only in
      * [GsplatSurfaceCurrentStatsState.Ready]; all other states intentionally
      * carry no fallback from [stats].

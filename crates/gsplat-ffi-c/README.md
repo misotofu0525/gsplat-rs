@@ -79,6 +79,13 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   `DROPPED` retain ticket/identity but have no usable counts. Payload zeros
   under other kinds are inapplicable fields, never real counts, generations,
   or a real ticket.
+- Call `gsplat_surface_renderer_poll_current_stats_v2()` instead of the V1 poll
+  when the same atomic terminal must also carry timing. V2 consumes the same
+  Renderer-owned queue and never creates or joins a second ticket. `READY`
+  always validates `frame_complete_ms`; `cpu_preprocess_ms` and `cpu_sort_ms`
+  are applicable only under their explicit validity bits. Empty, unsampled,
+  and failure payloads keep all timing bits and values zero. The V1 layout,
+  reserved-zero contract, and symbols remain frozen.
 - After an `ISSUED` submission, `EMPTY` means no globally oldest resolution is
   ready now; the consumer may describe that issued ticket locally as pending
   and continue rendering/polling. `EMPTY` alone does not identify a ticket or

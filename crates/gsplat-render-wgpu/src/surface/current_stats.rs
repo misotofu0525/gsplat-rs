@@ -298,6 +298,27 @@ impl SurfaceCurrentStatsReceipt {
     pub const fn count_semantics(self) -> SurfaceCurrentStatsCountSemantics {
         self.count_semantics
     }
+
+    /// Frame-start to graphics-queue completion for this exact ticket.
+    pub const fn frame_complete_ms(self) -> f32 {
+        f32::from_bits(self.frame_complete_ms_bits)
+    }
+
+    /// CPU preprocessing time when the executed plan supplied it.
+    pub const fn cpu_preprocess_ms(self) -> Option<f32> {
+        match self.cpu_preprocess_ms_bits {
+            Some(bits) => Some(f32::from_bits(bits)),
+            None => None,
+        }
+    }
+
+    /// CPU stable-sort time when the executed plan supplied it.
+    pub const fn cpu_sort_ms(self) -> Option<f32> {
+        match self.cpu_sort_ms_bits {
+            Some(bits) => Some(f32::from_bits(bits)),
+            None => None,
+        }
+    }
 }
 
 impl From<CurrentStatsReceipt> for SurfaceCurrentStatsReceipt {
@@ -498,6 +519,18 @@ mod tests {
         assert_eq!(stats.preprocess_ms, 2.0);
         assert_eq!(stats.sort_ms, 3.0);
         assert_eq!(stats.raster_ms, 4.0);
+    }
+
+    #[test]
+    fn ready_receipt_exposes_same_ticket_timing_without_fabricating_cpu_phases() {
+        let SurfaceCurrentStatsPoll::Terminal(SurfaceCurrentStatsTerminal::Ready(receipt)) =
+            ready(submission(23, 29))
+        else {
+            panic!("ready fixture must remain a Ready terminal");
+        };
+        assert_eq!(receipt.frame_complete_ms(), 6.0);
+        assert_eq!(receipt.cpu_preprocess_ms(), None);
+        assert_eq!(receipt.cpu_sort_ms(), None);
     }
 
     #[test]

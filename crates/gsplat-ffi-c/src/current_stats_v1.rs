@@ -6,7 +6,7 @@ use gsplat_render_wgpu::{
 };
 
 pub(super) const SURFACE_CURRENT_STATS_ABI_VERSION_V1: u32 = 1;
-const SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE: u32 = 0;
+pub(super) const SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE: u32 = 0;
 const SURFACE_CURRENT_STATS_REQUEST_REQUESTED: u32 = 1;
 const SURFACE_CURRENT_STATS_REQUEST_BUSY: u32 = 2;
 const SURFACE_CURRENT_STATS_REQUEST_GPU_UNAVAILABLE: u32 = 3;
@@ -19,15 +19,15 @@ const SURFACE_CURRENT_STATS_PLAN_NOT_APPLICABLE: u32 = 0;
 const SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT: u32 = 1;
 const SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT: u32 = 2;
 const SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT: u32 = 3;
-const SURFACE_CURRENT_STATS_POLL_UNSPECIFIED: u32 = 0;
-const SURFACE_CURRENT_STATS_POLL_EMPTY: u32 = 1;
-const SURFACE_CURRENT_STATS_POLL_UNSAMPLED: u32 = 2;
-const SURFACE_CURRENT_STATS_POLL_READY: u32 = 3;
-const SURFACE_CURRENT_STATS_POLL_MAP_FAILURE: u32 = 4;
-const SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED: u32 = 5;
-const SURFACE_CURRENT_STATS_POLL_EXPIRED: u32 = 6;
-const SURFACE_CURRENT_STATS_POLL_DROPPED: u32 = 7;
-const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE: u32 = 0;
+pub(super) const SURFACE_CURRENT_STATS_POLL_UNSPECIFIED: u32 = 0;
+pub(super) const SURFACE_CURRENT_STATS_POLL_EMPTY: u32 = 1;
+pub(super) const SURFACE_CURRENT_STATS_POLL_UNSAMPLED: u32 = 2;
+pub(super) const SURFACE_CURRENT_STATS_POLL_READY: u32 = 3;
+pub(super) const SURFACE_CURRENT_STATS_POLL_MAP_FAILURE: u32 = 4;
+pub(super) const SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED: u32 = 5;
+pub(super) const SURFACE_CURRENT_STATS_POLL_EXPIRED: u32 = 6;
+pub(super) const SURFACE_CURRENT_STATS_POLL_DROPPED: u32 = 7;
+pub(super) const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE: u32 = 0;
 const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE: u32 = 1;
 const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE: u32 = 2;
 const SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR: u32 = 3;
@@ -182,7 +182,9 @@ const _: () = {
     assert!(std::mem::offset_of!(GsplatSurfaceCurrentStatsPollV1, source_count) == 112);
 };
 
-fn surface_current_stats_request_status_to_ffi(reason: SurfaceCurrentStatsUnsampledReason) -> u32 {
+pub(super) fn surface_current_stats_request_status_to_ffi(
+    reason: SurfaceCurrentStatsUnsampledReason,
+) -> u32 {
     match reason {
         SurfaceCurrentStatsUnsampledReason::Busy => SURFACE_CURRENT_STATS_REQUEST_BUSY,
         SurfaceCurrentStatsUnsampledReason::GpuUnavailable => {
@@ -205,7 +207,7 @@ fn surface_current_stats_plan_to_ffi(plan: SurfaceCurrentStatsPlan) -> u32 {
     }
 }
 
-fn surface_current_stats_count_semantics_to_ffi(
+pub(super) fn surface_current_stats_count_semantics_to_ffi(
     semantics: SurfaceCurrentStatsCountSemantics,
 ) -> u32 {
     match semantics {
@@ -221,7 +223,7 @@ fn surface_current_stats_count_semantics_to_ffi(
     }
 }
 
-fn surface_current_stats_identity_to_ffi(
+pub(super) fn surface_current_stats_identity_to_ffi(
     submission: SurfaceCurrentStatsSubmissionReceipt,
 ) -> GsplatSurfaceCurrentStatsIdentityV1 {
     let join = submission.join();

@@ -342,6 +342,49 @@ typedef struct GsplatSurfaceCurrentStatsPollV1 {
 } GsplatSurfaceCurrentStatsPollV1;
 
 /*
+ * Additive timing-bearing poll over the same Renderer-owned single-pop queue.
+ * V2 does not create a second ticket or terminal. Callers choose either the
+ * v1 or v2 poll symbol for each destructive poll; they must not call both for
+ * the same expected terminal. V1 layouts and reserved-zero requirements are
+ * unchanged.
+ */
+#define GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V2 2u
+#define GSPLAT_SURFACE_CURRENT_STATS_TIMING_FRAME_COMPLETE_VALID (1u << 0)
+#define GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_PREPROCESS_VALID (1u << 1)
+#define GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_SORT_VALID (1u << 2)
+
+/*
+ * READY atomically carries ticket, complete identity, S/V/C/D, count
+ * semantics, and frame-complete timing. CPU timings are applicable only when
+ * their validity bits are set. All timing values and flags are zero for
+ * EMPTY, UNSAMPLED, and terminal failures. Initialize struct_size and
+ * version=2 before every call.
+ */
+typedef struct GsplatSurfaceCurrentStatsPollV2 {
+  uint32_t struct_size;
+  uint32_t version;
+  /* GsplatSurfaceCurrentStatsPollKindV1. */
+  uint32_t kind;
+  /* GsplatSurfaceCurrentStatsRequestStatusV1, only for UNSAMPLED. */
+  uint32_t request_status;
+  /* GsplatSurfaceCurrentStatsCountSemanticsV1, only for READY. */
+  uint32_t count_semantics;
+  /* GSPLAT_SURFACE_CURRENT_STATS_TIMING_* bits, only for READY. */
+  uint32_t timing_validity_flags;
+  uint64_t ticket;
+  GsplatSurfaceCurrentStatsIdentityV1 identity;
+  uint32_t source_count;
+  uint32_t visible_count;
+  uint32_t contributor_count;
+  uint32_t drawn_count;
+  float frame_complete_ms;
+  float cpu_preprocess_ms;
+  float cpu_sort_ms;
+  uint32_t reserved;
+  uint64_t reserved_u64[2];
+} GsplatSurfaceCurrentStatsPollV2;
+
+/*
  * Versioned projected-draw ABI. V1 layouts are frozen; any future extension
  * uses new V2 types/symbols. Zero is a setter-only alias for the legacy
  * Adaptive default; successful frame receipts canonicalize it to ADAPTIVE=3.
@@ -774,6 +817,9 @@ int32_t gsplat_surface_renderer_get_current_stats_submission_v1(
 int32_t gsplat_surface_renderer_poll_current_stats_v1(
     GsplatSurfaceRenderer *renderer,
     GsplatSurfaceCurrentStatsPollV1 *out_poll);
+int32_t gsplat_surface_renderer_poll_current_stats_v2(
+    GsplatSurfaceRenderer *renderer,
+    GsplatSurfaceCurrentStatsPollV2 *out_poll);
 /*
  * Wait up to timeout_ns while advancing callbacks for queue work submitted
  * before this call. This never acquires a Surface, renders, submits work, or

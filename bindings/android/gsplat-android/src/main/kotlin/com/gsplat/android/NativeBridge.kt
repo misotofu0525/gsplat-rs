@@ -117,6 +117,9 @@ object NativeBridge {
     external fun pollSurfaceCurrentStatsV1(nativeHandle: Long, outPoll: LongArray): Int
 
     @JvmStatic
+    external fun pollSurfaceCurrentStatsV2(nativeHandle: Long, outPoll: LongArray): Int
+
+    @JvmStatic
     external fun getSurfaceStats(nativeHandle: Long, outStats: LongArray): Int
 
     @JvmStatic

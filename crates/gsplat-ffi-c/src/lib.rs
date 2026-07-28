@@ -1,6 +1,7 @@
 //! Stable C ABI surface for mobile wrappers.
 
 mod current_stats_v1;
+mod current_stats_v2;
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -49,6 +50,10 @@ pub use current_stats_v1::{
 use current_stats_v1::{
     SURFACE_CURRENT_STATS_ABI_VERSION_V1, surface_current_stats_poll_to_ffi,
     surface_current_stats_request_to_ffi, surface_current_stats_submission_to_ffi,
+};
+pub use current_stats_v2::GsplatSurfaceCurrentStatsPollV2;
+use current_stats_v2::{
+    SURFACE_CURRENT_STATS_ABI_VERSION_V2, surface_current_stats_poll_to_ffi_v2,
 };
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
@@ -3479,6 +3484,50 @@ pub unsafe extern "C" fn gsplat_surface_renderer_poll_current_stats_v1(
             }
         };
         let poll = surface_current_stats_poll_to_ffi(renderer.session.poll_current_stats());
+        unsafe {
+            *out_poll = poll;
+        }
+        ffi_ok()
+    })
+}
+
+/// Poll and consume at most one global current-stats resolution or atomic
+/// terminal. V2 extends the same single-pop receipt with same-ticket timing;
+/// it does not create a second ticket, queue, or terminal.
+///
+/// `READY` always makes frame-complete timing valid. CPU phase values are
+/// applicable only when their corresponding validity flags are set. Other
+/// poll kinds carry zero validity flags and zero timing payload.
+///
+/// # Safety
+///
+/// `renderer` must be null or a live Surface renderer. `out_poll` must
+/// describe a writable, initialized v2 structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_surface_renderer_poll_current_stats_v2(
+    renderer: *mut GsplatSurfaceRenderer,
+    out_poll: *mut GsplatSurfaceCurrentStatsPollV2,
+) -> i32 {
+    ffi_catch_i32("gsplat_surface_renderer_poll_current_stats_v2", || {
+        // Validate before polling because a successful poll consumes at most
+        // one Renderer-owned resolution or terminal.
+        if let Err(code) = validate_versioned_output(
+            out_poll,
+            SURFACE_CURRENT_STATS_ABI_VERSION_V2,
+            "gsplat_surface_renderer_poll_current_stats_v2",
+        ) {
+            return code;
+        }
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_surface_renderer_poll_current_stats_v2: renderer is null",
+                );
+            }
+        };
+        let poll = surface_current_stats_poll_to_ffi_v2(renderer.session.poll_current_stats());
         unsafe {
             *out_poll = poll;
         }

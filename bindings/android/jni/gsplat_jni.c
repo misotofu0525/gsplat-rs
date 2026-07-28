@@ -11,6 +11,157 @@
 
 #include "../../../crates/gsplat-ffi-c/include/gsplat.h"
 
+enum { CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT = 22 };
+
+static uint32_t current_stats_v2_float_bits(float value) {
+  uint32_t bits = 0;
+  memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+static int current_stats_v2_identity_is_zero(
+    const GsplatSurfaceCurrentStatsIdentityV1 *identity) {
+  GsplatSurfaceCurrentStatsIdentityV1 zero_identity;
+  memset(&zero_identity, 0, sizeof(zero_identity));
+  return memcmp(identity, &zero_identity, sizeof(*identity)) == 0;
+}
+
+static int current_stats_v2_identity_is_applicable(
+    const GsplatSurfaceCurrentStatsIdentityV1 *identity) {
+  return identity->executed_plan >= GSPLAT_SURFACE_CURRENT_STATS_PLAN_CPU_POST_SORT &&
+      identity->executed_plan <= GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_PREPROJECT &&
+      identity->reserved == 0;
+}
+
+static int current_stats_v2_counts_are_valid(
+    const GsplatSurfaceCurrentStatsPollV2 *poll) {
+  if (poll->contributor_count > poll->visible_count ||
+      poll->visible_count > poll->source_count ||
+      poll->drawn_count > poll->source_count) {
+    return 0;
+  }
+  switch (poll->count_semantics) {
+    case GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_DIRECT_DRAW_EQUALS_VISIBLE:
+    case GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE:
+      return poll->drawn_count == poll->visible_count;
+    case GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_CONTRIBUTOR:
+      return poll->drawn_count == poll->contributor_count;
+    default:
+      return 0;
+  }
+}
+
+static void current_stats_v2_identity_to_jlongs(
+    const GsplatSurfaceCurrentStatsIdentityV1 *identity,
+    jlong *values) {
+  values[0] = (jlong)identity->scene_generation;
+  values[1] = (jlong)identity->camera_revision;
+  values[2] = (jlong)identity->viewport_generation;
+  values[3] = (jlong)identity->contract_generation;
+  values[4] = (jlong)identity->plan_set_generation;
+  values[5] = (jlong)identity->order_generation;
+  values[6] = (jlong)identity->raster_generation;
+  values[7] = (jlong)identity->encode_attempt;
+  values[8] = (jlong)identity->presentation_sequence;
+  values[9] = (jlong)identity->executed_plan;
+}
+
+/* Validate and flatten one already-atomic V2 value without consuming state. */
+static int current_stats_poll_v2_to_jlongs(
+    const GsplatSurfaceCurrentStatsPollV2 *poll,
+    jlong values[CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT]) {
+  const uint32_t known_timing_flags =
+      GSPLAT_SURFACE_CURRENT_STATS_TIMING_FRAME_COMPLETE_VALID |
+      GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_PREPROCESS_VALID |
+      GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_SORT_VALID;
+  const int counts_zero = poll->source_count == 0 && poll->visible_count == 0 &&
+      poll->contributor_count == 0 && poll->drawn_count == 0;
+  const int timing_zero = poll->timing_validity_flags == 0 &&
+      current_stats_v2_float_bits(poll->frame_complete_ms) == 0 &&
+      current_stats_v2_float_bits(poll->cpu_preprocess_ms) == 0 &&
+      current_stats_v2_float_bits(poll->cpu_sort_ms) == 0;
+  const int reserved_zero = poll->reserved == 0 && poll->reserved_u64[0] == 0 &&
+      poll->reserved_u64[1] == 0;
+  int valid_payload = 0;
+  switch (poll->kind) {
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_EMPTY:
+      valid_payload = poll->request_status ==
+              GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE &&
+          poll->count_semantics == GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE &&
+          poll->ticket == 0 && current_stats_v2_identity_is_zero(&poll->identity) &&
+          counts_zero && timing_zero;
+      break;
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_UNSAMPLED:
+      valid_payload =
+          poll->request_status >= GSPLAT_SURFACE_CURRENT_STATS_REQUEST_BUSY &&
+          poll->request_status <= GSPLAT_SURFACE_CURRENT_STATS_REQUEST_TICKET_EXHAUSTED &&
+          poll->count_semantics == GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE &&
+          poll->ticket == 0 && current_stats_v2_identity_is_zero(&poll->identity) &&
+          counts_zero && timing_zero;
+      break;
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_READY: {
+      const int flags_valid =
+          (poll->timing_validity_flags & ~known_timing_flags) == 0 &&
+          (poll->timing_validity_flags &
+           GSPLAT_SURFACE_CURRENT_STATS_TIMING_FRAME_COMPLETE_VALID) != 0;
+      const int frame_valid = isfinite(poll->frame_complete_ms) &&
+          poll->frame_complete_ms >= 0.0f;
+      const int preprocess_valid =
+          (poll->timing_validity_flags &
+           GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_PREPROCESS_VALID) != 0
+          ? isfinite(poll->cpu_preprocess_ms) && poll->cpu_preprocess_ms >= 0.0f
+          : current_stats_v2_float_bits(poll->cpu_preprocess_ms) == 0;
+      const int sort_valid =
+          (poll->timing_validity_flags &
+           GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_SORT_VALID) != 0
+          ? isfinite(poll->cpu_sort_ms) && poll->cpu_sort_ms >= 0.0f
+          : current_stats_v2_float_bits(poll->cpu_sort_ms) == 0;
+      valid_payload = poll->request_status ==
+              GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE &&
+          poll->ticket != 0 &&
+          current_stats_v2_identity_is_applicable(&poll->identity) &&
+          current_stats_v2_counts_are_valid(poll) && flags_valid && frame_valid &&
+          preprocess_valid && sort_valid;
+      break;
+    }
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_MAP_FAILURE:
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_GENERATION_INVALIDATED:
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_EXPIRED:
+    case GSPLAT_SURFACE_CURRENT_STATS_POLL_DROPPED:
+      valid_payload = poll->request_status ==
+              GSPLAT_SURFACE_CURRENT_STATS_REQUEST_NOT_APPLICABLE &&
+          poll->count_semantics == GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_NONE &&
+          poll->ticket != 0 &&
+          current_stats_v2_identity_is_applicable(&poll->identity) && counts_zero &&
+          timing_zero;
+      break;
+    default:
+      valid_payload = 0;
+      break;
+  }
+  if (poll->struct_size != sizeof(*poll) ||
+      poll->version != GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V2 ||
+      !reserved_zero || !valid_payload) {
+    return 0;
+  }
+
+  memset(values, 0, sizeof(jlong) * CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT);
+  values[0] = (jlong)poll->kind;
+  values[1] = (jlong)poll->request_status;
+  values[2] = (jlong)poll->count_semantics;
+  values[3] = (jlong)poll->timing_validity_flags;
+  values[4] = (jlong)poll->ticket;
+  current_stats_v2_identity_to_jlongs(&poll->identity, &values[5]);
+  values[15] = (jlong)poll->source_count;
+  values[16] = (jlong)poll->visible_count;
+  values[17] = (jlong)poll->contributor_count;
+  values[18] = (jlong)poll->drawn_count;
+  values[19] = (jlong)current_stats_v2_float_bits(poll->frame_complete_ms);
+  values[20] = (jlong)current_stats_v2_float_bits(poll->cpu_preprocess_ms);
+  values[21] = (jlong)current_stats_v2_float_bits(poll->cpu_sort_ms);
+  return 1;
+}
+
 /* Camera traces remain qualification-only; order controls and receipts are
  * part of the additive public Surface ABI above. */
 extern int32_t gsplat_benchmark_set_surface_camera_trace_frame_with_display_policy(
@@ -198,6 +349,66 @@ JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeCurrentStats
           GSPLAT_ERROR_INVALID_ARGUMENT ||
       memcmp(&poll, &poll_before, sizeof(poll)) != 0) {
     return 52;
+  }
+
+  GsplatSurfaceCurrentStatsPollV2 poll_v2;
+  memset(&poll_v2, 0, sizeof(poll_v2));
+  poll_v2.struct_size = (uint32_t)sizeof(poll_v2);
+  poll_v2.version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V2;
+  poll_v2.kind = 0xfeedu;
+  GsplatSurfaceCurrentStatsPollV2 poll_v2_before = poll_v2;
+  if (gsplat_surface_renderer_poll_current_stats_v2(NULL, &poll_v2) !=
+          GSPLAT_ERROR_INVALID_ARGUMENT ||
+      memcmp(&poll_v2, &poll_v2_before, sizeof(poll_v2)) != 0) {
+    return 53;
+  }
+
+  jlong raw_v2[CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT] = {0};
+  memset(&poll_v2, 0, sizeof(poll_v2));
+  poll_v2.struct_size = (uint32_t)sizeof(poll_v2);
+  poll_v2.version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V2;
+  poll_v2.kind = GSPLAT_SURFACE_CURRENT_STATS_POLL_EMPTY;
+  if (!current_stats_poll_v2_to_jlongs(&poll_v2, raw_v2) ||
+      raw_v2[0] != GSPLAT_SURFACE_CURRENT_STATS_POLL_EMPTY || raw_v2[4] != 0 ||
+      raw_v2[19] != 0 || raw_v2[20] != 0 || raw_v2[21] != 0) {
+    return 54;
+  }
+
+  poll_v2.kind = GSPLAT_SURFACE_CURRENT_STATS_POLL_MAP_FAILURE;
+  poll_v2.ticket = 41;
+  poll_v2.identity.scene_generation = 3;
+  poll_v2.identity.camera_revision = 5;
+  poll_v2.identity.presentation_sequence = 7;
+  poll_v2.identity.executed_plan = GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT;
+  if (!current_stats_poll_v2_to_jlongs(&poll_v2, raw_v2) ||
+      raw_v2[0] != GSPLAT_SURFACE_CURRENT_STATS_POLL_MAP_FAILURE ||
+      raw_v2[4] != 41 || raw_v2[5] != 3 || raw_v2[6] != 5 ||
+      raw_v2[13] != 7 || raw_v2[14] != GSPLAT_SURFACE_CURRENT_STATS_PLAN_GPU_POST_SORT ||
+      raw_v2[15] != 0 || raw_v2[19] != 0) {
+    return 55;
+  }
+
+  poll_v2.kind = GSPLAT_SURFACE_CURRENT_STATS_POLL_READY;
+  poll_v2.count_semantics =
+      GSPLAT_SURFACE_CURRENT_STATS_COUNT_SEMANTICS_INDIRECT_DRAW_EQUALS_VISIBLE;
+  poll_v2.source_count = 10;
+  poll_v2.visible_count = 8;
+  poll_v2.contributor_count = 6;
+  poll_v2.drawn_count = 8;
+  poll_v2.timing_validity_flags =
+      GSPLAT_SURFACE_CURRENT_STATS_TIMING_FRAME_COMPLETE_VALID |
+      GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_PREPROCESS_VALID |
+      GSPLAT_SURFACE_CURRENT_STATS_TIMING_CPU_SORT_VALID;
+  poll_v2.frame_complete_ms = 6.5f;
+  poll_v2.cpu_preprocess_ms = 1.25f;
+  poll_v2.cpu_sort_ms = 2.75f;
+  if (!current_stats_poll_v2_to_jlongs(&poll_v2, raw_v2) || raw_v2[4] != 41 ||
+      raw_v2[15] != 10 || raw_v2[16] != 8 || raw_v2[17] != 6 ||
+      raw_v2[18] != 8 ||
+      raw_v2[19] != current_stats_v2_float_bits(6.5f) ||
+      raw_v2[20] != current_stats_v2_float_bits(1.25f) ||
+      raw_v2[21] != current_stats_v2_float_bits(2.75f)) {
+    return 56;
   }
 
   return 0;
@@ -1063,6 +1274,41 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceCurrentSt
       out_poll,
       0,
       CURRENT_STATS_POLL_RAW_VALUE_COUNT,
+      values);
+  return (*env)->ExceptionCheck(env) ? GSPLAT_ERROR_INTERNAL : GSPLAT_OK;
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_pollSurfaceCurrentStatsV2(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jlongArray out_poll) {
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || out_poll == NULL ||
+      (*env)->GetArrayLength(env, out_poll) < CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+
+  GsplatSurfaceCurrentStatsPollV2 poll;
+  memset(&poll, 0, sizeof(poll));
+  poll.struct_size = (uint32_t)sizeof(poll);
+  poll.version = GSPLAT_SURFACE_CURRENT_STATS_ABI_VERSION_V2;
+  int32_t rc = gsplat_surface_renderer_poll_current_stats_v2(handle->renderer, &poll);
+  if (rc != GSPLAT_OK) {
+    return rc;
+  }
+
+  jlong values[CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT] = {0};
+  if (!current_stats_poll_v2_to_jlongs(&poll, values)) {
+    return GSPLAT_ERROR_INTERNAL;
+  }
+  (*env)->SetLongArrayRegion(
+      env,
+      out_poll,
+      0,
+      CURRENT_STATS_POLL_V2_RAW_VALUE_COUNT,
       values);
   return (*env)->ExceptionCheck(env) ? GSPLAT_ERROR_INTERNAL : GSPLAT_OK;
 }
