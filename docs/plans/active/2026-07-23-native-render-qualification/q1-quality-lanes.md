@@ -235,6 +235,13 @@ uniform layout and stable C camera ABI are unchanged. A representability bound
 of `2^-16..=2^16` guarantees a finite, normal derived aspect for any positive
 `u32` viewport; invalid calibration fails rather than being clamped.
 
+This Rust struct-field addition is assigned to the project's `0.2` source API
+boundary; it must not be released as a source-compatible `0.1.3` patch. The
+stable v0.1 C ABI remains unchanged. If the overall refactor later decides to
+retain v0.1 Rust source compatibility, this field must be replaced by an
+additive calibrated-camera carrier before integration, not hidden by release
+notes after the fact.
+
 This core slice does not unblock an endpoint run by itself. The canonical
 trace, Wasm/JS setter and receipt, and PlayCanvas custom projection still need
 to carry and prove the same ratio. Principal-point offsets remain unsupported;

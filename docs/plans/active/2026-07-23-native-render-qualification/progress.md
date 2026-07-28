@@ -1580,7 +1580,11 @@ smoke, architecture, format and diff checks passed. This is not endpoint
 qualification: the legacy trace adapter still selects ratio one, and the
 trace, Wasm/JS and PlayCanvas receipt carriers remain separate reviewed slices.
 The public Rust struct gains one field, so downstream literal construction is
-a source-compatibility change; the C ABI remains unchanged.
+a source-compatibility change; the C ABI remains unchanged. The integration
+decision is explicit: this belongs to the `0.2` Rust source API boundary and
+must not ship as a source-compatible `0.1.3` patch. Retaining the v0.1 Rust
+surface would instead require an additive calibrated-camera carrier before
+merge.
 
 ### Q1 formal Truck camera view-set authority (2026-07-28)
 
