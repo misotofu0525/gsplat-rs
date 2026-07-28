@@ -419,10 +419,17 @@ def write_playcanvas(root: pathlib.Path, rgba: bytes, formal_value: dict[str, ob
         "renderer_capture": capture,
         "queue_drain": {
             "phase": "post_capture_presentation",
+            "api": SMOKE.PLAYCANVAS_QUEUE_DRAIN_API,
+            "semanticsSource": SMOKE.PLAYCANVAS_QUEUE_DRAIN_SEMANTICS,
+            "specificationUrl": SMOKE.PLAYCANVAS_QUEUE_DRAIN_SPECIFICATION,
             "frameLoopStopped": True,
             "submitVersionBefore": 10,
             "submitVersionAfter": 10,
             "submitVersionStable": True,
+            "startedAtUtc": "2026-07-27T08:00:00.000Z",
+            "endedAtUtc": "2026-07-27T08:00:00.015Z",
+            "drainMs": 15.0,
+            "endedAtMs": 1234.5,
         },
     }
     manifest["renderer_capture"] = capture
@@ -644,6 +651,43 @@ class ProductQualitySmokeTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(SMOKE.OneViewQualityError, "queue drain"):
             SMOKE._playcanvas_capture(playcanvas, self.formal)
+
+    def test_playcanvas_capture_requires_complete_exact_outer_queue_drain(self) -> None:
+        mutations = {
+            "extra field": lambda receipt: receipt.__setitem__("extra", True),
+            "wrong API": lambda receipt: receipt.__setitem__("api", "queue.finish()"),
+            "wrong semantics": lambda receipt: receipt.__setitem__(
+                "semanticsSource", "invented"
+            ),
+            "wrong specification": lambda receipt: receipt.__setitem__(
+                "specificationUrl", "https://example.invalid/"
+            ),
+            "invalid start UTC": lambda receipt: receipt.__setitem__(
+                "startedAtUtc", "not-a-date"
+            ),
+            "reverse UTC": lambda receipt: receipt.__setitem__(
+                "endedAtUtc", "2026-07-27T07:59:59.000Z"
+            ),
+            "negative drain": lambda receipt: receipt.__setitem__("drainMs", -1.0),
+            "invalid monotonic end": lambda receipt: receipt.__setitem__(
+                "endedAtMs", -1.0
+            ),
+            "unstable version": lambda receipt: receipt.__setitem__(
+                "submitVersionAfter", 11
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                playcanvas = self.root / f"playcanvas-{label.replace(' ', '-')}"
+                write_playcanvas(playcanvas, self.good_rgba, self.formal)
+                manifest_path = playcanvas / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                mutate(manifest["presentation_capture"]["queue_drain"])
+                manifest_path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(
+                    SMOKE.OneViewQualityError, "queue drain"
+                ):
+                    SMOKE._playcanvas_capture(playcanvas, self.formal)
 
     def test_playcanvas_blocker_fails_closed(self) -> None:
         playcanvas = self.root / "playcanvas"

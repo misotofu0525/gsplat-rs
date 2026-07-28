@@ -10,6 +10,7 @@ published as a finite ``Rejected`` endpoint decision.
 from __future__ import annotations
 
 import ctypes
+import datetime
 import errno
 import hashlib
 import importlib.util
@@ -77,6 +78,32 @@ PLAYCANVAS_MATERIALIZATION_SCHEMA = (
     "gsplat-playcanvas-renderer-capture-materialization/v1"
 )
 PLAYCANVAS_CAMERA_SCHEMA = "gsplat-playcanvas-runtime-camera-receipt/v1"
+PLAYCANVAS_QUEUE_DRAIN_API = (
+    "app.graphicsDevice.wgpu.queue.onSubmittedWorkDone()"
+)
+PLAYCANVAS_QUEUE_DRAIN_SEMANTICS = (
+    "WebGPU GPUQueue.onSubmittedWorkDone resolves after all work submitted "
+    "before the call has completed"
+)
+PLAYCANVAS_QUEUE_DRAIN_SPECIFICATION = (
+    "https://www.w3.org/TR/webgpu/#dom-gpuqueue-onsubmittedworkdone"
+)
+PLAYCANVAS_QUEUE_DRAIN_FIELDS = frozenset(
+    {
+        "phase",
+        "api",
+        "semanticsSource",
+        "specificationUrl",
+        "frameLoopStopped",
+        "submitVersionBefore",
+        "submitVersionAfter",
+        "submitVersionStable",
+        "startedAtUtc",
+        "endedAtUtc",
+        "drainMs",
+        "endedAtMs",
+    }
+)
 PLAYCANVAS_CAPTURE_FIELDS = frozenset(
     {
         "schema",
@@ -235,6 +262,52 @@ def _finite_close(actual: Any, expected: float, context: str) -> None:
         or abs(float(actual) - expected) > 2.0e-4 + 2.0e-5 * abs(expected)
     ):
         fail(f"{context} does not match the formal camera")
+
+
+def _playcanvas_queue_drain(
+    receipt: dict[str, Any], expected_submit_version: int, context: str
+) -> None:
+    """Validate the producer's complete fail-closed queue terminal receipt."""
+
+    if set(receipt) != PLAYCANVAS_QUEUE_DRAIN_FIELDS:
+        fail(f"{context} fields do not match the exact queue drain receipt")
+    if (
+        receipt.get("phase") != "post_capture_presentation"
+        or receipt.get("api") != PLAYCANVAS_QUEUE_DRAIN_API
+        or receipt.get("semanticsSource") != PLAYCANVAS_QUEUE_DRAIN_SEMANTICS
+        or receipt.get("specificationUrl")
+        != PLAYCANVAS_QUEUE_DRAIN_SPECIFICATION
+        or receipt.get("frameLoopStopped") is not True
+        or receipt.get("submitVersionBefore") != expected_submit_version
+        or receipt.get("submitVersionAfter") != expected_submit_version
+        or receipt.get("submitVersionStable") is not True
+    ):
+        fail(f"{context} identity does not prove a stable terminal queue")
+
+    timestamps: list[datetime.datetime] = []
+    for field in ("startedAtUtc", "endedAtUtc"):
+        value = receipt.get(field)
+        if not isinstance(value, str) or not value.endswith("Z"):
+            fail(f"{context}.{field} must be an ISO-8601 UTC timestamp")
+        try:
+            timestamp = datetime.datetime.fromisoformat(value[:-1] + "+00:00")
+        except ValueError:
+            fail(f"{context}.{field} must be an ISO-8601 UTC timestamp")
+        if timestamp.tzinfo != datetime.timezone.utc:
+            fail(f"{context}.{field} must be an ISO-8601 UTC timestamp")
+        timestamps.append(timestamp)
+    if timestamps[1] < timestamps[0]:
+        fail(f"{context} ended before it started")
+
+    for field in ("drainMs", "endedAtMs"):
+        value = receipt.get(field)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            fail(f"{context}.{field} must be a non-negative finite number")
 
 
 def _regular_child(root: pathlib.Path, name: str, context: str) -> pathlib.Path:
@@ -1004,14 +1077,11 @@ def _playcanvas_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[byt
     outer_drain = _object(
         presentation, "queue_drain", "PlayCanvas presentation capture"
     )
-    if outer_drain != {
-        "phase": "post_capture_presentation",
-        "frameLoopStopped": True,
-        "submitVersionBefore": copy_after,
-        "submitVersionAfter": copy_after,
-        "submitVersionStable": True,
-    }:
-        fail("PlayCanvas presentation capture queue drain mismatch")
+    _playcanvas_queue_drain(
+        outer_drain,
+        copy_after,
+        "PlayCanvas presentation capture queue drain",
+    )
     materialization = _object(
         manifest, "renderer_capture_materialization", "PlayCanvas manifest"
     )

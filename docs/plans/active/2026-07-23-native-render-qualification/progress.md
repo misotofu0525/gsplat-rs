@@ -1866,3 +1866,31 @@ pixels and quality admission thresholds do not change. All 84 PlayCanvas Node
 tests, 57 focused Q1 Python tests, source architecture policy and diff hygiene
 pass. Another endpoint remains deferred until this naming correction is
 committed and independently reviewed at a fixed SHA.
+
+Fixed-SHA review accepted `72a1117` with no P0/P1/P2. Its single authorized
+endpoint execution completed both producers: Native Metal and PlayCanvas
+Chrome/WebGPU each loaded all 2,541,226 SH3 Truck splats, rendered the formal
+979x546 view and retained their renderer-owned captures. The PlayCanvas process
+handshake was verified, its owned process group was gone, and no marker process
+survived. The offline quality gate then rejected before publishing because it
+required `presentation_capture.queue_drain` to equal a synthetic five-field
+dictionary. The producer's valid twelve-field receipt bound the same stable
+copy submit version and additionally retained its exact WebGPU API, semantics
+source, specification URL, UTC interval, drain duration and terminal monotonic
+time. The requested formal output remained absent and the endpoint was not
+retried. The retained failure is
+`target/qualification/q1-product-quality-view000001-72a1117-attempt1.failed-q1-view000001-72a111771dd5-fec9d081fd5a`.
+
+The narrow correction keeps the renderer-owned four-field terminal receipt
+unchanged and validates the outer producer receipt against its exact twelve
+field contract. It requires the stable post-copy submit identity, frozen API,
+semantics and specification provenance, ordered ISO-8601 UTC timestamps, and
+finite non-negative duration/monotonic values. Those timing fields remain
+provenance only: the quality-only gate neither derives throughput nor publishes
+performance from them. The unit fixture now uses the real producer shape and
+fails closed on field, provenance, time and submit-version mutations. All 67
+focused one-view tests and source architecture policy pass. The stale
+paired-series camera-authority import remains independently Deferred and was
+not regenerated. No browser, device or endpoint was run by this correction;
+Product Quality remains Deferred pending a committed fixed-SHA review and one
+new explicitly authorized one-shot transaction.
