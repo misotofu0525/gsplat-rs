@@ -983,8 +983,8 @@ FORMAL_BENCHMARK_REJECTION_THROWABLE = re.compile(
 )
 
 
-def formal_benchmark_rejection_reason(log: str) -> str | None:
-    """Return the app's terminal formal-artifact rejection once complete.
+def formal_benchmark_rejection(log: str) -> tuple[bool, str | None]:
+    """Return whether rejection started and its reason once complete.
 
     Android writes ``Log.e(message, throwable)`` as at least two logcat lines.
     The marker alone is not terminal for the collector because stopping at that
@@ -999,8 +999,8 @@ def formal_benchmark_rejection_reason(log: str) -> str | None:
             continue
         match = FORMAL_BENCHMARK_REJECTION_THROWABLE.search(line)
         if match is not None:
-            return match.group("throwable")
-    return None
+            return True, match.group("throwable")
+    return marker_seen, None
 
 
 def collect_logcat_run(
@@ -1042,13 +1042,13 @@ def collect_logcat_run(
                         qualification_q3_phase_receipt, "evidence"
                     )
                     evidence_recorded = True
-                rejection_reason = formal_benchmark_rejection_reason(contents)
+                rejection_started, rejection_reason = formal_benchmark_rejection(contents)
                 if rejection_reason is not None:
                     raise RuntimeError(
                         "formal benchmark artifact rejected: "
                         f"{rejection_reason}; see {log_path}"
                     )
-                if "BENCHMARK_RESULT " in contents:
+                if not rejection_started and "BENCHMARK_RESULT " in contents:
                     try:
                         completed_benchmark_run_id(contents)
                     except RuntimeError:

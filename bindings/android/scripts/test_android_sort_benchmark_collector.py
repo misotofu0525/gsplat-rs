@@ -1456,20 +1456,24 @@ class ParsingTests(unittest.TestCase):
 class SafetyTests(unittest.TestCase):
     def test_formal_rejection_requires_marker_and_throwable_reason(self) -> None:
         marker = "I/GsplatExample: formal benchmark artifact rejected"
-        self.assertIsNone(COLLECTOR.formal_benchmark_rejection_reason(marker))
-        self.assertIsNone(
-            COLLECTOR.formal_benchmark_rejection_reason(
+        self.assertEqual(COLLECTOR.formal_benchmark_rejection(marker), (True, None))
+        self.assertEqual(
+            COLLECTOR.formal_benchmark_rejection(
                 "E/GsplatExample: java.lang.IllegalStateException: unrelated"
-            )
+            ),
+            (False, None),
         )
         self.assertEqual(
-            COLLECTOR.formal_benchmark_rejection_reason(
+            COLLECTOR.formal_benchmark_rejection(
                 marker
                 + "\nE/GsplatExample: java.lang.IllegalStateException: "
                 + "terminal projected-draw receipt is missing\n"
                 + "E/GsplatExample: at com.gsplat.example.MainActivity"
             ),
-            "java.lang.IllegalStateException: terminal projected-draw receipt is missing",
+            (
+                True,
+                "java.lang.IllegalStateException: terminal projected-draw receipt is missing",
+            ),
         )
 
     def test_collect_logcat_run_fails_fast_on_formal_artifact_rejection(self) -> None:
@@ -1518,6 +1522,62 @@ class SafetyTests(unittest.TestCase):
             process.terminate.assert_called_once_with()
             self.assertIn(str(log_path), str(raised.exception))
             self.assertEqual(log_path.read_text(), log)
+
+    def test_rejection_marker_blocks_success_until_throwable_arrives(self) -> None:
+        result = (
+            "I/GsplatExample: GSPLAT_BENCHMARK_MANIFEST {\"run_id\":\"run\"}\n"
+            "I/GsplatExample: GSPLAT_BENCHMARK_SUMMARY "
+            "{\"record_type\":\"summary\",\"run_id\":\"run\"}\n"
+            "I/GsplatExample: BENCHMARK_RESULT samples=1\n"
+        )
+        marker = "E/GsplatExample: formal benchmark artifact rejected\n"
+        throwable = (
+            "E/GsplatExample: java.lang.IllegalStateException: "
+            "refreshed frame lacks an order ticket\n"
+        )
+        process = mock.Mock()
+        process.poll.return_value = None
+        writes = [result + marker, throwable]
+
+        def start_logcat(*_args, **kwargs):
+            kwargs["stdout"].write(writes.pop(0))
+            kwargs["stdout"].flush()
+            return process
+
+        def append_throwable(_seconds):
+            with log_path.open("a", encoding="utf-8") as stream:
+                stream.write(writes.pop(0))
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = pathlib.Path(directory) / "split-rejection.logcat.txt"
+            with (
+                mock.patch.object(
+                    COLLECTOR,
+                    "run_command",
+                    return_value=COLLECTOR.subprocess.CompletedProcess([], 0, ""),
+                ),
+                mock.patch.object(
+                    COLLECTOR.subprocess, "Popen", side_effect=start_logcat
+                ),
+                mock.patch.object(COLLECTOR.time, "sleep", side_effect=append_throwable),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "formal benchmark artifact rejected: "
+                    "java.lang.IllegalStateException: "
+                    "refreshed frame lacks an order ticket",
+                ) as raised:
+                    COLLECTOR.collect_logcat_run(
+                        "adb",
+                        "serial",
+                        ["shell", "am", "start", "example"],
+                        log_path,
+                        timeout_seconds=1800.0,
+                    )
+
+            process.terminate.assert_called_once_with()
+            self.assertIn(str(log_path), str(raised.exception))
+            self.assertEqual(log_path.read_text(), result + marker + throwable)
 
     def test_async_sort_rejects_gpu_or_adaptive_backend(self) -> None:
         args = COLLECTOR.parser().parse_args(
