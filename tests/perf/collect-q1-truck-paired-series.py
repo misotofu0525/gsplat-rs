@@ -328,6 +328,7 @@ def validate_browser_handshake(
     ownership: dict[str, str],
     producer_pid: int,
     known: dict[int, ProcessIdentity],
+    tracker_owned: dict[int, ProcessIdentity],
 ) -> dict[str, Any]:
     handshake = load_object(
         pathlib.Path(ownership["handshake_path"]), "browser ownership handshake"
@@ -343,14 +344,49 @@ def validate_browser_handshake(
         require(handshake.get(key) == value, f"browser ownership handshake has wrong {key}")
     browser_pid = handshake.get("browser_pid")
     require(
-        isinstance(browser_pid, int) and browser_pid > 0,
+        isinstance(browser_pid, int) and browser_pid > 0 and browser_pid != producer_pid,
         "browser ownership handshake has invalid browser_pid",
     )
     identity = known.get(browser_pid)
     require(identity is not None, "browser ownership handshake PID was never observed")
+
+    spawnfile = handshake.get("browser_spawnfile")
+    spawnargs = handshake.get("browser_spawnargs")
+    marker_argument = ownership["marker_argument"]
     require(
-        ownership["marker_argument"] in identity.command.split(),
-        "browser ownership handshake PID lacks the exact marker",
+        isinstance(spawnfile, str)
+        and pathlib.Path(spawnfile).resolve()
+        == pathlib.Path(ownership["expected_executable"]).resolve()
+        and isinstance(spawnargs, list)
+        and bool(spawnargs)
+        and all(isinstance(argument, str) for argument in spawnargs)
+        and spawnargs[0] == spawnfile
+        and spawnargs.count(marker_argument) == 1
+        and [
+            argument for argument in spawnargs if argument.startswith("--user-data-dir=")
+        ]
+        == [marker_argument],
+        "browser ownership handshake has invalid spawn identity",
+    )
+    marker_identities = [
+        candidate
+        for candidate in tracker_owned.values()
+        if marker_argument in candidate.command.split()
+    ]
+    direct_marker = marker_argument in identity.command.split()
+    owned_identity = tracker_owned.get(browser_pid)
+    require(
+        direct_marker
+        or any(
+            owned_identity is not None
+            and same_process(identity, owned_identity)
+            and identity.ppid == producer_pid
+            and identity.pid == identity.pgid
+            and candidate.ppid == browser_pid
+            and candidate.pgid == browser_pid
+            for candidate in marker_identities
+        ),
+        "browser ownership handshake PID lacks a related exact-marker process",
     )
     return handshake
 
@@ -448,9 +484,10 @@ def run_process_group(
             except OSError as error:
                 runner_errors.append(f"initial KILL: {type(error).__name__}: {error}")
                 pass
-        known: dict[int, ProcessIdentity] = {initial.pid: initial}
+        tracker_owned: dict[int, ProcessIdentity] = {initial.pid: initial}
         if tracker is not None:
-            known.update(tracker.known_identities())
+            tracker_owned.update(tracker.known_identities())
+        known = dict(tracker_owned)
         snapshot_failures = 0
         convergence_rounds = 0
         clean_snapshots = 0
@@ -466,7 +503,8 @@ def run_process_group(
                 final_snapshot_available = True
                 if tracker is not None:
                     tracker._absorb(snapshot)
-                    known.update(tracker.known_identities())
+                    tracker_owned.update(tracker.known_identities())
+                    known.update(tracker_owned)
                 marker_live = [] if browser_ownership is None else marker_processes(
                     snapshot, browser_ownership["marker_argument"]
                 )
@@ -474,7 +512,7 @@ def run_process_group(
                 if browser_ownership is not None and handshake is None:
                     try:
                         handshake = validate_browser_handshake(
-                            browser_ownership, process.pid, known
+                            browser_ownership, process.pid, known, tracker_owned
                         )
                     except BaseException as error:
                         message = f"browser handshake: {type(error).__name__}: {error}"
@@ -1364,7 +1402,9 @@ def playcanvas_request(
     return value
 
 
-def browser_ownership(root: pathlib.Path, invocation_id: str) -> dict[str, Any]:
+def browser_ownership(
+    root: pathlib.Path, invocation_id: str, expected_executable: pathlib.Path
+) -> dict[str, Any]:
     digest = hashlib.sha256(f"{root}:{invocation_id}".encode()).hexdigest()[:32]
     marker = f"gsplat-q1-{digest}"
     user_data_dir = root / "process-home" / "browser-profiles" / invocation_id
@@ -1374,6 +1414,7 @@ def browser_ownership(root: pathlib.Path, invocation_id: str) -> dict[str, Any]:
         "marker_argument": f"--user-data-dir={user_data_dir}",
         "user_data_dir": str(user_data_dir),
         "handshake_path": str(handshake_path),
+        "expected_executable": str(expected_executable.resolve()),
         "environment": {
             "GSPLAT_Q1_BROWSER_OWNER_MARKER": marker,
             "GSPLAT_Q1_BROWSER_USER_DATA_DIR": str(user_data_dir),
@@ -1403,7 +1444,7 @@ def make_invocation(
 ) -> dict[str, Any]:
     role_name = f"control-trace-{trace}" if role == "control" else "throughput"
     invocation_id = f"{sequence:02d}-{pair_id}-{endpoint}-{role_name}"
-    ownership = browser_ownership(root, invocation_id)
+    ownership = browser_ownership(root, invocation_id, chrome)
     artifact = root / "pairs" / pair_id / endpoint / role_name
     pairing_value = pairing(
         series_id=series_id,
@@ -1569,7 +1610,12 @@ def make_invocation(
         "environment": environment,
         "browser_ownership": {
             key: ownership[key]
-            for key in ("marker", "marker_argument", "user_data_dir", "handshake_path")
+            for key in (
+                "marker",
+                "marker_argument",
+                "user_data_dir",
+                "handshake_path",
+            )
         },
         "dynamic_inputs": dynamic_inputs,
         "automatic_retry": False,
@@ -1994,12 +2040,16 @@ def claim_series(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, An
 
 
 def run_once(invocation: dict[str, Any], root: pathlib.Path) -> None:
+    browser_owner = invocation["browser_ownership"]
     completed = run_process_group(
         invocation["argv"],
         cwd=REPO_ROOT,
         env=invocation["environment"],
         timeout_seconds=invocation["timeout_seconds"],
-        browser_ownership=invocation["browser_ownership"],
+        browser_ownership={
+            **browser_owner,
+            "expected_executable": invocation["environment"]["CHROME_PATH"],
+        },
     )
     log_root = root / "logs"
     (log_root / f"{invocation['invocation_id']}.stdout.log").write_text(
@@ -2168,7 +2218,9 @@ def compare_image(
     raw = root / raw_relative
     raw.parent.mkdir(parents=True, exist_ok=True)
     comparison_id = f"image-{pair_id}-{endpoint}-trace-{trace}"
-    ownership = browser_ownership(root, comparison_id)
+    ownership = browser_ownership(
+        root, comparison_id, pathlib.Path(environment["CHROME_PATH"])
+    )
     comparison_environment = {**environment, **ownership["environment"]}
     completed = run_process_group(
         [
@@ -2184,7 +2236,13 @@ def compare_image(
         timeout_seconds=PROCESS_TIMEOUTS_SECONDS["image_comparison"],
         browser_ownership={
             key: ownership[key]
-            for key in ("marker", "marker_argument", "user_data_dir", "handshake_path")
+            for key in (
+                "marker",
+                "marker_argument",
+                "user_data_dir",
+                "handshake_path",
+                "expected_executable",
+            )
         },
     )
     (raw.parent / f"{raw.stem}.stdout.log").write_text(completed.stdout, encoding="utf-8")

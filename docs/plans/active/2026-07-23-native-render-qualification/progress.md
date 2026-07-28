@@ -1206,3 +1206,29 @@ admission shape so this owner boundary cannot be hidden by a flat mock.
 A later formal attempt still requires a new reviewed SHA, regenerated same-SHA
 authority and Wasm assets, a fresh root, identical dry runs and a separate
 go/no-go. Attempt 4 is retained unchanged and is never reused.
+
+### Q1 formal attempt 5 terminal and macOS Chrome ownership repair (2026-07-28)
+
+The separately declared attempt 5 at reviewed root SHA
+`649d40b4d64746b9900c6ac51d09611c028ae25d` stopped after its first
+PlayCanvas control. No gsplat-rs endpoint or timed endpoint pair ran, so this
+immutable attempt supports no quality or performance comparison. Its blocker
+keeps automatic retry disabled, and cleanup proved that no marked browser
+process survived.
+
+The control producer completed successfully, but the ownership validator
+rejected its browser handshake because the observed macOS Chrome leader had
+changed its visible command to `(Google Chrome)`. The producer's immutable
+spawn receipt contained the exact unique `--user-data-dir` argument, and
+observed Chrome helpers in the same browser process group retained that exact
+argument. Attempt 4 happened to capture the leader before this argv change, so
+the old check was timing-dependent.
+
+The repair remains fail closed: it requires a coherent spawnfile/spawnargs
+receipt containing the exact marker once, the exact browser PID to have been
+observed, and either that PID or a direct-child/same-process-group identity to
+carry the exact marker. A marker in an unrelated process group and a forged or
+incomplete spawn receipt are rejected. A later formal attempt still requires
+a new reviewed SHA, regenerated same-SHA authority and Wasm assets, a fresh
+root, identical dry runs and a separate go/no-go. Attempt 5 is retained
+unchanged and is never reused.

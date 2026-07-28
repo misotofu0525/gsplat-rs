@@ -173,10 +173,16 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
         )
 
     def ownership(self, name: str) -> dict[str, str]:
-        value = COLLECTOR.browser_ownership(self.root, name)
+        value = COLLECTOR.browser_ownership(self.root, name, self.args.chrome)
         return {
             key: value[key]
-            for key in ("marker", "marker_argument", "user_data_dir", "handshake_path")
+            for key in (
+                "marker",
+                "marker_argument",
+                "user_data_dir",
+                "handshake_path",
+                "expected_executable",
+            )
         }
 
     def ownership_environment(self, ownership: dict[str, str]) -> dict[str, str]:
@@ -769,6 +775,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
 
     def test_immediate_zero_marker_handshake_cannot_escape_cleanup(self) -> None:
         ownership = self.ownership("immediate-zero")
+        ownership["expected_executable"] = sys.executable
         script = self.root / "immediate-zero.py"
         script.write_text(
             "import json, os, pathlib, subprocess, sys\n"
@@ -826,8 +833,119 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                     COLLECTOR.require_process_completed(outcome, case)
                 self.assertFalse(outcome.cleanup["browser_ownership"]["handshake_verified"])
 
+    def test_macos_chrome_hidden_argv_requires_related_exact_marker_process(self) -> None:
+        ownership = self.ownership("macos-hidden-argv")
+        browser_pid = 41001
+        browser_pgid = browser_pid
+        marker_argument = ownership["marker_argument"]
+        handshake = {
+            "schema": "gsplat-q1-browser-process-ownership/v1",
+            "marker": ownership["marker"],
+            "marker_arg": marker_argument,
+            "user_data_dir": ownership["user_data_dir"],
+            "producer_pid": 40001,
+            "browser_pid": browser_pid,
+            "browser_spawnfile": ownership["expected_executable"],
+            "browser_spawnargs": [
+                ownership["expected_executable"],
+                marker_argument,
+            ],
+        }
+        handshake_path = pathlib.Path(ownership["handshake_path"])
+        handshake_path.parent.mkdir(parents=True)
+        handshake_path.write_text(json.dumps(handshake))
+        browser = COLLECTOR.ProcessIdentity(
+            browser_pid, 40001, browser_pgid, "Tue Jul 28 09:44:50 2026", "(Google Chrome)"
+        )
+        helper = COLLECTOR.ProcessIdentity(
+            41002,
+            browser_pid,
+            browser_pgid,
+            "Tue Jul 28 09:44:51 2026",
+            f"/Applications/Google Chrome Helper --type=gpu-process {marker_argument}",
+        )
+
+        receipt = COLLECTOR.validate_browser_handshake(
+            ownership,
+            40001,
+            {browser.pid: browser, helper.pid: helper},
+            {browser.pid: browser, helper.pid: helper},
+        )
+        self.assertEqual(receipt["browser_pid"], browser_pid)
+
+        unrelated = COLLECTOR.ProcessIdentity(
+            helper.pid,
+            42000,
+            42000,
+            helper.started,
+            helper.command,
+        )
+        with self.assertRaisesRegex(
+            COLLECTOR.OrchestrationError, "related exact-marker process"
+        ):
+            COLLECTOR.validate_browser_handshake(
+                ownership,
+                40001,
+                {browser.pid: browser, unrelated.pid: unrelated},
+                {browser.pid: browser, unrelated.pid: unrelated},
+            )
+
+        with self.assertRaisesRegex(
+            COLLECTOR.OrchestrationError, "related exact-marker process"
+        ):
+            COLLECTOR.validate_browser_handshake(
+                ownership,
+                40001,
+                {browser.pid: browser, helper.pid: helper},
+                {helper.pid: helper},
+            )
+
+        invalid_spawn_values = [
+            ("missing marker", [handshake["browser_spawnfile"]]),
+            (
+                "duplicate marker",
+                [handshake["browser_spawnfile"], marker_argument, marker_argument],
+            ),
+            (
+                "second user-data-dir",
+                [
+                    handshake["browser_spawnfile"],
+                    marker_argument,
+                    "--user-data-dir=/tmp/unrelated",
+                ],
+            ),
+        ]
+        for name, spawnargs in invalid_spawn_values:
+            with self.subTest(name=name):
+                handshake["browser_spawnargs"] = spawnargs
+                handshake_path.write_text(json.dumps(handshake))
+                with self.assertRaisesRegex(
+                    COLLECTOR.OrchestrationError, "spawn identity"
+                ):
+                    COLLECTOR.validate_browser_handshake(
+                        ownership,
+                        40001,
+                        {browser.pid: browser, helper.pid: helper},
+                        {browser.pid: browser, helper.pid: helper},
+                    )
+
+        handshake["browser_spawnfile"] = "/tmp/not-the-declared-chrome"
+        handshake["browser_spawnargs"] = [
+            handshake["browser_spawnfile"],
+            marker_argument,
+        ]
+        handshake_path.write_text(json.dumps(handshake))
+        with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "spawn identity"):
+            COLLECTOR.validate_browser_handshake(
+                ownership,
+                40001,
+                {browser.pid: browser, helper.pid: helper},
+                {browser.pid: browser, helper.pid: helper},
+            )
+
     def test_snapshot_failure_after_immediate_marker_spawn_still_converges(self) -> None:
         ownership = self.ownership("snapshot-race")
+        ownership["expected_executable"] = sys.executable
         counter = self.root / "snapshot-race-count"
         script = self.root / "snapshot-race.py"
         script.write_text(
@@ -889,6 +1007,7 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
 
     def test_marker_first_discovered_after_tracker_stop_is_still_cleaned(self) -> None:
         ownership = self.ownership("post-tracker-discovery")
+        ownership["expected_executable"] = sys.executable
         script = self.root / "post-tracker-discovery.py"
         script.write_text(
             "import json, os, pathlib, subprocess, sys\n"
