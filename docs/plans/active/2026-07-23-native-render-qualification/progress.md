@@ -1463,3 +1463,29 @@ presentation boundary: requested, Surface and internal-render dimensions are
 1920x1080, while external presented-screen dimensions are unavailable. That is
 valid for mechanism attribution but cannot be promoted into a formal endpoint
 qualification receipt.
+
+### Q1 upstream Truck product-quality authority (2026-07-28)
+
+The first independent Product Quality input now has a fail-closed offline
+builder. It pins the official Inria `tandt_db.zip` archive at 682,628,995 bytes
+and SHA-256
+`816e62f22a161abbfe841d2a6b10cdf036e297c9fa289b3bfeee9c6ec526d7e1`,
+then binds the complete `cameras.bin` and `images.bin` records for
+`000001.jpg` and `000108.jpg`. The builder accepts only the upstream authority
+class, exact Truck scene identity and COLMAP PINHOLE model; hashes, dimensions,
+duplicate image names, incomplete binary records, symlinks, extra retained
+files and output replacement all fail closed.
+
+The official JPEGs are 979x546 while their COLMAP calibration declares
+1957x1091. The authority therefore records exact independent axis ratios
+`979/1957` and `546/1091` and derives `fx/fy/cx/cy` from those ratios. It does
+not resize, crop, blur or post-align source pixels. This corrects the earlier
+assumption that the existing 1920x1080 performance trace could itself act as a
+source-image quality camera.
+
+A real local build produced authority class
+`upstream_source_camera_images` with both named views. It launched no browser,
+retained no endpoint timing and remains outside Git because upstream asset
+redistribution rights are unresolved. The next slice is the pure two-lane
+state reducer, followed by a one-view 979x546 quality-only smoke; neither step
+authorizes another five-pair performance series.

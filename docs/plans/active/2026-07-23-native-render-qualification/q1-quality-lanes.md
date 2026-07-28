@@ -82,6 +82,21 @@ The authority receipt locks:
 External assets remain local research inputs and are not committed while their
 redistribution rights are unresolved.
 
+Build the immutable local authority without launching a browser:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  tests/perf/build-q1-product-quality-authority.py \
+  --archive target/qualification/q1-product-quality-source/tandt_db.zip \
+  --source-dir target/qualification/q1-product-quality-source/truck \
+  --output /fresh/q1-product-quality-authority
+```
+
+The output path must not exist. The builder verifies the official archive,
+all four extracted inputs, JPEG dimensions, PINHOLE model, named image records
+and complete COLMAP binary boundaries before atomically publishing. Existing
+output is never overwritten.
+
 ## Independently verifiable slices
 
 1. **Authority builder** — parse and validate the two upstream views, emit an
