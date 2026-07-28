@@ -275,7 +275,9 @@ three successes publish the requested root atomically. A failed attempt keeps
 an immutable sibling named `<output>.failed-<session>` with `blocker.json`,
 while the requested formal output remains absent. The result keeps Product
 Quality `Deferred` until view 000009 qualifies and always records
-`performance_authorized=false`.
+`performance_authorized=false`. A child nonzero exit also retains its argv,
+stdout, and stderr under `failed-command/<step>/`, without copying environment
+variables, so the failure can be diagnosed without rerunning an endpoint.
 
 ### Q1 WebGPU Truck 1080p prerequisite
 

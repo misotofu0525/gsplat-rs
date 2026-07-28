@@ -256,11 +256,27 @@ def command_receipt(argv: Sequence[str], returncode: int) -> dict[str, Any]:
     }
 
 
+def retain_failed_command(
+    root: pathlib.Path,
+    name: str,
+    argv: Sequence[str],
+    completed: subprocess.CompletedProcess[str],
+) -> None:
+    """Retain exact child output without serializing its environment."""
+
+    step_root = root / name
+    step_root.mkdir(parents=True)
+    write_json(step_root / "command.json", command_receipt(argv, completed.returncode))
+    (step_root / "stdout.log").write_text(completed.stdout, encoding="utf-8")
+    (step_root / "stderr.log").write_text(completed.stderr, encoding="utf-8")
+
+
 def run_once(
     name: str,
     argv: Sequence[str],
     cwd: pathlib.Path,
     env: dict[str, str],
+    failure_log_root: pathlib.Path,
     invoke: Invoker,
 ) -> dict[str, Any]:
     try:
@@ -268,6 +284,7 @@ def run_once(
     except Exception as error:
         raise CollectionError(f"{name} raised before completion: {error}") from error
     if completed.returncode != 0:
+        retain_failed_command(failure_log_root, name, argv, completed)
         raise CollectionError(f"{name} exited with {completed.returncode}")
     return command_receipt(argv, completed.returncode)
 
@@ -370,6 +387,7 @@ def collect(
         playcanvas_output = stage / "playcanvas-view000001"
         result_output = stage / "quality-result-view000001"
         request_root = stage / "requests"
+        failure_log_root = stage / "failed-command"
         request_root.mkdir()
         request = request_root / "playcanvas-view000001.json"
         write_json(
@@ -400,7 +418,16 @@ def collect(
             "--dataset",
             str(inputs["truck"]),
         )
-        steps = [run_once(step, native_argv, REPO_ROOT, environment, invoke)]
+        steps = [
+            run_once(
+                step,
+                native_argv,
+                REPO_ROOT,
+                environment,
+                failure_log_root,
+                invoke,
+            )
+        ]
         require_clean_exact(REPO_ROOT, args.expected_commit)
 
         step = "playcanvas_quality_only"
@@ -421,7 +448,14 @@ def collect(
             }
         )
         steps.append(
-            run_once(step, playcanvas_argv, REPO_ROOT, playcanvas_env, invoke)
+            run_once(
+                step,
+                playcanvas_argv,
+                REPO_ROOT,
+                playcanvas_env,
+                failure_log_root,
+                invoke,
+            )
         )
         require_clean_exact(REPO_ROOT, args.expected_commit)
 
@@ -440,7 +474,16 @@ def collect(
             "--output",
             str(result_output),
         )
-        steps.append(run_once(step, gate_argv, REPO_ROOT, environment, invoke))
+        steps.append(
+            run_once(
+                step,
+                gate_argv,
+                REPO_ROOT,
+                environment,
+                failure_log_root,
+                invoke,
+            )
+        )
         require_clean_exact(REPO_ROOT, args.expected_commit)
 
         result = Q1._load_json(result_output / "result.json", "one-view quality result")

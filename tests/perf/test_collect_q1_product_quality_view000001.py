@@ -123,7 +123,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
 
             def invoke(argv, cwd, env):
                 calls.append(tuple(argv))
-                return subprocess.CompletedProcess(argv, 23, "", "failed")
+                return subprocess.CompletedProcess(
+                    argv,
+                    23,
+                    "native captured stdout\n",
+                    "native exact rejection\n",
+                )
 
             with self.assertRaisesRegex(COLLECTOR.CollectionError, "native_quality_only exited"):
                 COLLECTOR.collect(
@@ -141,6 +146,19 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             self.assertEqual(blocker["status"], "failed_attempt")
             self.assertEqual(blocker["product_quality"], "Deferred")
             self.assertFalse(blocker["automatic_retry"])
+            diagnostic = failures[0] / "failed-command/native_quality_only"
+            command = json.loads((diagnostic / "command.json").read_text(encoding="utf-8"))
+            self.assertEqual(command["returncode"], 23)
+            self.assertFalse(command["automatic_retry"])
+            self.assertEqual(
+                (diagnostic / "stdout.log").read_text(encoding="utf-8"),
+                "native captured stdout\n",
+            )
+            self.assertEqual(
+                (diagnostic / "stderr.log").read_text(encoding="utf-8"),
+                "native exact rejection\n",
+            )
+            self.assertFalse(os.access(diagnostic / "stderr.log", os.W_OK))
 
     def test_second_failure_never_runs_offline_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

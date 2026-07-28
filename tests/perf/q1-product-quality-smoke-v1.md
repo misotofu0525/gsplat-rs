@@ -78,7 +78,9 @@ the native quality-only producer once, the PlayCanvas headful quality-only
 producer once, and this validator once. The requested output appears atomically
 only after all three succeed. Any failure stops the sequence without retry and
 is retained in an immutable sibling failure directory; it cannot masquerade as
-a one-view result.
+a one-view result. A child nonzero exit retains its exact argv, stdout, and
+stderr under `failed-command/<step>/` without serializing environment
+variables, so diagnosis does not require another endpoint run.
 
 ```bash
 python3 tests/perf/collect-q1-product-quality-view000001.py \
