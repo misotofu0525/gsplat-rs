@@ -17,6 +17,7 @@
     "benchmark:android-presentation": "PHASE_E_QUALIFICATION=minimal-presentation-2412x1080-v1 node scripts/run-timed-benchmark.mjs",
     "benchmark:kitsune-static": "PHASE_E_QUALIFICATION=kitsune-static-v1 node scripts/run-timed-benchmark.mjs",
     "benchmark:truck-1080p": "PHASE_E_QUALIFICATION=truck-quality-1080p-v1 node scripts/run-timed-benchmark.mjs",
+    "quality:truck-view000001": "PHASE_E_QUALIFICATION=truck-formal-quality-979x546-v1 HEADLESS=0 PLAYCANVAS_CAMERA_MODE=static PLAYCANVAS_TRACE_FRAME=0 PLAYCANVAS_CAPTURE_TRACE_FRAME=0 PLAYCANVAS_WARMUP_FRAMES=0 PLAYCANVAS_MEASURED_FRAMES=0 PLAYCANVAS_VIEWPORT_WIDTH=979 PLAYCANVAS_VIEWPORT_HEIGHT=546 node scripts/run-timed-benchmark.mjs",
     "benchmark:truck-2412x1080": "PHASE_E_QUALIFICATION=truck-quality-2412x1080-v1 node scripts/run-timed-benchmark.mjs",
     "test": "node scripts/preflight.mjs && node --test test/*.test.mjs"
   },

@@ -11,10 +11,19 @@ import {
 } from '../public/webgpu-environment-receipt.js';
 
 export const Q1_PRODUCER_REQUEST_SCHEMA = 'gsplat-q1-playcanvas-producer-request/v1';
+export const Q1_QUALITY_ONLY_REQUEST_SCHEMA =
+  'gsplat-q1-playcanvas-quality-only-request/v1';
 export const Q1_TERMINAL_SCHEMA = 'gsplat-q1-webgpu-terminal-window/v1';
 export const Q1_BROWSER_PROCESS_ARGS_SCHEMA = 'gsplat-q1-browser-process-args/v1';
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const CONTROL_TRACES = new Set([0, 1]);
+const Q1_FORMAL_TRACE_ID = 'formal-truck-product-quality-000001-000009-979x546-v1';
+const Q1_FORMAL_TRACE_SHA256 =
+  '46819f71d5025bb61f6583392448d977051a0b4c67a0c05db860232033c0676c';
+const Q1_TRUCK_ID = 'inria-3dgs-truck-iteration-30000';
+const Q1_TRUCK_SHA256 =
+  '65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c';
+const Q1_TRUCK_SPLAT_COUNT = 2_541_226;
 
 function requiredText(value, label) {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -196,9 +205,50 @@ function controlBindings(value, configurationSha256) {
 }
 
 export function validateQ1ProducerRequest(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      value.schema !== Q1_PRODUCER_REQUEST_SCHEMA) {
-    throw new Error(`Q1 producer request schema must equal ${Q1_PRODUCER_REQUEST_SCHEMA}`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Q1 producer request must be an object');
+  }
+  if (value.schema === Q1_QUALITY_ONLY_REQUEST_SCHEMA) {
+    const expectedFields = [
+      'schema',
+      'artifact_role',
+      'formal_view_id',
+      'trace_frame_index',
+      'protocol_sha256',
+      'collection_session_id',
+      'product_quality_state',
+      'performance_authorized'
+    ].sort();
+    if (Object.keys(value).sort().join('\0') !== expectedFields.join('\0')) {
+      throw new Error('Q1 quality-only request fields must be exact');
+    }
+    if (value.artifact_role !== 'quality_only' || value.formal_view_id !== '000001' ||
+        value.trace_frame_index !== 0 || value.product_quality_state !== 'Deferred' ||
+        value.performance_authorized !== false) {
+      throw new Error(
+        'Q1 quality-only request must freeze view 000001, Deferred quality, and disabled performance'
+      );
+    }
+    return {
+      role: 'quality_only',
+      qualityOnly: true,
+      formalViewId: '000001',
+      captureTraceFrameIndex: 0,
+      protocolSha256: requiredSha(value.protocol_sha256, 'protocol_sha256'),
+      collectionSessionId: requiredText(
+        value.collection_session_id,
+        'collection_session_id'
+      ),
+      productQualityState: 'Deferred',
+      performanceAuthorized: false,
+      controlBindings: null
+    };
+  }
+  if (value.schema !== Q1_PRODUCER_REQUEST_SCHEMA) {
+    throw new Error(
+      `Q1 producer request schema must equal ${Q1_PRODUCER_REQUEST_SCHEMA} or ` +
+      Q1_QUALITY_ONLY_REQUEST_SCHEMA
+    );
   }
   const role = requiredText(value.artifact_role, 'artifact_role');
   if (!['control', 'throughput'].includes(role)) {
@@ -225,6 +275,7 @@ export function validateQ1ProducerRequest(value) {
   }
   return {
     role,
+    qualityOnly: false,
     seriesId: requiredText(value.series_id, 'series_id'),
     scheduleSha256: requiredSha(value.schedule_sha256, 'schedule_sha256'),
     protocolSha256: requiredSha(value.protocol_sha256, 'protocol_sha256'),
@@ -260,6 +311,25 @@ export async function loadQ1ProducerConfig(environment, outputRoot) {
 
 export function assertQ1Invocation(config, invocation) {
   if (!config) return;
+  if (config.qualityOnly) {
+    const expected = {
+      qualificationName: 'truck-formal-quality-979x546-v1',
+      cameraMode: 'static',
+      warmupFrames: 0,
+      measuredFrames: 0,
+      viewportWidth: 979,
+      viewportHeight: 546,
+      sessionMode: 'local-launch',
+      headless: false,
+      captureTraceFrame: 0
+    };
+    for (const [key, value] of Object.entries(expected)) {
+      if (invocation[key] !== value) {
+        throw new Error(`Q1 quality-only ${key} must equal ${value}`);
+      }
+    }
+    return;
+  }
   const expected = {
     qualificationName: 'truck-quality-1080p-v1',
     cameraMode: 'sequence',
@@ -280,7 +350,107 @@ export function assertQ1Invocation(config, invocation) {
 }
 
 export function q1RendererCaptureEnabled(config) {
-  return !config || config.role === 'control';
+  return !config || config.role === 'control' || config.role === 'quality_only';
+}
+
+export function q1QualityOnlyManifestFields(config) {
+  if (!config?.qualityOnly) return null;
+  return {
+    artifact_role: 'quality_only',
+    formal_view_id: config.formalViewId,
+    trace_frame_index: config.captureTraceFrameIndex,
+    protocol_sha256: config.protocolSha256,
+    product_quality_state: config.productQualityState,
+    performance_authorized: config.performanceAuthorized
+  };
+}
+
+export function validateQ1QualityOnlyArtifact(manifest) {
+  const value = requiredObject(manifest, 'Q1 quality-only manifest');
+  for (const forbidden of [
+    'frames',
+    'timing',
+    'pairing',
+    'q1_comparison',
+    'unavailable_fields',
+    'summary',
+    'sustained_throughput'
+  ]) {
+    if (Object.hasOwn(value, forbidden)) {
+      throw new Error(`Q1 quality-only manifest must not contain ${forbidden}`);
+    }
+  }
+  const exactness = value.exactness;
+  const resolution = value.resolution;
+  const exactCounts = [
+    'source_splat_count',
+    'decoded_splat_count',
+    'encoded_splat_count',
+    'resident_splat_count',
+    'addressable_splat_count'
+  ];
+  const exactDimensions = [
+    'requested',
+    'surface',
+    'internal_render',
+    'presented'
+  ];
+  if (value.performance_authorized !== false ||
+      value.product_quality?.state !== 'Deferred' ||
+      value.q1_quality?.artifact_role !== 'quality_only' ||
+      value.q1_quality?.formal_view_id !== '000001' ||
+      value.q1_quality?.performance_authorized !== false ||
+      value.presentation_capture?.excluded_from_performance !== true ||
+      value.presentation_capture?.capture_trace_frame_index !== 0 ||
+      JSON.stringify(value.renderer_capture) !==
+        JSON.stringify(value.presentation_capture?.renderer_capture) ||
+      value.trace?.id !== Q1_FORMAL_TRACE_ID ||
+      value.trace?.sha256 !== Q1_FORMAL_TRACE_SHA256 ||
+      value.trace?.capture_frame_index !== 0 ||
+      value.trace?.formal_view_id !== '000001' ||
+      value.dataset?.id !== Q1_TRUCK_ID ||
+      value.dataset?.sha256 !== Q1_TRUCK_SHA256 ||
+      value.dataset?.splat_count !== Q1_TRUCK_SPLAT_COUNT ||
+      value.dataset?.sh_degree !== 3 ||
+      exactness?.full_quality !== true ||
+      exactness?.source_membership !== 'all' ||
+      exactness?.sampling !== 'disabled' ||
+      exactness?.lod !== 'disabled' ||
+      exactness?.partial_scene_published !== false ||
+      exactness?.source_sh_degree !== 3 ||
+      exactness?.resident_sh_degree !== 3 ||
+      exactCounts.some((field) => exactness?.[field] !== Q1_TRUCK_SPLAT_COUNT) ||
+      resolution?.dynamic_resolution !== 'disabled' ||
+      resolution?.upscaling !== 'disabled' ||
+      resolution?.internal_full_resolution !== true ||
+      resolution?.full_resolution !== true ||
+      exactDimensions.some((stage) =>
+        resolution?.[`${stage}_width`] !== 979 ||
+        resolution?.[`${stage}_height`] !== 546)) {
+    throw new Error('Q1 quality-only manifest lacks its frozen non-performance quality identity');
+  }
+  const serialized = JSON.stringify(value);
+  for (const forbiddenToken of [
+    'timing',
+    'pairing',
+    'sustained_throughput',
+    'performance_evidence',
+    'measurement_started_at_utc',
+    'measurement_ended_at_utc',
+    'sample_count',
+    'missed_frame_count',
+    'mean_fps',
+    'frame_wall_ms',
+    'call_ms',
+    'throughput',
+    'speed_ratio',
+    'winner'
+  ]) {
+    if (serialized.includes(`\"${forbiddenToken}\"`)) {
+      throw new Error(`Q1 quality-only manifest contains forbidden ${forbiddenToken} evidence`);
+    }
+  }
+  return value;
 }
 
 export function q1BrowserProcessArgsReceipt({
@@ -390,7 +560,7 @@ export function q1ManifestFields(
 }
 
 export function q1PairingFields(config) {
-  if (!config) return null;
+  if (!config || config.qualityOnly) return null;
   return {
     series_id: config.seriesId,
     schedule_sha256: config.scheduleSha256,

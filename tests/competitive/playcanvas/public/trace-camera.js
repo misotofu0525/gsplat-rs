@@ -622,32 +622,69 @@ export function validatePlayCanvasCaptureEvidence({
     }
     validatePlayCanvasCameraReceipt(sample.cameraReceipt, trace, sample.traceFrameIndex);
   });
+  const lastMeasuredTraceFrameIndex = capture.samples.at(-1).traceFrameIndex;
+  const expectedCaptureIndex = requestedCaptureTraceFrameIndex ?? lastMeasuredTraceFrameIndex;
+  const expectedSelectionSource = requestedCaptureTraceFrameIndex === null
+    ? 'last_measured_trace_frame'
+    : 'explicit_capture_trace_frame';
+  return validatePresentationCapture({
+    trace,
+    capture,
+    expectedCaptureIndex,
+    expectedSelectionSource,
+    startSubmitVersion: capture.measurementDrain?.submitVersionAfter
+  });
+}
+
+export function validatePlayCanvasQualityOnlyCaptureEvidence({ trace, capture }) {
+  if (capture?.lifecycle !== 'quality_only' ||
+      capture.qualityStartDrain?.phase !== 'quality_only_start' ||
+      capture.qualityStartDrain?.frameLoopStopped !== true ||
+      capture.qualityStartDrain?.submitVersionStable !== true) {
+    throw new Error('quality-only capture lacks its stopped-loop start drain');
+  }
+  return validatePresentationCapture({
+    trace,
+    capture,
+    expectedCaptureIndex: 0,
+    expectedSelectionSource: 'explicit_quality_only_formal_view',
+    startSubmitVersion: capture.qualityStartDrain.submitVersionAfter
+  });
+}
+
+function validatePresentationCapture({
+  trace,
+  capture,
+  expectedCaptureIndex,
+  expectedSelectionSource,
+  startSubmitVersion
+}) {
   const presentation = capture.presentationCapture;
   if (presentation?.schema !== PLAYCANVAS_PRESENTATION_CAPTURE_SCHEMA ||
       presentation.ready_for_external_capture !== true ||
       presentation.excluded_from_performance !== true) {
     throw new Error('presentation capture did not reach the external-capture terminal state');
   }
-  const lastMeasuredTraceFrameIndex = capture.samples.at(-1).traceFrameIndex;
-  const expectedCaptureIndex = requestedCaptureTraceFrameIndex ?? lastMeasuredTraceFrameIndex;
   if (presentation.capture_trace_frame_index !== expectedCaptureIndex) {
     throw new Error(
       `presentation capture trace frame mismatch; expected ${expectedCaptureIndex}, ` +
       `got ${presentation.capture_trace_frame_index}`
     );
   }
-  const expectedSelectionSource = requestedCaptureTraceFrameIndex === null
-    ? 'last_measured_trace_frame'
-    : 'explicit_capture_trace_frame';
   if (presentation.capture_trace_frame_source !== expectedSelectionSource) {
     throw new Error('presentation capture trace frame source is inconsistent');
   }
   if (!Number.isSafeInteger(presentation.stable_frame_count) ||
       presentation.stable_frame_count < MIN_PRESENTATION_STABLE_FRAMES ||
+      presentation.minimum_stable_frame_count !== MIN_PRESENTATION_STABLE_FRAMES ||
       presentation.frames?.length !== presentation.stable_frame_count) {
     throw new Error(`presentation capture requires at least ${MIN_PRESENTATION_STABLE_FRAMES} stable frames`);
   }
-  let expectedSubmitVersion = capture.measurementDrain?.submitVersionAfter;
+  let expectedSubmitVersion = startSubmitVersion;
+  if (!Number.isSafeInteger(expectedSubmitVersion) ||
+      presentation.measurement_terminal_submit_version !== expectedSubmitVersion) {
+    throw new Error('presentation capture start submit version is invalid');
+  }
   presentation.frames.forEach((frame, frameIndex) => {
     if (frame.trace_frame_index !== expectedCaptureIndex) {
       throw new Error(`presentation frame ${frameIndex} used the wrong trace frame`);

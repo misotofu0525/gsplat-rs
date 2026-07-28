@@ -16,6 +16,7 @@ import {
   traceFrameToPlayCanvasPose,
   validatePlayCanvasCameraReceipt,
   validatePlayCanvasCaptureEvidence,
+  validatePlayCanvasQualityOnlyCaptureEvidence,
   validatePlayCanvasScreenshotBinding
 } from '../public/trace-camera.js';
 
@@ -132,6 +133,16 @@ function receipt(traceFrameIndex, phase = 'test') {
   return createPlayCanvasCameraReceipt({
     trace: truckTrace,
     traceFrameIndex,
+    phase,
+    observation: observationFromOracle(oracle)
+  });
+}
+
+function formalReceipt(phase) {
+  const oracle = canonicalPlayCanvasCameraOracle(formalTruckTrace, 0);
+  return createPlayCanvasCameraReceipt({
+    trace: formalTruckTrace,
+    traceFrameIndex: 0,
     phase,
     observation: observationFromOracle(oracle)
   });
@@ -360,6 +371,8 @@ function cameraCaptureFixture() {
       capture_trace_frame_index: 1,
       capture_trace_frame_source: 'last_measured_trace_frame',
       stable_frame_count: 3,
+      minimum_stable_frame_count: 3,
+      measurement_terminal_submit_version: 12,
       frames: presentationFrames,
       renderer_capture: rendererCapture,
       queue_drain: {
@@ -391,6 +404,73 @@ test('sequence presentation capture is bound to the last measured frame by defau
       expectedMeasuredFrames: 2
     }),
     /presentation capture trace frame mismatch/
+  );
+});
+
+test('quality-only presentation validates without benchmark samples or timing', () => {
+  const presentationFrames = [0, 1, 2].map((frameIndex) => ({
+    trace_frame_index: 0,
+    camera_receipt: formalReceipt(`presentation_frame_${frameIndex}`),
+    submit_version_before: 20 + frameIndex,
+    submit_version_after: 21 + frameIndex,
+    queue_submit_call_count: 1
+  }));
+  presentationFrames.at(-1).renderer_capture_copy = { submit_version_after: 24 };
+  const capture = {
+    lifecycle: 'quality_only',
+    qualityStartDrain: {
+      phase: 'quality_only_start',
+      frameLoopStopped: true,
+      submitVersionStable: true,
+      submitVersionAfter: 20
+    },
+    presentationCapture: {
+      schema: PLAYCANVAS_PRESENTATION_CAPTURE_SCHEMA,
+      ready_for_external_capture: true,
+      excluded_from_performance: true,
+      capture_trace_frame_index: 0,
+      capture_trace_frame_source: 'explicit_quality_only_formal_view',
+      stable_frame_count: 3,
+      minimum_stable_frame_count: 3,
+      measurement_terminal_submit_version: 20,
+      frames: presentationFrames,
+      renderer_capture: {
+        schema: 'gsplat-playcanvas-webgpu-renderer-capture/v1',
+        producer: 'playcanvas_webgpu_copy_texture_to_buffer',
+        status: 'terminal',
+        renderer_submit_version: 23,
+        copy_submit_version_before: 23,
+        copy_submit_version_after: 24,
+        copy_map_complete: true,
+        queue_terminal_complete: true,
+        camera_receipt: presentationFrames.at(-1).camera_receipt
+      },
+      queue_drain: {
+        phase: 'post_capture_presentation',
+        frameLoopStopped: true,
+        submitVersionStable: true,
+        submitVersionBefore: 24,
+        submitVersionAfter: 24
+      },
+      terminal_camera_receipt: formalReceipt('external_capture_terminal')
+    }
+  };
+  const validation = validatePlayCanvasQualityOnlyCaptureEvidence({
+    trace: formalTruckTrace,
+    capture
+  });
+  assert.equal(validation.expectedCaptureIndex, 0);
+  assert.equal('samples' in capture, false);
+  assert.equal('timing' in capture, false);
+
+  const wrongLifecycle = structuredClone(capture);
+  wrongLifecycle.qualityStartDrain.phase = 'post_measurement_terminal';
+  assert.throws(
+    () => validatePlayCanvasQualityOnlyCaptureEvidence({
+      trace: formalTruckTrace,
+      capture: wrongLifecycle
+    }),
+    /quality-only capture lacks/
   );
 });
 

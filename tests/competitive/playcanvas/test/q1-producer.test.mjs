@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
   Q1_PRODUCER_REQUEST_SCHEMA,
+  Q1_QUALITY_ONLY_REQUEST_SCHEMA,
   assertQ1Invocation,
   loadQ1ProducerConfig,
   materializeQ1BuildArtifacts,
@@ -14,7 +15,9 @@ import {
   q1EnvironmentFields,
   q1ManifestFields,
   q1PairingFields,
+  q1QualityOnlyManifestFields,
   q1RendererCaptureEnabled,
+  validateQ1QualityOnlyArtifact,
   validateQ1ProducerRequest,
   verifyQ1BuildArtifacts
 } from '../scripts/q1-producer.mjs';
@@ -106,6 +109,20 @@ function request(role, overrides = {}) {
   return { ...base, ...overrides };
 }
 
+function qualityOnlyRequest(overrides = {}) {
+  return {
+    schema: Q1_QUALITY_ONLY_REQUEST_SCHEMA,
+    artifact_role: 'quality_only',
+    formal_view_id: '000001',
+    trace_frame_index: 0,
+    protocol_sha256: SHA_B,
+    collection_session_id: 'm4-chrome-quality-001',
+    product_quality_state: 'Deferred',
+    performance_authorized: false,
+    ...overrides
+  };
+}
+
 function invocation(captureTraceFrame) {
   return {
     qualificationName: 'truck-quality-1080p-v1',
@@ -192,6 +209,139 @@ test('control and throughput roles remain separate and invocation-locked', () =>
   assert.throws(
     () => q1ManifestFields(throughput, queueTerminal(), 80, 1),
     /one continuous submission per measured frame/
+  );
+});
+
+test('quality-only request is independently locked and has no performance pairing', () => {
+  const quality = validateQ1ProducerRequest(qualityOnlyRequest());
+  assert.equal(q1RendererCaptureEnabled(quality), true);
+  assert.equal(q1PairingFields(quality), null);
+  assert.doesNotThrow(() => assertQ1Invocation(quality, {
+    qualificationName: 'truck-formal-quality-979x546-v1',
+    cameraMode: 'static',
+    warmupFrames: 0,
+    measuredFrames: 0,
+    captureTraceFrame: 0,
+    viewportWidth: 979,
+    viewportHeight: 546,
+    sessionMode: 'local-launch',
+    headless: false
+  }));
+  assert.deepEqual(q1QualityOnlyManifestFields(quality), {
+    artifact_role: 'quality_only',
+    formal_view_id: '000001',
+    trace_frame_index: 0,
+    protocol_sha256: SHA_B,
+    product_quality_state: 'Deferred',
+    performance_authorized: false
+  });
+  assert.throws(
+    () => validateQ1ProducerRequest(qualityOnlyRequest({ pairing: {} })),
+    /fields must be exact/
+  );
+  assert.throws(
+    () => validateQ1ProducerRequest(qualityOnlyRequest({ performance_authorized: true })),
+    /disabled performance/
+  );
+  assert.throws(
+    () => assertQ1Invocation(quality, {
+      qualificationName: 'truck-formal-quality-979x546-v1',
+      cameraMode: 'static',
+      warmupFrames: 0,
+      measuredFrames: 1,
+      captureTraceFrame: 0,
+      viewportWidth: 979,
+      viewportHeight: 546,
+      sessionMode: 'local-launch',
+      headless: false
+    }),
+    /measuredFrames must equal 0/
+  );
+});
+
+test('quality-only manifest fails closed on any benchmark result surface', () => {
+  const rendererCapture = { status: 'terminal' };
+  const splatCount = 2_541_226;
+  const manifest = {
+    dataset: {
+      id: 'inria-3dgs-truck-iteration-30000',
+      sha256: '65ecf4058135a030cddd2198326f67172a4101344b0b54a3fa370cf45ea9688c',
+      splat_count: splatCount,
+      sh_degree: 3
+    },
+    trace: {
+      id: 'formal-truck-product-quality-000001-000009-979x546-v1',
+      sha256: '46819f71d5025bb61f6583392448d977051a0b4c67a0c05db860232033c0676c',
+      capture_frame_index: 0,
+      formal_view_id: '000001'
+    },
+    exactness: {
+      source_splat_count: splatCount,
+      decoded_splat_count: splatCount,
+      encoded_splat_count: splatCount,
+      resident_splat_count: splatCount,
+      addressable_splat_count: splatCount,
+      source_sh_degree: 3,
+      resident_sh_degree: 3,
+      source_membership: 'all',
+      sampling: 'disabled',
+      lod: 'disabled',
+      partial_scene_published: false,
+      full_quality: true
+    },
+    resolution: {
+      requested_width: 979,
+      requested_height: 546,
+      surface_width: 979,
+      surface_height: 546,
+      internal_render_width: 979,
+      internal_render_height: 546,
+      presented_width: 979,
+      presented_height: 546,
+      dynamic_resolution: 'disabled',
+      upscaling: 'disabled',
+      internal_full_resolution: true,
+      full_resolution: true
+    },
+    presentation_capture: {
+      excluded_from_performance: true,
+      capture_trace_frame_index: 0,
+      renderer_capture: rendererCapture,
+      frames: [{ submit_version_before: 1, submit_version_after: 2 }]
+    },
+    renderer_capture: rendererCapture,
+    product_quality: { state: 'Deferred' },
+    performance_authorized: false,
+    q1_quality: {
+      artifact_role: 'quality_only',
+      formal_view_id: '000001',
+      performance_authorized: false
+    }
+  };
+  assert.equal(validateQ1QualityOnlyArtifact(manifest), manifest);
+  for (const field of ['timing', 'pairing', 'frames', 'sustained_throughput']) {
+    assert.throws(
+      () => validateQ1QualityOnlyArtifact({ ...manifest, [field]: {} }),
+      new RegExp(`must not contain ${field}`)
+    );
+  }
+  assert.throws(
+    () => validateQ1QualityOnlyArtifact({ ...manifest, performance_authorized: true }),
+    /frozen non-performance quality identity/
+  );
+  assert.throws(
+    () => validateQ1QualityOnlyArtifact({
+      ...manifest,
+      environment: { mean_fps: 60 }
+    }),
+    /forbidden mean_fps/
+  );
+  assert.throws(
+    () => validateQ1QualityOnlyArtifact({
+      ...manifest,
+      browser_presentation: { timing: {} }
+    }),
+    /forbidden timing/
   );
 });
 

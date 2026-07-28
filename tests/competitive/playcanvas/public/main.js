@@ -104,6 +104,12 @@ const QUALIFICATIONS = Object.freeze({
     traceUrl: '/traces/quality/candidate-truck-quality-1920x1080-v1.json',
     evidenceClass: 'competitor_qualification'
   },
+  'truck-formal-quality-979x546-v1': {
+    datasetUrl: '/datasets/external/inria_3dgs/truck/point_cloud.ply',
+    manifestUrl: '/datasets/external/inria_3dgs/truck/source.json',
+    traceUrl: '/traces/quality/formal-truck-product-quality-979x546-v1/camera-trace.json',
+    evidenceClass: 'product_quality_one_view'
+  },
   'truck-quality-2412x1080-v1': {
     datasetUrl: '/datasets/external/inria_3dgs/truck/point_cloud.ply',
     manifestUrl: '/datasets/external/inria_3dgs/truck/source.json',
@@ -131,6 +137,8 @@ const requestedTraceFrameIndex = Number(params.get('trace_frame') ?? 0);
 const requestedWarmupFrames = Number(params.get('warmup_frames') ?? (qualificationMode ? 120 : 30));
 const requestedMeasuredFrames = Number(params.get('measured_frames') ?? (qualificationMode ? 3600 : 60));
 const requestedCameraMode = params.get('camera_mode') ?? 'static';
+const requestedCaptureMode = params.get('capture_mode') ?? 'benchmark';
+const qualityOnlyCapture = requestedCaptureMode === 'quality_only';
 const requestedCaptureTraceFrameParameter = params.get('capture_trace_frame');
 const requestedCaptureTraceFrameIndex = requestedCaptureTraceFrameParameter === null
   ? null
@@ -303,7 +311,8 @@ async function collectFrameSamples(
   capturePresentation,
   presentationProbe,
   rendererCaptureIdentity,
-  projectionController
+  projectionController,
+  qualityOnly
 ) {
   requireQueueTerminalApi(app.graphicsDevice);
   const traceFrames = trace?.frames ?? [];
@@ -333,8 +342,11 @@ async function collectFrameSamples(
   let presentationCapture = null;
   let pendingRendererCapture = null;
   let rendererCapture = null;
+  let qualityStartDrain = null;
   const presentationFrames = [];
-  let state = warmupFrames > 0 ? 'warming_up' : 'draining_warmup';
+  let state = qualityOnly
+    ? 'draining_quality_start'
+    : warmupFrames > 0 ? 'warming_up' : 'draining_warmup';
 
   await new Promise((resolve, reject) => {
     let frameUpdateEvent;
@@ -381,6 +393,30 @@ async function collectFrameSamples(
         measurementStart = performance.now();
         measurementStartedAtUtc = new Date().toISOString();
         state = 'waiting_for_first_measurement_frame';
+        resumeApplicationFrameLoop(app);
+      } catch (error) {
+        rejectCapture(error);
+      }
+    };
+
+    const beginQualityOnlyPresentation = async () => {
+      try {
+        qualityStartDrain = await drainQueueWhileFrameLoopStopped(
+          app,
+          'quality_only_start'
+        );
+        // The presentation-capture v1 schema retains this legacy field name as
+        // its pre-presentation submit-chain anchor. In this lifecycle it binds
+        // the untimed quality-start drain and is not measurement evidence.
+        measurementDrain = qualityStartDrain;
+        presentationTraceFrameIndex = requestedCaptureFrameIndex;
+        presentationTraceFrameSource = 'explicit_quality_only_formal_view';
+        if (!Number.isSafeInteger(presentationTraceFrameIndex) ||
+            presentationTraceFrameIndex < 0 ||
+            presentationTraceFrameIndex >= traceFrames.length) {
+          throw new Error('quality-only capture trace frame is unavailable');
+        }
+        state = 'presenting_capture';
         resumeApplicationFrameLoop(app);
       } catch (error) {
         rejectCapture(error);
@@ -650,7 +686,14 @@ async function collectFrameSamples(
       }
     });
 
-    if (warmupFrames === 0) {
+    if (qualityOnly) {
+      try {
+        stopApplicationFrameLoop(app);
+        void beginQualityOnlyPresentation();
+      } catch (error) {
+        rejectCapture(error);
+      }
+    } else if (warmupFrames === 0) {
       try {
         stopApplicationFrameLoop(app);
         void beginMeasurementAfterWarmupDrain();
@@ -660,6 +703,18 @@ async function collectFrameSamples(
     }
   });
 
+  if (qualityOnly) {
+    return {
+      lifecycle: 'quality_only',
+      qualityStartDrain,
+      presentationCapture,
+      presentation: {
+        postPresentationTerminal: postPresentationTerminalPresentation,
+        measuredFrameCheckCount: 0,
+        everyMeasuredFrameChecked: false
+      }
+    };
+  }
   return {
     warmupCount: warmupFrames,
     samples,
@@ -731,7 +786,8 @@ async function main() {
     });
   }
   if (!Number.isSafeInteger(requestedWarmupFrames) || requestedWarmupFrames < 0 ||
-      !Number.isSafeInteger(requestedMeasuredFrames) || requestedMeasuredFrames <= 0) {
+      !Number.isSafeInteger(requestedMeasuredFrames) || requestedMeasuredFrames < 0 ||
+      (!qualityOnlyCapture && requestedMeasuredFrames === 0)) {
     fail('warmup/measured frame counts are invalid', {
       requestedWarmupFrames,
       requestedMeasuredFrames
@@ -739,6 +795,20 @@ async function main() {
   }
   if (!['static', 'sequence'].includes(requestedCameraMode)) {
     fail('camera_mode must be static or sequence', { requestedCameraMode });
+  }
+  if (!['benchmark', 'quality_only'].includes(requestedCaptureMode)) {
+    fail('capture_mode must be benchmark or quality_only', { requestedCaptureMode });
+  }
+  if (qualityOnlyCapture &&
+      (requestedWarmupFrames !== 0 || requestedMeasuredFrames !== 0 ||
+       requestedCameraMode !== 'static' || requestedCaptureTraceFrameIndex !== 0)) {
+    fail('quality-only capture must use static formal frame 0 with no benchmark frames');
+  }
+  if (qualityOnlyCapture &&
+      (!benchmarkMode ||
+       qualificationName !== 'truck-formal-quality-979x546-v1' ||
+       !rendererCaptureEnabled)) {
+    fail('quality-only capture requires the formal Truck preset and renderer capture');
   }
   if (hostStartGateEnabled && (!benchmarkMode || !qualificationMode)) {
     fail('host start gate requires a benchmark qualification');
@@ -1072,7 +1142,8 @@ async function main() {
           dataset_sha256: datasetSha256
         }
       },
-      projectionController
+      projectionController,
+      qualityOnlyCapture
     )
     : null;
   const postCapturePresentation = presentationProbe('post_capture');
@@ -1085,7 +1156,8 @@ async function main() {
   }
   const result = {
     status: benchmarkMode
-      ? rendererCaptureEnabled ? 'raw_frame_capture_complete' : 'raw_frame_measurement_complete'
+      ? qualityOnlyCapture ? 'quality_only_capture_complete'
+        : rendererCaptureEnabled ? 'raw_frame_capture_complete' : 'raw_frame_measurement_complete'
       : 'ready_for_pre_timing_capture',
     engine: 'playcanvas',
     engineVersion: version,
@@ -1146,7 +1218,8 @@ async function main() {
       antiAlias: app.scene.gsplat.antiAlias,
       diagnosticRasterContract: diagnosticRasterPolicy
     },
-    capture
+    capture,
+    qualityOnly: qualityOnlyCapture
   };
   window.__PLAYCANVAS_HARNESS_RESULT__ = result;
   window.__PLAYCANVAS_HARNESS_STATE__ = 'ready';

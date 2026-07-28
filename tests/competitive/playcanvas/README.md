@@ -261,6 +261,49 @@ create a schedule, choose AB/BA order, run five pairs, or authorize a comparison
 result. Those remain separate root-owned steps governed by
 [`q1-truck-paired-comparison-v1.md`](../../perf/q1-truck-paired-comparison-v1.md).
 
+## Q1 formal view 000001 quality-only mode
+
+Product-quality admission does not reuse the timed control lifecycle. The same
+runner and page expose a separate request schema,
+`gsplat-q1-playcanvas-quality-only-request/v1`, which is locked to complete
+Truck SH3, formal trace frame zero (`000001`), a `979x546` headful WebGPU
+backing, and the existing renderer-owned copy-to-buffer capture. It stops and
+drains the frame loop before submitting three untimed stable presentation
+frames; the final frame is copied and terminally drained exactly as in the
+existing presentation capture path.
+
+Create a request containing exactly these fields:
+
+```json
+{
+  "schema": "gsplat-q1-playcanvas-quality-only-request/v1",
+  "artifact_role": "quality_only",
+  "formal_view_id": "000001",
+  "trace_frame_index": 0,
+  "protocol_sha256": "<64 lowercase hex characters>",
+  "collection_session_id": "<caller-owned session id>",
+  "product_quality_state": "Deferred",
+  "performance_authorized": false
+}
+```
+
+Then invoke the existing runner through its focused package command:
+
+```bash
+PLAYCANVAS_Q1_SERIES_ROOT=/absolute/fresh/q1-quality-series \
+PLAYCANVAS_Q1_PRODUCER_REQUEST=/absolute/fresh/q1-quality-request.json \
+PLAYCANVAS_ARTIFACT_DIR=/absolute/fresh/q1-quality-series/playcanvas-view-000001 \
+npm run quality:truck-view000001 --prefix tests/competitive/playcanvas
+```
+
+The destination must be a previously absent child of the series root. A valid
+artifact contains the manifest, renderer-owned RGBA/PNG and their capture
+receipts, but no benchmark frame stream, timing summary, FPS, throughput,
+pairing, speed ratio, or winner field. It records `performance_authorized=false`
+and keeps formal Product Quality `Deferred`; view `000009` remains a separate
+qualification step. This mode is a quality input only and cannot be cited as a
+performance sample.
+
 ## Android true-fullscreen WebView remote CDP
 
 Normal Chrome tabs include browser chrome and system navigation in a physical

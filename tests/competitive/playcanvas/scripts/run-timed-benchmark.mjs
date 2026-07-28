@@ -15,6 +15,7 @@ import {
   PLAYCANVAS_SCREENSHOT_BINDING_SCHEMA,
   validatePlayCanvasCameraReceipt,
   validatePlayCanvasCaptureEvidence,
+  validatePlayCanvasQualityOnlyCaptureEvidence,
   validatePlayCanvasScreenshotBinding
 } from '../public/trace-camera.js';
 import {
@@ -48,7 +49,9 @@ import {
   q1EnvironmentFields,
   q1ManifestFields,
   q1PairingFields,
+  q1QualityOnlyManifestFields,
   q1RendererCaptureEnabled,
+  validateQ1QualityOnlyArtifact,
   verifyQ1BuildArtifacts
 } from './q1-producer.mjs';
 import { startServer } from './server.mjs';
@@ -91,7 +94,7 @@ const screenContentSsimThreshold = Number(
 );
 for (const [label, value, allowZero] of [
   ['PLAYCANVAS_WARMUP_FRAMES', warmupFrames, true],
-  ['PLAYCANVAS_MEASURED_FRAMES', measuredFrames, false],
+  ['PLAYCANVAS_MEASURED_FRAMES', measuredFrames, true],
   ['PLAYCANVAS_TRACE_FRAME', traceFrame, true],
   ...(captureTraceFrame === null
     ? []
@@ -119,6 +122,10 @@ const outputRoot = resolve(
 const sessionConfig = browserSessionConfig(process.env);
 const headless = process.env.HEADLESS !== '0';
 const q1Producer = await loadQ1ProducerConfig(process.env, outputRoot);
+const qualityOnly = q1Producer?.qualityOnly === true;
+if (measuredFrames === 0 && !qualityOnly) {
+  throw new Error('PLAYCANVAS_MEASURED_FRAMES may be zero only for Q1 quality-only capture');
+}
 const browserOwnership = browserOwnershipConfig(
   process.env,
   q1Producer !== null && sessionConfig.mode === 'local-launch'
@@ -336,6 +343,7 @@ try {
     ? ''
     : `&capture_trace_frame=${captureTraceFrame}`;
   const rendererCaptureQuery = `&renderer_capture=${rendererCaptureEnabled ? 1 : 0}`;
+  const captureModeQuery = qualityOnly ? '&capture_mode=quality_only' : '';
   const hostStartGateQuery = q1Producer ? '&host_start_gate=1' : '';
   const diagnosticRasterContractQuery = diagnosticRasterContract === PLAYCANVAS_PINNED_RASTER_CONTRACT
     ? ''
@@ -344,7 +352,7 @@ try {
     `http://127.0.0.1:${port}/?benchmark=1${qualificationQuery}` +
       `&trace_frame=${traceFrame}&warmup_frames=${warmupFrames}` +
       `&measured_frames=${measuredFrames}&camera_mode=${cameraMode}` +
-      captureTraceFrameQuery + rendererCaptureQuery + hostStartGateQuery +
+      captureTraceFrameQuery + rendererCaptureQuery + captureModeQuery + hostStartGateQuery +
       diagnosticRasterContractQuery,
     {
     waitUntil: 'networkidle0',
@@ -411,9 +419,9 @@ try {
   }));
   const browserVersion = await browser.version();
   await writeFile(resolve(outputRoot, 'runtime.log'), `${browserLog.join('\n')}\n`);
-  const expectedPageStatus = rendererCaptureEnabled
-    ? 'raw_frame_capture_complete'
-    : 'raw_frame_measurement_complete';
+  const expectedPageStatus = qualityOnly
+    ? 'quality_only_capture_complete'
+    : rendererCaptureEnabled ? 'raw_frame_capture_complete' : 'raw_frame_measurement_complete';
   if (outcome.result.status !== expectedPageStatus) throw new Error(JSON.stringify(outcome.result));
   const browserPresentation = outcome.result.browserPresentationReceipt;
   if (q1Producer) {
@@ -422,12 +430,17 @@ try {
       throw new Error('Q1 PlayCanvas host start receipt drifted after benchmark start');
     }
   }
-  const presentationReceipts = [
-    ['preCapture', browserPresentation?.preCapture],
-    ['preMeasurement', browserPresentation?.preMeasurement],
-    ['postMeasurement', browserPresentation?.postMeasurement],
-    ['postCapture', browserPresentation?.postCapture]
-  ];
+  const presentationReceipts = qualityOnly
+    ? [
+        ['preCapture', browserPresentation?.preCapture],
+        ['postCapture', browserPresentation?.postCapture]
+      ]
+    : [
+        ['preCapture', browserPresentation?.preCapture],
+        ['preMeasurement', browserPresentation?.preMeasurement],
+        ['postMeasurement', browserPresentation?.postMeasurement],
+        ['postCapture', browserPresentation?.postCapture]
+      ];
   if (qualification && rendererCaptureEnabled) {
     presentationReceipts.push([
       'postPresentationTerminal',
@@ -440,19 +453,25 @@ try {
   }
   if (browserPresentation?.physicalPresentationClaim !== false ||
       browserPresentation?.measuredFrameCheckCount !==
-        (rendererCaptureEnabled ? measuredFrames : 0) ||
-      browserPresentation?.everyMeasuredFrameChecked !== rendererCaptureEnabled) {
+        (rendererCaptureEnabled && !qualityOnly ? measuredFrames : 0) ||
+      browserPresentation?.everyMeasuredFrameChecked !==
+        (rendererCaptureEnabled && !qualityOnly)) {
     throw new Error('browser presentation lifecycle receipt is incomplete');
   }
 
   let cameraEvidence = null;
   if (qualification && rendererCaptureEnabled) {
-    cameraEvidence = validatePlayCanvasCaptureEvidence({
-      trace: outcome.result.traceDescriptor,
-      capture: outcome.result.capture,
-      expectedMeasuredFrames: measuredFrames,
-      requestedCaptureTraceFrameIndex: captureTraceFrame
-    });
+    cameraEvidence = qualityOnly
+      ? validatePlayCanvasQualityOnlyCaptureEvidence({
+          trace: outcome.result.traceDescriptor,
+          capture: outcome.result.capture
+        })
+      : validatePlayCanvasCaptureEvidence({
+          trace: outcome.result.traceDescriptor,
+          capture: outcome.result.capture,
+          expectedMeasuredFrames: measuredFrames,
+          requestedCaptureTraceFrameIndex: captureTraceFrame
+        });
     validatePlayCanvasCameraReceipt(
       outcome.result.cameraReceipt,
       outcome.result.traceDescriptor,
@@ -644,8 +663,12 @@ try {
       `${JSON.stringify(screenshotBinding, null, 2)}\n`
     );
   }
-  const queueTerminal = validateQueueTerminalCapture(outcome.result.capture, measuredFrames);
-  const q1HostPost = await observeMacHostState('post_measurement_terminal');
+  const queueTerminal = qualityOnly
+    ? null
+    : validateQueueTerminalCapture(outcome.result.capture, measuredFrames);
+  const q1HostPost = await observeMacHostState(
+    qualityOnly ? 'post_quality_capture_terminal' : 'post_measurement_terminal'
+  );
   if (q1Producer && q1HostPre.powerSource !== q1HostPost.powerSource) {
     throw new Error('Q1 host power source changed during the artifact run');
   }
@@ -694,6 +717,106 @@ try {
       admitted: true
     }
   } : {});
+  if (qualityOnly) {
+    const dataset = outcome.result.datasetReceipt;
+    const presentationReceipt = outcome.result.browserPresentationReceipt.postCapture;
+    const qualityResolution = {
+      ...finalResolution,
+      presented_width: Math.round(
+        presentationReceipt.physical_pixel_mapping.canvas_css_width_px
+      ),
+      presented_height: Math.round(
+        presentationReceipt.physical_pixel_mapping.canvas_css_height_px
+      ),
+      presented_source: 'visible_focused_browser_quality_capture_terminal',
+      internal_full_resolution: true,
+      full_resolution: true
+    };
+    const qualityManifest = {
+      schema: 'gsplat-benchmark/v1',
+      record_type: 'manifest',
+      identity: {
+        artifact_role: 'quality_only',
+        started_at_utc: startedAtUtc,
+        ended_at_utc: new Date().toISOString()
+      },
+      build: {
+        repository_commit: repositoryCommit,
+        dirty,
+        profile: 'playcanvas-production-esm-quality-only',
+        package_version: expectedEngine.version,
+        upstream_revision: expectedEngine.revision,
+        runtime_revision: expectedEngine.runtimeRevision,
+        package_integrity: expectedEngine.integrity,
+        artifacts: q1BuildArtifacts
+      },
+      dataset: {
+        id: dataset.id,
+        sha256: dataset.sha256,
+        bytes: dataset.bytes,
+        splat_count: dataset.splat_count,
+        sh_degree: dataset.sh_degree
+      },
+      trace: {
+        id: outcome.result.traceDescriptor.trace_id,
+        sha256: outcome.result.traceDescriptor.content_sha256,
+        camera_mode: 'formal_static_view',
+        capture_frame_index: 0,
+        formal_view_id: '000001'
+      },
+      renderer: {
+        implementation: `playcanvas-${outcome.result.engineRuntimeRevision}`,
+        path: outcome.result.rendererPath,
+        backend: outcome.result.backendSelected,
+        sort_policy: outcome.result.rendererActive,
+        uses_gpu_sort: outcome.result.usesGpuSort
+      },
+      environment: {
+        platform: outcome.platform,
+        os: `${os.type()} ${os.release()}`,
+        device: os.hostname(),
+        browser: `${browserVersion} ${outcome.userAgent}`,
+        browser_transport: sessionConfig.mode,
+        ...q1Environment
+      },
+      policies: outcome.result.policies,
+      exactness: outcome.result.exactness,
+      resolution: qualityResolution,
+      camera_receipt: outcome.result.cameraReceipt,
+      presentation_capture: outcome.result.capture.presentationCapture,
+      renderer_capture: outcome.result.capture.presentationCapture.renderer_capture,
+      renderer_capture_materialization: rendererCaptureMaterialization,
+      browser_presentation: {
+        source: outcome.result.browserPresentationReceipt.source,
+        physicalPresentationClaim:
+          outcome.result.browserPresentationReceipt.physicalPresentationClaim,
+        hostStart: outcome.result.browserPresentationReceipt.hostStart,
+        preCapture: outcome.result.browserPresentationReceipt.preCapture,
+        postPresentationTerminal:
+          outcome.result.browserPresentationReceipt.postPresentationTerminal,
+        postCapture: outcome.result.browserPresentationReceipt.postCapture
+      },
+      qualification_scope: 'product_quality_one_view_000001',
+      product_quality: {
+        state: 'Deferred',
+        reason: 'formal view 000009 remains required'
+      },
+      performance_authorized: false,
+      q1_quality: q1QualityOnlyManifestFields(q1Producer)
+    };
+    validateQ1QualityOnlyArtifact(qualityManifest);
+    await writeFile(
+      resolve(outputRoot, 'manifest.json'),
+      `${JSON.stringify(qualityManifest, null, 2)}\n`
+    );
+    console.log(JSON.stringify({
+      status: 'valid_q1_quality_only_capture',
+      outputRoot,
+      formalViewId: '000001',
+      productQuality: 'Deferred',
+      performanceAuthorized: false
+    }));
+  } else {
   const scope = qualification ? `competitive-${qualificationName}` : 'playcanvas-collector-smoke';
   const runId = `${scope}-${randomUUID()}`;
   const frameBudgetMs = 1000 / sessionConfig.refreshHz;
@@ -973,6 +1096,7 @@ try {
     sustainedMeanFrameMs: queueTerminal.sustained.sustainedMeanFrameMs,
     sustainedFps: queueTerminal.sustained.sustainedFps
   }));
+  }
 } catch (error) {
   await writeFile(resolve(outputRoot, 'runtime.log'), `${browserLog.join('\n')}\n`);
   let blockerScreenReceipt = null;
