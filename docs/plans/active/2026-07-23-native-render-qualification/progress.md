@@ -1419,3 +1419,47 @@ identify the smallest renderer-semantic differences responsible for the
 PlayCanvas reference gap before changing either performance path or quality
 threshold. Attempt 10 remains immutable and must not be revalidated into a
 same-quality comparison.
+
+### Q1 Attempt 10 footprint-attribution diagnostic (2026-07-28)
+
+The reviewed diagnostic at commit
+`4a5b9dded64c692b00b8744599dfee885ca70d12` changed only the pinned
+PlayCanvas forward-color Gaussian footprint to the gsplat-rs Direct-f32
+contract while retaining the complete Truck source, SH3, camera, 1920x1080
+backing resolution, PlayCanvas representation precision and sorting. It is
+explicitly classified `mechanism_attribution_only`, contains no pairing, and
+its terminal status is `valid_mechanism_diagnostic`; its frame timings are not
+performance evidence.
+
+Against Attempt 10's immutable Direct-f32 authority, the two diagnostic images
+scored:
+
+| Trace | Pair-01 pinned PlayCanvas SSIM | Footprint diagnostic SSIM | Diagnostic RGB MAE (8-bit) |
+| --- | ---: | ---: | ---: |
+| 0 | `0.9381725005` | `0.9543464688` | `5.5943` |
+| 1 | `0.9480650642` | `0.9618119574` | `4.8727` |
+
+The diagnostic image remained close to, but observably different from, the
+original pinned PlayCanvas output: SSIM `0.9893232813 / 0.9908994297` and RGB
+MAE `2.7139 / 2.1366`. This proves that footprint/support semantics account
+for a material part of the common-reference gap, but they do not explain all
+of it and do not reach the existing `0.99` Native Exact threshold. Remaining
+high-probability mechanisms are PlayCanvas's half/quantized resident and
+projected representation plus its lower-precision unstable depth ordering.
+
+No production renderer policy changes from this diagnostic. In particular,
+the project will not lower the existing threshold, adopt the diagnostic shader
+as a performance path, or rerun the five-pair series merely to obtain a
+relative number. The next bounded decision is to separate the current
+Direct-f32 self-conformance authority from an independent product-quality
+authority. The former stays strict for gsplat-rs regression evidence; a fair
+cross-product lane must use independently authored source images and their
+camera calibration before any same-quality performance comparison can be
+admitted.
+
+An independent raw-RGBA8 recomputation accepted this attribution with
+P0/P1/P2 `0/0/0`. It also confirmed the diagnostic's intentionally narrower
+presentation boundary: requested, Surface and internal-render dimensions are
+1920x1080, while external presented-screen dimensions are unavailable. That is
+valid for mechanism attribution but cannot be promoted into a formal endpoint
+qualification receipt.
