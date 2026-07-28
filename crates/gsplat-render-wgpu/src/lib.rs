@@ -530,6 +530,7 @@ pub(crate) fn make_surface_render_params(
 ) -> GpuSurfaceRenderParams {
     let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
     let view_rot = quat_to_mat3(camera_inv_q);
+    let viewport_aspect = (width as f32 / height.max(1) as f32).max(1e-6);
     GpuSurfaceRenderParams {
         camera_pos: [
             camera.pose.position.x,
@@ -543,7 +544,9 @@ pub(crate) fn make_surface_render_params(
         vertical_fov_radians: camera.intrinsics.vertical_fov_radians,
         near_plane: camera.intrinsics.near_plane,
         far_plane: camera.intrinsics.far_plane,
-        aspect: (width as f32 / height.max(1) as f32).max(1e-6),
+        aspect: camera
+            .intrinsics
+            .effective_projection_aspect(viewport_aspect),
         width,
         height,
         sh_degree,

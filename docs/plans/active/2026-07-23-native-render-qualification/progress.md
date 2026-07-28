@@ -1562,3 +1562,22 @@ Nine focused tests passed. This closes the local extracted-entry provenance
 mechanism only; Product Quality remains `Deferred`, performance stays
 unauthorized, and no browser, device, endpoint image, ratio, FPS or winner was
 produced.
+
+### Q1 centered-pinhole core carriage (2026-07-28)
+
+The first exact-camera slice adds a centered calibrated `fx/fy` ratio to the
+canonical Rust camera while preserving an exact default of one. CPU reference,
+GPU Exact parameter construction and the FFI projection receipt all consume a
+single derived `viewport_aspect / (fx/fy)` value; no WGSL uniform or stable C
+camera ABI changed. The accepted ratio range `2^-16..=2^16` is a
+representability guard: for any positive `u32` viewport the derived aspect stays
+finite and normal, and out-of-range input fails rather than being clamped.
+
+The Truck 979x546 focused oracle reconstructs `fx=581.92456` and
+`fy=578.6701`, with CPU and GPU projection parameters bit-identical. Core,
+renderer-lib, FFI-lib, workspace/Wasm checks, affected Clippy/Rustdoc, FFI
+smoke, architecture, format and diff checks passed. This is not endpoint
+qualification: the legacy trace adapter still selects ratio one, and the
+trace, Wasm/JS and PlayCanvas receipt carriers remain separate reviewed slices.
+The public Rust struct gains one field, so downstream literal construction is
+a source-compatibility change; the C ABI remains unchanged.

@@ -1112,6 +1112,9 @@ impl From<GsplatCamera> for Camera {
                 vertical_fov_radians: value.vertical_fov_radians,
                 near_plane: value.near_plane,
                 far_plane: value.far_plane,
+                // The stable v0.1 C camera input predates calibrated non-square
+                // pixels and therefore preserves its square-pixel projection.
+                focal_length_x_over_y: 1.0,
             },
         }
     }
@@ -2125,10 +2128,11 @@ fn canonical_view_matrix_f32(camera: Camera) -> [f32; 16] {
 
 fn canonical_projection_matrix_f32(camera: Camera, aspect: f32) -> [f32; 16] {
     let focal = 1.0 / (camera.intrinsics.vertical_fov_radians * 0.5).tan();
+    let projection_aspect = camera.intrinsics.effective_projection_aspect(aspect);
     let depth =
         camera.intrinsics.far_plane / (camera.intrinsics.far_plane - camera.intrinsics.near_plane);
     [
-        focal / aspect,
+        focal / projection_aspect,
         0.0,
         0.0,
         0.0,
@@ -4715,6 +4719,28 @@ mod tests {
         assert_eq!(view_projection, projection);
         assert!(projection[0] > 0.0 && projection[5] > projection[0]);
         assert_eq!(projection[14], 1.0);
+    }
+
+    #[test]
+    fn canonical_projection_receipt_uses_centered_focal_length_ratio() {
+        let mut camera = gsplat_core::Camera::default();
+        camera.intrinsics.focal_length_x_over_y = 581.924_56 / 578.670_1;
+        let viewport_aspect = 979.0 / 546.0;
+        let projection = canonical_projection_matrix_f32(camera, viewport_aspect);
+
+        assert!(
+            (projection[0] / projection[5]
+                - camera.intrinsics.focal_length_x_over_y / viewport_aspect)
+                .abs()
+                <= 1.0e-6
+        );
+
+        let legacy: gsplat_core::Camera = GsplatCamera::default().into();
+        assert_eq!(legacy.intrinsics.focal_length_x_over_y, 1.0);
+        assert_eq!(
+            canonical_projection_matrix_f32(legacy, viewport_aspect)[0],
+            canonical_projection_matrix_f32(gsplat_core::Camera::default(), viewport_aspect)[0]
+        );
     }
 
     #[test]

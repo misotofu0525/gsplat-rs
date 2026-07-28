@@ -221,3 +221,17 @@ not the upstream camera; counting that projection error as renderer quality
 would be unfair. Therefore a 979x546 browser execution remains blocked until a
 reviewed exact-pinhole receipt proves the full normalized projection in both
 endpoints. Resizing or warping the authority image is not an allowed shortcut.
+
+The first centered-pinhole core slice now carries `fx/fy` as
+`CameraIntrinsics::focal_length_x_over_y`. Its default is exactly `1`, while
+the renderer derives one effective projection aspect shared by CPU reference,
+all existing GPU Exact paths and the FFI projection receipt. The existing WGSL
+uniform layout and stable C camera ABI are unchanged. A representability bound
+of `2^-16..=2^16` guarantees a finite, normal derived aspect for any positive
+`u32` viewport; invalid calibration fails rather than being clamped.
+
+This core slice does not unblock an endpoint run by itself. The canonical
+trace, Wasm/JS setter and receipt, and PlayCanvas custom projection still need
+to carry and prove the same ratio. Principal-point offsets remain unsupported;
+the selected Truck views are eligible for this narrower model only after their
+authority receipt proves that `cx=W/2` and `cy=H/2` at the decoded resolution.

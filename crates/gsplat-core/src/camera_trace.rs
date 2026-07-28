@@ -378,6 +378,7 @@ impl CameraTraceFrame {
                 vertical_fov_radians: self.intrinsics.vertical_fov_radians as f32,
                 near_plane: self.intrinsics.near_plane as f32,
                 far_plane: self.intrinsics.far_plane as f32,
+                focal_length_x_over_y: 1.0,
             },
         };
         camera

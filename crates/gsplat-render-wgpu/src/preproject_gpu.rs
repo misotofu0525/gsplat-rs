@@ -797,6 +797,7 @@ mod tests {
                 vertical_fov_radians: 60.0_f32.to_radians(),
                 near_plane: 0.5,
                 far_plane: 5.0,
+                focal_length_x_over_y: 1.0,
             },
             ..Camera::default()
         }

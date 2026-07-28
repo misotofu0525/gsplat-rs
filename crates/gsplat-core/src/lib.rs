@@ -73,6 +73,14 @@ pub struct CameraIntrinsics {
     pub vertical_fov_radians: f32,
     pub near_plane: f32,
     pub far_plane: f32,
+    /// Ratio between the calibrated horizontal and vertical focal lengths.
+    ///
+    /// A value of `1.0` preserves the historical square-pixel projection.
+    /// This ratio supports centered pinhole cameras with non-square pixels;
+    /// principal-point offsets remain outside this camera model. Validation
+    /// accepts [`CameraIntrinsics::MIN_FOCAL_LENGTH_X_OVER_Y`] through
+    /// [`CameraIntrinsics::MAX_FOCAL_LENGTH_X_OVER_Y`], inclusive.
+    pub focal_length_x_over_y: f32,
 }
 
 impl Default for CameraIntrinsics {
@@ -81,15 +89,22 @@ impl Default for CameraIntrinsics {
             vertical_fov_radians: 60.0_f32.to_radians(),
             near_plane: 0.01,
             far_plane: 1000.0,
+            focal_length_x_over_y: 1.0,
         }
     }
 }
 
 impl CameraIntrinsics {
+    /// Smallest supported calibrated horizontal-to-vertical focal ratio.
+    pub const MIN_FOCAL_LENGTH_X_OVER_Y: f32 = 1.0 / 65_536.0;
+    /// Largest supported calibrated horizontal-to-vertical focal ratio.
+    pub const MAX_FOCAL_LENGTH_X_OVER_Y: f32 = 65_536.0;
+
     pub fn validate(&self) -> Result<(), ErrorCode> {
         if !self.vertical_fov_radians.is_finite()
             || !self.near_plane.is_finite()
             || !self.far_plane.is_finite()
+            || !self.focal_length_x_over_y.is_finite()
         {
             return Err(ErrorCode::InvalidArgument);
         }
@@ -98,11 +113,25 @@ impl CameraIntrinsics {
             || self.vertical_fov_radians >= std::f32::consts::PI
             || self.near_plane <= 0.0
             || self.far_plane <= self.near_plane
+            || self.focal_length_x_over_y < Self::MIN_FOCAL_LENGTH_X_OVER_Y
+            || self.focal_length_x_over_y > Self::MAX_FOCAL_LENGTH_X_OVER_Y
         {
             return Err(ErrorCode::InvalidArgument);
         }
 
         Ok(())
+    }
+
+    /// Returns the projection aspect consumed by the centered pinhole math.
+    ///
+    /// [`Self::validate`] keeps the ratio in `2^-16..=2^16`. For any non-zero
+    /// `u32` viewport, its aspect lies strictly within `2^-32..2^32`, so this
+    /// division stays finite and normal within approximately `2^-48..2^48`.
+    /// The renderer uses the returned value as its existing projection
+    /// `aspect`, keeping vertical focal length fixed while the horizontal
+    /// coefficient becomes `fy * (fx/fy) / viewport`.
+    pub fn effective_projection_aspect(&self, viewport_aspect: f32) -> f32 {
+        viewport_aspect / self.focal_length_x_over_y
     }
 }
 
@@ -335,6 +364,74 @@ mod tests {
         camera.intrinsics.far_plane = 1.0;
 
         assert_eq!(camera.validate(), Err(ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn camera_intrinsics_default_preserves_square_pixel_projection() {
+        let intrinsics = super::CameraIntrinsics::default();
+        assert_eq!(intrinsics.focal_length_x_over_y, 1.0);
+        assert_eq!(
+            intrinsics.effective_projection_aspect(16.0 / 9.0),
+            16.0 / 9.0
+        );
+    }
+
+    #[test]
+    fn camera_intrinsics_derive_centered_non_square_pixel_projection() {
+        let intrinsics = super::CameraIntrinsics {
+            focal_length_x_over_y: 581.924_56 / 578.670_1,
+            ..Default::default()
+        };
+        let viewport_aspect = 979.0 / 546.0;
+        let projection_aspect = intrinsics.effective_projection_aspect(viewport_aspect);
+        let fy_ndc = 1.0 / (intrinsics.vertical_fov_radians * 0.5).tan();
+        let fx_ndc = fy_ndc / projection_aspect;
+
+        assert!(
+            (fx_ndc / fy_ndc - intrinsics.focal_length_x_over_y / viewport_aspect).abs() <= 1.0e-6
+        );
+        assert!(
+            (fx_ndc * 979.0 * 0.5 - fy_ndc * 546.0 * 0.5 * intrinsics.focal_length_x_over_y).abs()
+                <= 1.0e-4
+        );
+    }
+
+    #[test]
+    fn camera_validation_rejects_invalid_focal_length_ratio() {
+        for ratio in [
+            0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::from_bits(super::CameraIntrinsics::MIN_FOCAL_LENGTH_X_OVER_Y.to_bits() - 1),
+            f32::from_bits(super::CameraIntrinsics::MAX_FOCAL_LENGTH_X_OVER_Y.to_bits() + 1),
+        ] {
+            let mut camera = Camera::default();
+            camera.intrinsics.focal_length_x_over_y = ratio;
+            assert_eq!(camera.validate(), Err(ErrorCode::InvalidArgument));
+        }
+    }
+
+    #[test]
+    fn accepted_focal_length_ratios_keep_all_u32_viewports_representable() {
+        for ratio in [
+            super::CameraIntrinsics::MIN_FOCAL_LENGTH_X_OVER_Y,
+            1.0,
+            super::CameraIntrinsics::MAX_FOCAL_LENGTH_X_OVER_Y,
+        ] {
+            let mut camera = Camera::default();
+            camera.intrinsics.focal_length_x_over_y = ratio;
+            camera.validate().expect("representable focal ratio");
+
+            let minimum = camera
+                .intrinsics
+                .effective_projection_aspect(1.0 / u32::MAX as f32);
+            let maximum = camera
+                .intrinsics
+                .effective_projection_aspect(u32::MAX as f32);
+            assert!(minimum.is_normal());
+            assert!(maximum.is_finite() && maximum > 0.0);
+        }
     }
 
     #[test]

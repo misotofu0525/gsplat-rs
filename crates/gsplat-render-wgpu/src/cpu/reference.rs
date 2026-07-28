@@ -214,7 +214,10 @@ impl InstanceBuildParams {
             return None;
         }
 
-        let aspect = config.width as f32 / config.height as f32;
+        let viewport_aspect = config.width as f32 / config.height as f32;
+        let aspect = camera
+            .intrinsics
+            .effective_projection_aspect(viewport_aspect);
         let f = 1.0 / tan_half_fovy;
         let fx = f / aspect;
         let fy = f;
@@ -941,5 +944,29 @@ mod tests {
                 world_covariance_from_source(scene.scale_xyz[index], scene.rotation_xyzw[index],)
             );
         }
+    }
+
+    #[test]
+    fn truck_centered_pinhole_uses_identical_cpu_and_gpu_projection_aspect() {
+        let fx_pixels = 581.924_56_f32;
+        let fy_pixels = 578.670_1_f32;
+        let width = 979_u32;
+        let height = 546_u32;
+        let mut camera = Camera::default();
+        camera.intrinsics.vertical_fov_radians = 2.0 * (height as f32 / (2.0 * fy_pixels)).atan();
+        camera.intrinsics.focal_length_x_over_y = fx_pixels / fy_pixels;
+        camera.validate().expect("Truck centered pinhole camera");
+
+        let config = RendererConfig {
+            width,
+            height,
+            ..RendererConfig::default()
+        };
+        let cpu = InstanceBuildParams::new(&camera, config).expect("CPU projection params");
+        let gpu = crate::make_surface_render_params(&camera, width, height, 1, 3);
+
+        assert_eq!(cpu.aspect.to_bits(), gpu.aspect.to_bits());
+        assert!((cpu.fy * height as f32 * 0.5 - fy_pixels).abs() <= 1.0e-4);
+        assert!((cpu.fx * width as f32 * 0.5 - fx_pixels).abs() <= 1.0e-4);
     }
 }
