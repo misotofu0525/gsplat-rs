@@ -165,6 +165,22 @@ comparative claim requires matched repeated runs, retained raw frames and
 images, and a comparator result whose scope names the exact scene, camera mode,
 resolution, browser, and machine.
 
+For footprint-only diagnosis, the existing runner accepts the explicit
+`PLAYCANVAS_DIAGNOSTIC_RASTER_CONTRACT=gsplat_rs_direct_f32_footprint_v1`
+override. It changes only the pinned WebGPU hybrid-vertex physical footprint
+and forward fragment alpha support; representation precision, source data,
+camera, sorting, resolution, and the default PlayCanvas path remain unchanged.
+The requested and actual contract plus exact shader-substitution counts are
+recorded under `policies.diagnosticRasterContract`. The receipt distinguishes
+the configured `1/256` support input from the effective `1/255` forward
+fragment cutoff. The override is installed in the pinned global WGSL chunk
+registry, but this runner admits only its forward color pass; pick, shadow, and
+prepass behavior is outside this diagnostic. Artifacts are classified only as
+`mechanism_attribution_only`, omit pairing even if pair environment variables
+are present, and terminate as `valid_mechanism_diagnostic`. This mode is
+rejected for formal Q1 producer requests and cannot qualify a competitive
+claim.
+
 Formal qualification capture does not use `canvas.toDataURL()`, `toBlob()`, a
 Puppeteer screenshot, or a collector-authored renderer receipt. On the final
 stable presentation frame, the harness runs inside PlayCanvas' `frameend`

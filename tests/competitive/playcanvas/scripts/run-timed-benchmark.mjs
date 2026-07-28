@@ -53,6 +53,14 @@ import {
 } from './q1-producer.mjs';
 import { startServer } from './server.mjs';
 import { materializeRendererCapture } from './renderer-capture-artifact.mjs';
+import {
+  diagnosticArtifactClassification,
+  GSPLAT_RS_DIRECT_F32_FOOTPRINT_CONTRACT,
+  pairingForDiagnosticContract,
+  PLAYCANVAS_PINNED_RASTER_CONTRACT,
+  resolveDiagnosticRasterContract,
+  terminalStatusForDiagnosticContract
+} from '../public/diagnostic-raster-contract.js';
 
 const execFile = promisify(execFileCallback);
 const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -127,6 +135,15 @@ assertQ1Invocation(q1Producer, {
   headless
 });
 const rendererCaptureEnabled = q1RendererCaptureEnabled(q1Producer);
+const diagnosticRasterContract = resolveDiagnosticRasterContract(
+  process.env.PLAYCANVAS_DIAGNOSTIC_RASTER_CONTRACT
+);
+const diagnosticArtifact = diagnosticArtifactClassification(diagnosticRasterContract);
+if (q1Producer && diagnosticRasterContract !== PLAYCANVAS_PINNED_RASTER_CONTRACT) {
+  throw new Error(
+    `${GSPLAT_RS_DIRECT_F32_FOOTPRINT_CONTRACT} is diagnostic-only and cannot run as a Q1 producer`
+  );
+}
 const chromeCandidates = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -320,11 +337,15 @@ try {
     : `&capture_trace_frame=${captureTraceFrame}`;
   const rendererCaptureQuery = `&renderer_capture=${rendererCaptureEnabled ? 1 : 0}`;
   const hostStartGateQuery = q1Producer ? '&host_start_gate=1' : '';
+  const diagnosticRasterContractQuery = diagnosticRasterContract === PLAYCANVAS_PINNED_RASTER_CONTRACT
+    ? ''
+    : `&diagnostic_raster_contract=${encodeURIComponent(diagnosticRasterContract)}`;
   await page.goto(
     `http://127.0.0.1:${port}/?benchmark=1${qualificationQuery}` +
       `&trace_frame=${traceFrame}&warmup_frames=${warmupFrames}` +
       `&measured_frames=${measuredFrames}&camera_mode=${cameraMode}` +
-      captureTraceFrameQuery + rendererCaptureQuery + hostStartGateQuery,
+      captureTraceFrameQuery + rendererCaptureQuery + hostStartGateQuery +
+      diagnosticRasterContractQuery,
     {
     waitUntil: 'networkidle0',
     timeout: qualification ? 600_000 : 30_000
@@ -890,12 +911,16 @@ try {
           canvas_screen_content_comparison: screenContentComparison
         }
       : null,
-    pairing: q1Producer ? q1PairingFields(q1Producer) : qualification ? {
-      pair_id: process.env.PHASE_E_PAIR_ID ?? null,
-      run_order: process.env.PHASE_E_PAIR_ORDER ?? null,
-      position: Number(process.env.PHASE_E_PAIR_POSITION ?? 0) || null
-    } : undefined,
-    qualification_scope: qualification ? outcome.result.policies.evidenceClass : 'collector_smoke_only',
+    pairing: pairingForDiagnosticContract(
+      diagnosticRasterContract,
+      q1Producer ? q1PairingFields(q1Producer) : qualification ? {
+        pair_id: process.env.PHASE_E_PAIR_ID ?? null,
+        run_order: process.env.PHASE_E_PAIR_ORDER ?? null,
+        position: Number(process.env.PHASE_E_PAIR_POSITION ?? 0) || null
+      } : undefined
+    ),
+    qualification_scope: diagnosticArtifact.qualificationScope ??
+      (qualification ? outcome.result.policies.evidenceClass : 'collector_smoke_only'),
     unavailable_fields: unavailableFields,
     q1_comparison: q1ManifestFields(
       q1Producer,
@@ -929,13 +954,14 @@ try {
   await writeFile(resolve(outputRoot, 'frames.jsonl'), `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
   await writeFile(resolve(outputRoot, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   await execFile('python3', [resolve(repoRoot, 'tests/perf/validate-benchmark-artifacts.py'), outputRoot]);
-  const hasPairing = qualification &&
+  const hasPairing = diagnosticArtifact.pairingEligible && qualification &&
     Boolean(process.env.PHASE_E_PAIR_ID) && Boolean(process.env.PHASE_E_PAIR_ORDER) &&
     Number(process.env.PHASE_E_PAIR_POSITION ?? 0) > 0;
   console.log(JSON.stringify({
-    status: hasPairing
-      ? 'valid_paired_candidate'
-      : qualification ? 'valid_qualification_run' : 'valid_collector_smoke',
+    status: terminalStatusForDiagnosticContract(
+      diagnosticRasterContract,
+      { qualification, hasPairing }
+    ),
     outputRoot,
     runId,
     sampleCount: frames.length,

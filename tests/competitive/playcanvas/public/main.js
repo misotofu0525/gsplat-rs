@@ -10,6 +10,8 @@ import {
   GSPLAT_RENDERER_RASTER_GPU_SORT,
   Mat4,
   RESOLUTION_FIXED,
+  SHADERLANGUAGE_WGSL,
+  ShaderChunks,
   createGraphicsDevice,
   revision,
   version
@@ -46,6 +48,12 @@ import {
   captureQ1HostStartReceipt,
   createQ1HostStartGate
 } from '/perf/q1-host-start-gate.mjs';
+import {
+  applyDiagnosticRasterContract,
+  diagnosticArtifactClassification,
+  diagnosticRasterPolicyReceipt,
+  resolveDiagnosticRasterContract
+} from '/harness/diagnostic-raster-contract.js';
 
 const EXPECTED_VERSION = '2.21.0-beta.14';
 const EXPECTED_RUNTIME_REVISION = 'd5fe888';
@@ -131,6 +139,7 @@ if (hostStartGateParameter !== null && hostStartGateParameter !== '1') {
   throw new Error('host_start_gate must equal 1 when present');
 }
 const hostStartGateEnabled = hostStartGateParameter === '1';
+const requestedDiagnosticRasterContractParameter = params.get('diagnostic_raster_contract');
 const status = document.querySelector('#status');
 // The status panel is useful for an interactive smoke, but it would obscure
 // the top-left of a formal device presentation and contaminate an external
@@ -665,6 +674,9 @@ async function collectFrameSamples(
 
 async function main() {
   window.__PLAYCANVAS_HARNESS_STATE__ = 'initializing';
+  const requestedDiagnosticRasterContract = resolveDiagnosticRasterContract(
+    requestedDiagnosticRasterContractParameter
+  );
   if (version !== EXPECTED_VERSION || revision !== EXPECTED_RUNTIME_REVISION) {
     fail('runtime identity mismatch', { version, revision });
   }
@@ -761,6 +773,13 @@ async function main() {
 
   const app = new Application(canvas, { graphicsDevice: device });
   activeApplication = app;
+  const diagnosticRasterContract = applyDiagnosticRasterContract(
+    ShaderChunks.get(device, SHADERLANGUAGE_WGSL),
+    requestedDiagnosticRasterContract
+  );
+  const diagnosticArtifact = diagnosticArtifactClassification(
+    requestedDiagnosticRasterContract
+  );
   app.setCanvasFillMode(FILLMODE_NONE);
   app.setCanvasResolution(RESOLUTION_FIXED, requestedWidth, requestedHeight);
   app.graphicsDevice.maxPixelRatio = 1;
@@ -772,6 +791,18 @@ async function main() {
     app.scene.gsplat.foveationStrength = 0;
     app.scene.gsplat.antiAlias = false;
   }
+  const diagnosticRasterPolicy = diagnosticRasterPolicyReceipt(
+    diagnosticRasterContract,
+    app.scene.gsplat.alphaClipForward
+  );
+  const rasterCutoffPolicy = diagnosticArtifact.diagnostic
+    ? {
+        configuredSupportAlphaClipForward:
+          diagnosticRasterPolicy.configured_support_alpha_clip_forward,
+        effectiveForwardFragmentCutoff:
+          diagnosticRasterPolicy.effective_forward_fragment_cutoff
+      }
+    : { alphaClipForward: app.scene.gsplat.alphaClipForward };
   runtimeSignals.rendererResolved = rendererLabel(app.scene.gsplat.currentRenderer);
 
   const diagnostic = qualification?.generated === true;
@@ -1052,7 +1083,7 @@ async function main() {
     policies: {
       dynamicResolution: 'disabled_fixed_backing',
       upscaling: 'disabled',
-      evidenceClass: qualification?.evidenceClass ?? 'smoke',
+      evidenceClass: diagnosticArtifact.evidenceClass ?? qualification?.evidenceClass ?? 'smoke',
       lod: 'disabled_full_ply',
       renderer: 'raster_gpu_sort',
       sourceCoordinateConversion: qualificationMode ? 'rdf_to_playcanvas_rub_entity_yz_reflection' : 'none',
@@ -1063,11 +1094,12 @@ async function main() {
       externalCaptureState: capture?.presentationCapture?.ready_for_external_capture === true
         ? 'ready_after_fixed_trace_frames_and_terminal_queue_drain'
         : 'not_applicable',
-      alphaClipForward: qualificationMode ? 1 / 256 : app.scene.gsplat.alphaClipForward,
+      ...rasterCutoffPolicy,
       minPixelSize: app.scene.gsplat.minPixelSize,
       minContribution: app.scene.gsplat.minContribution,
       foveationStrength: app.scene.gsplat.foveationStrength,
-      antiAlias: app.scene.gsplat.antiAlias
+      antiAlias: app.scene.gsplat.antiAlias,
+      diagnosticRasterContract: diagnosticRasterPolicy
     },
     capture
   };
