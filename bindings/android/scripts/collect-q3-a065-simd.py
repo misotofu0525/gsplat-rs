@@ -681,6 +681,28 @@ def validate_a065_artifact_renderer(manifest: dict[str, Any]) -> None:
     )
 
 
+A065_IDENTITY_FIELDS = (
+    "schema",
+    "source",
+    "serial",
+    "manufacturer",
+    "model",
+    "device",
+    "android_release",
+    "android_sdk",
+    "hardware",
+    "build_fingerprint",
+    "device_properties",
+    "renderer_identity",
+)
+
+
+def a065_identity(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable device identity, excluding launch readiness state."""
+
+    return {field: receipt.get(field) for field in A065_IDENTITY_FIELDS}
+
+
 def preflight_a065(args: argparse.Namespace) -> dict[str, Any]:
     try:
         adb = BASE.resolve_adb(args.adb, dry_run=False)
@@ -1456,12 +1478,15 @@ def validate_collected_run(
 
 def bind_device_identity(result: dict[str, Any], run: dict[str, Any]) -> None:
     expected_environment = result.get("preflight_device")
+    run_environment = run.get("environment")
     require_matrix_identity(
-        expected_environment == run.get("environment"),
+        isinstance(expected_environment, dict)
+        and isinstance(run_environment, dict)
+        and a065_identity(expected_environment) == a065_identity(run_environment),
         "A065 preflight/run device identity changed during Q3",
     )
     identity = {
-        "android_environment_receipt": run.get("environment"),
+        "android_environment_receipt": run_environment,
         "adapter": run.get("adapter"),
         "backend": run.get("backend"),
     }

@@ -1081,6 +1081,49 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                 with self.assertRaisesRegex(COLLECTOR.IntegrityRejectedError, error):
                     COLLECTOR.validate_a065_artifact_renderer(manifest)
 
+    def test_a065_matrix_identity_excludes_only_launch_readiness(self) -> None:
+        environment = {
+            "schema": "gsplat-android-environment-receipt/v2",
+            "source": "adb_getprop",
+            "serial": "fixture-serial",
+            "manufacturer": "Nothing",
+            "model": "A065",
+            "device": "Pong",
+            "android_release": "15",
+            "android_sdk": "35",
+            "hardware": "qcom",
+            "build_fingerprint": "Nothing/Pong/fixture",
+            "device_properties": {
+                "soc_model_property": {"value": "SM8475"},
+                "vulkan_hal_property": {"value": "adreno"},
+            },
+            "renderer_identity": {"backend": {"source": "benchmark_manifest"}},
+        }
+        preflight = copy.deepcopy(environment)
+        preflight["launch_readiness"] = {
+            "initial": {"ready": False},
+            "final": {"ready": True},
+        }
+        result = {"preflight_device": preflight}
+        run = {
+            "environment": copy.deepcopy(environment),
+            "adapter": None,
+            "backend": "vulkan",
+        }
+        COLLECTOR.bind_device_identity(result, run)
+        self.assertEqual(result["device"]["android_environment_receipt"], environment)
+
+        drifted = copy.deepcopy(run)
+        drifted["environment"]["build_fingerprint"] = "Nothing/Pong/other"
+        with self.assertRaisesRegex(
+            COLLECTOR.MatrixInfrastructureError,
+            "device identity changed",
+        ):
+            COLLECTOR.bind_device_identity(
+                {"preflight_device": preflight},
+                drifted,
+            )
+
     def test_q3_screen_failure_is_environment_prerequisite_before_output_claim(self) -> None:
         expected_commit = "1" * 40
         with tempfile.TemporaryDirectory() as directory:
