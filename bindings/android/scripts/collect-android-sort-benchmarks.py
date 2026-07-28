@@ -61,6 +61,7 @@ PACKAGE = "com.gsplat.example"
 PACKAGE_REPLACEMENT_SETTLE_SECONDS = 5.0
 ACTIVITY = f"{PACKAGE}/.MainActivity"
 LOG_TAG = "GsplatExample:I"
+ACTIVITY_MANAGER_LOG_TAG = "ActivityManager:I"
 BACKENDS = ("cpu", "gpu", "adaptive")
 GPU_PRODUCERS = ("post_sort", "preproject")
 GEOMETRY_PATHS = ("packed", "direct")
@@ -77,7 +78,7 @@ DEVICE_DATASET_PREFIX = "/data/local/tmp/gsplat-benchmark-"
 DEVICE_TRACE_PREFIX = "/data/local/tmp/gsplat-camera-trace-"
 Q3_PHASE_SCHEMA = "gsplat-q3-android-protocol-phase/v1"
 Q3_PREPARED_INPUTS_SCHEMA = "gsplat-q3-android-prepared-inputs/v1"
-Q3_INSTALLED_APK_SCHEMA = "gsplat-q3-android-installed-apk/v1"
+Q3_INSTALLED_APK_SCHEMA = "gsplat-q3-android-installed-apk/v2"
 CAMERA_RECEIPT_SCHEMA = "gsplat-surface-camera-receipt/v1"
 ANDROID_ENVIRONMENT_RECEIPT_SCHEMA = "gsplat-android-environment-receipt/v2"
 CAMERA_RECEIPT_TOLERANCE = 5.0e-5
@@ -592,20 +593,36 @@ def install_apk(
     serial: str,
     apk: pathlib.Path,
     timeout_seconds: float,
+    *,
+    replace: bool = True,
 ) -> None:
-    """Install one exact APK once and wait for vendor package queues to settle."""
+    """Install one exact APK once and drain the package-manager queues."""
+    install_args = adb_args(
+        adb,
+        serial,
+        "install",
+        "--no-streaming",
+        "--no-fastdeploy",
+    )
+    if replace:
+        install_args.append("-r")
+    install_args.append(str(apk))
     run_command(
-        adb_args(
-            adb,
-            serial,
-            "install",
-            "--no-streaming",
-            "--no-fastdeploy",
-            "-r",
-            str(apk),
-        ),
+        install_args,
         timeout=timeout_seconds,
     )
+    wait_for_package_handlers(adb, serial)
+    if replace:
+        # Some vendor builds report both package queues idle before
+        # installPackageLI delivers the final replacement. Keep the historical
+        # bounded compatibility wait for ordinary replacement callers. Q3 uses
+        # a proven-fresh install instead of treating elapsed time as evidence.
+        time.sleep(PACKAGE_REPLACEMENT_SETTLE_SECONDS)
+
+
+def wait_for_package_handlers(adb: pathlib.Path | str, serial: str) -> None:
+    """Drain the foreground and background PackageManager handler queues."""
+
     run_command(
         adb_args(
             adb,
@@ -632,12 +649,6 @@ def install_apk(
         ),
         timeout=15.0,
     )
-    # Some vendor builds report both package queues idle before installPackageLI
-    # delivers the final package replacement. A physical A065 observation
-    # arrived 2.68 seconds after the installed-APK receipt and killed an app
-    # launched behind the former two-second window. Keep this bounded wait
-    # inside the single install attempt; callers still never retry installation.
-    time.sleep(PACKAGE_REPLACEMENT_SETTLE_SECONDS)
 
 
 def inject_device_dataset(
@@ -1023,6 +1034,26 @@ def formal_benchmark_rejection(log: str) -> tuple[bool, str | None]:
     return marker_seen, None
 
 
+def package_terminated_after_activity_start(log: str) -> bool:
+    """Bind an ActivityManager termination to this run's launched app PID."""
+
+    start = re.search(
+        r"(?m)^\S+\s+\S+\s+(?P<pid>\d+)\s+\d+\s+[A-Z]\s+GsplatExample: "
+        r"(?:surfaceCreated|createSurfaceRenderer start|"
+        r"qualification_q3_cpu_kernel_requested=).*$",
+        log,
+    )
+    if start is None:
+        return False
+    suffix = log[start.end() :]
+    pid = re.escape(start.group("pid"))
+    return re.search(
+        rf"ActivityManager: (?:Killing {pid}:{re.escape(PACKAGE)}\b|"
+        rf"Force stopping {re.escape(PACKAGE)}\b)",
+        suffix,
+    ) is not None
+
+
 def collect_logcat_run(
     adb: pathlib.Path | str,
     serial: str,
@@ -1036,7 +1067,15 @@ def collect_logcat_run(
     run_command(adb_args(adb, serial, "shell", "am", "force-stop", PACKAGE))
 
     log_command = adb_args(
-        adb, serial, "logcat", "-v", "threadtime", "-s", LOG_TAG, "*:S"
+        adb,
+        serial,
+        "logcat",
+        "-v",
+        "threadtime",
+        "-s",
+        LOG_TAG,
+        ACTIVITY_MANAGER_LOG_TAG,
+        "*:S",
     )
     print(f"+ {command_text(log_command)} > {log_path}", flush=True)
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -1075,6 +1114,11 @@ def collect_logcat_run(
                         pass
                     else:
                         return contents
+                if package_terminated_after_activity_start(contents):
+                    raise RuntimeError(
+                        "benchmark app process exited after Activity launch before "
+                        f"a complete summary; see {log_path}"
+                    )
                 if process.poll() is not None:
                     raise RuntimeError(
                         f"logcat exited before benchmark completion; see {log_path}"
@@ -2963,6 +3007,13 @@ def load_q3_installed_apk_receipt(
         raise RuntimeError("Q3 installed-APK sequence is invalid")
     if receipt.get("lane") not in {"scalar", "neon", "runtime"}:
         raise RuntimeError("Q3 installed-APK lane is invalid")
+    if (
+        receipt.get("install_mode") != "fresh"
+        or receipt.get("replacement_requested") is not False
+        or receipt.get("preinstall_absence_verified") is not True
+        or type(receipt.get("prior_package_removed")) is not bool
+    ):
+        raise RuntimeError("Q3 installed APK lacks fresh-install proof")
     for name, expected in (
         ("local_apk", apk_identity),
         ("installed_apk", apk_identity),

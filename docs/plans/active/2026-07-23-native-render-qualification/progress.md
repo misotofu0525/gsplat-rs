@@ -780,6 +780,35 @@ original two P1 findings were addressed by same-ticket execution carriage and
 runtime all-target Clippy. No A065 run has occurred with this mechanism yet;
 device evidence remains pending a clean commit and fixed-SHA review.
 
+The first single-APK device transaction at clean reviewed commit `bb983fb`
+stopped before its first Scalar correctness frame and publishes no performance
+evidence. The one runtime APK installed successfully, both package queues
+reported `Success`, its device SHA matched, physical element parity passed and
+the 50k workload/trace identities matched. The Activity then logged
+`qualification_q3_cpu_kernel_requested=scalar`, `surfaceCreated` and
+`createSurfaceRenderer start`, but Nothing's PackageManager delivered a delayed
+`installPackageLI` at `01:31:06.915` and killed PID 2873 at `01:31:06.920`.
+The installed-APK receipt was written at `01:31:04.224`, so this was the same
+2.69-second post-receipt vendor race even though the install helper had already
+used its five-second pre-receipt settle window. The host verified that the app
+process no longer existed and interrupted the otherwise unrecoverable
+1,800-second wait once; it did not rerun or retain a cell. The incomplete
+staging directory is
+`target/qualification/.q3-a065-simd-bb983fbda964.staging-260009acd9314d0297a5d42c386d5324`.
+
+The bounded infrastructure correction does not guess a longer settle time. Q3
+now removes only the prior `com.gsplat.example` test package, drains both
+PackageManager handlers, proves `pm path` is empty, and performs one fresh
+non-streaming install without `-r`. Its v2 installed-APK receipt binds that
+fresh-generation proof to the exact APK/native hashes; all later lanes reuse
+it. This structurally removes the old package generation that produced both
+observed replacement kills. The shared collector also retains ActivityManager
+termination records in the same logcat stream; if a delayed package event or
+crash removes the launched process, collection rejects promptly without
+polling ADB during measured frames. Q3 stays **Active**:
+the interrupted attempt is infrastructure diagnosis only, and a new exact-SHA
+transaction is required before any Scalar/NEON timing claim.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8

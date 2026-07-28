@@ -153,11 +153,13 @@ class DeviceMatrixSession:
             return self.installed_receipt_path, False
         runtime_receipt = self.lane_receipts["scalar"]
         apk = self.stage / runtime_receipt["apk_path"]
+        prior_package_removed = remove_existing_q3_package(self)
         BASE.install_apk(
             self.adb,
             self.serial,
             apk,
             min(timeout_seconds, Q3_APK_INSTALL_TIMEOUT_SECONDS),
+            replace=False,
         )
         installed = BASE.verify_installed_apk(self.adb, self.serial, apk)
         self.install_count += 1
@@ -168,6 +170,10 @@ class DeviceMatrixSession:
             "lane": Q3_RUNTIME_BUILD,
             "install_sequence": self.install_count,
             "installed_at_utc": BASE.utc_now(),
+            "install_mode": "fresh",
+            "replacement_requested": False,
+            "preinstall_absence_verified": True,
+            "prior_package_removed": prior_package_removed,
             "local_apk": runtime_receipt["apk"],
             "installed_apk": installed,
             "native_library": runtime_receipt["native_library"],
@@ -198,6 +204,67 @@ class DeviceMatrixSession:
             "installation_events": self.installation_events,
             "workload_events": self.workload_events,
         }
+
+
+def q3_package_is_installed(session: DeviceMatrixSession) -> bool:
+    """Return package presence without interpreting an installed generation."""
+
+    command = BASE.adb_args(
+        session.adb,
+        session.serial,
+        "shell",
+        "pm",
+        "path",
+        BASE.PACKAGE,
+    )
+    print(f"+ {BASE.command_text(command)}", flush=True)
+    completed = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=10.0,
+    )
+    output = completed.stdout.strip()
+    if completed.returncode == 1 and not output:
+        return False
+    require_matrix_identity(
+        completed.returncode == 0
+        and bool(output)
+        and all(line.startswith("package:") for line in output.splitlines()),
+        "unexpected Q3 package-path response: "
+        f"rc={completed.returncode} output={output!r}",
+    )
+    return True
+
+
+def remove_existing_q3_package(session: DeviceMatrixSession) -> bool:
+    """Make the Q3 test package absent before its one fresh installation."""
+
+    prior_package_removed = q3_package_is_installed(session)
+    if prior_package_removed:
+        result = BASE.run_command(
+            BASE.adb_args(
+                session.adb,
+                session.serial,
+                "uninstall",
+                BASE.PACKAGE,
+            ),
+            capture=True,
+            timeout=Q3_APK_INSTALL_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        require_matrix_identity(
+            result == "Success",
+            f"failed to remove prior Q3 test package: {result}",
+        )
+        BASE.wait_for_package_handlers(session.adb, session.serial)
+    require_matrix_identity(
+        not q3_package_is_installed(session),
+        "Q3 test package remained installed before fresh install",
+    )
+    return prior_package_removed
 
 
 def ensure_matrix_lane(

@@ -1577,6 +1577,119 @@ class SafetyTests(unittest.TestCase):
         sleep.assert_called_once_with(COLLECTOR.PACKAGE_REPLACEMENT_SETTLE_SECONDS)
         self.assertEqual(COLLECTOR.PACKAGE_REPLACEMENT_SETTLE_SECONDS, 5.0)
 
+    def test_fresh_install_is_one_attempt_without_replace_or_sleep(self) -> None:
+        with (
+            mock.patch.object(COLLECTOR, "run_command") as run,
+            mock.patch.object(COLLECTOR.time, "sleep") as sleep,
+        ):
+            COLLECTOR.install_apk(
+                pathlib.Path("adb"),
+                "fixture-serial",
+                pathlib.Path("fixture.apk"),
+                60.0,
+                replace=False,
+            )
+
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            [
+                "adb",
+                "-s",
+                "fixture-serial",
+                "install",
+                "--no-streaming",
+                "--no-fastdeploy",
+                "fixture.apk",
+            ],
+        )
+        sleep.assert_not_called()
+
+    def test_collect_logcat_run_fails_fast_when_launched_app_is_killed(self) -> None:
+        log = (
+            "07-29 01:31:06.632  2873  2873 I GsplatExample: "
+            "qualification_q3_cpu_kernel_requested=scalar\n"
+            "07-29 01:31:06.680  2873  2873 I GsplatExample: surfaceCreated\n"
+            "07-29 01:31:06.681  2873  2933 I GsplatExample: "
+            "createSurfaceRenderer start generation=1\n"
+            "07-29 01:31:06.920  2819  2856 I ActivityManager: "
+            "Killing 2873:com.gsplat.example/u0a284: "
+            "stop com.gsplat.example due to installPackageLI\n"
+        )
+        process = mock.Mock()
+        process.poll.return_value = None
+
+        def start_logcat(*_args, **kwargs):
+            kwargs["stdout"].write(log)
+            kwargs["stdout"].flush()
+            return process
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = pathlib.Path(directory) / "killed-after-launch.logcat.txt"
+            with (
+                mock.patch.object(
+                    COLLECTOR,
+                    "run_command",
+                    return_value=COLLECTOR.subprocess.CompletedProcess([], 0, ""),
+                ),
+                mock.patch.object(
+                    COLLECTOR.subprocess, "Popen", side_effect=start_logcat
+                ),
+                mock.patch.object(COLLECTOR.time, "sleep") as sleep,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "benchmark app process exited after Activity launch",
+                ) as raised:
+                    COLLECTOR.collect_logcat_run(
+                        "adb",
+                        "serial",
+                        ["shell", "am", "start", "example"],
+                        log_path,
+                        timeout_seconds=1800.0,
+                    )
+
+            sleep.assert_not_called()
+            process.terminate.assert_called_once_with()
+            self.assertIn(str(log_path), str(raised.exception))
+            self.assertEqual(log_path.read_text(), log)
+
+    def test_package_termination_is_scoped_after_start_and_to_launched_pid(self) -> None:
+        prelaunch_force_stop = (
+            "07-29 01:31:06.300  2819  2856 I ActivityManager: "
+            "Force stopping com.gsplat.example appid=10284 user=0\n"
+        )
+        start = (
+            "07-29 01:31:06.632  2873  2873 I GsplatExample: "
+            "qualification_q3_cpu_kernel_requested=scalar\n"
+        )
+        self.assertFalse(
+            COLLECTOR.package_terminated_after_activity_start(
+                prelaunch_force_stop + start
+            )
+        )
+        self.assertFalse(
+            COLLECTOR.package_terminated_after_activity_start(
+                start
+                + "07-29 01:31:06.920  2819  2856 I ActivityManager: "
+                + "Killing 9999:com.gsplat.example/u0a284: unrelated old pid\n"
+            )
+        )
+        self.assertTrue(
+            COLLECTOR.package_terminated_after_activity_start(
+                start
+                + "07-29 01:31:06.920  2819  2856 I ActivityManager: "
+                + "Killing 2873:com.gsplat.example/u0a284: installPackageLI\n"
+            )
+        )
+        self.assertTrue(
+            COLLECTOR.package_terminated_after_activity_start(
+                start
+                + "07-29 01:31:06.920  2819  2856 I ActivityManager: "
+                + "Force stopping com.gsplat.example appid=10284 user=-1\n"
+            )
+        )
+
     def test_formal_rejection_requires_marker_and_throwable_reason(self) -> None:
         marker = "I/GsplatExample: formal benchmark artifact rejected"
         self.assertEqual(COLLECTOR.formal_benchmark_rejection(marker), (True, None))

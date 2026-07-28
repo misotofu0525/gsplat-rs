@@ -165,14 +165,18 @@ hash-bound prepared-input and installed runtime-APK receipts without automatic
 retry.
 
 Q3 builds one qualification-only runtime-selector APK and installs it exactly
-once with `adb install --no-streaming --no-fastdeploy -r`, a 60-second install
-timeout, package-handler drains and a five-second vendor replacement settle
-window. Every later Scalar/Neon cell reuses the same APK/native hash and selects
-its lane at Activity process launch; every accepted Ready terminal must carry
-the same-ticket kernel recorded by the actual refreshed radix/value-unpack
-execution. Reused order and failure terminals report the kernel unavailable and
-fail Q3 admission. There is no lane-transition reinstall, streamed-install
-fallback or automatic install retry. Keep
+once as a fresh test-package generation. If `com.gsplat.example` already
+exists, the collector uninstalls only that package, drains both PackageManager
+handlers and proves `pm path` is empty before one
+`adb install --no-streaming --no-fastdeploy` call without `-r`. The install is
+capped at 60 seconds, then hash/size and `run-as` are verified and recorded in
+a versioned receipt. Every later Scalar/Neon cell reuses the same APK/native
+hash and selects its lane at Activity process launch; every accepted Ready
+terminal must carry the same-ticket kernel recorded by the actual refreshed
+radix/value-unpack execution. Reused order and failure terminals report the
+kernel unavailable and fail Q3 admission. There is no lane-transition
+reinstall, replacement-install race, streamed-install fallback or automatic
+install retry. Keep
 `ANDROID_SDK_ROOT` and `JAVA_HOME` explicit when Homebrew discovery is slow;
 the values printed by a successful `doctor` are supported inputs to the
 unchanged `command` and `run` invocations.

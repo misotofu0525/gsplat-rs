@@ -671,6 +671,10 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             "package": COLLECTOR.BASE.PACKAGE,
             "lane": "scalar",
             "install_sequence": 1,
+            "install_mode": "fresh",
+            "replacement_requested": False,
+            "preinstall_absence_verified": True,
+            "prior_package_removed": True,
             "local_apk": apk,
             "installed_apk": {
                 "device_path": "/data/app/base.apk",
@@ -697,6 +701,14 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                 )["install_sequence"],
                 1,
             )
+            del installed["preinstall_absence_verified"]
+            installed_path.write_text(
+                COLLECTOR.json.dumps(installed), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(RuntimeError, "fresh-install proof"):
+                COLLECTOR.BASE.load_q3_installed_apk_receipt(
+                    installed_path, args, apk, native
+                )
             prepared["dataset"]["package_internal"]["sha256"] = "0" * 64
             prepared_path.write_text(COLLECTOR.json.dumps(prepared), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "device identity drifted"):
@@ -721,6 +733,9 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
 
             requested_lanes = []
             with (
+                mock.patch.object(
+                    COLLECTOR, "remove_existing_q3_package", return_value=True
+                ),
                 mock.patch.object(COLLECTOR.BASE, "install_apk") as install_mock,
                 mock.patch.object(COLLECTOR.BASE, "verify_installed_apk", return_value=installed),
             ):
@@ -737,6 +752,7 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                         requested_lanes.append(lane_name)
                         session.ensure_lane(lane_name, 10.0)
             self.assertEqual(install_mock.call_count, 1)
+            self.assertFalse(install_mock.call_args.kwargs["replace"])
             self.assertEqual(session.install_count, 1)
             self.assertTrue(
                 all(
@@ -759,6 +775,9 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                 "run_as_verified": True,
             }
             with (
+                mock.patch.object(
+                    COLLECTOR, "remove_existing_q3_package", return_value=True
+                ),
                 mock.patch.object(COLLECTOR.BASE, "install_apk") as install,
                 mock.patch.object(
                     COLLECTOR.BASE,
@@ -773,7 +792,104 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                 "fixture-serial",
                 stage / "build/runtime/sample-app-debug.apk",
                 COLLECTOR.Q3_APK_INSTALL_TIMEOUT_SECONDS,
+                replace=False,
             )
+
+    def test_q3_fresh_install_removes_prior_package_and_proves_absence(self) -> None:
+        receipts = lane_receipts()
+        receipts["scalar"]["apk_path"] = "build/runtime/sample-app-debug.apk"
+        with tempfile.TemporaryDirectory() as directory:
+            stage = pathlib.Path(directory)
+            session = COLLECTOR.DeviceMatrixSession(
+                "adb", "fixture-serial", stage, receipts
+            )
+            installed = {
+                "device_path": "/data/app/base.apk",
+                **receipts["scalar"]["apk"],
+                "run_as_verified": True,
+            }
+            with (
+                mock.patch.object(
+                    COLLECTOR, "q3_package_is_installed", side_effect=[True, False]
+                ) as package_present,
+                mock.patch.object(
+                    COLLECTOR.BASE,
+                    "run_command",
+                    return_value=subprocess.CompletedProcess([], 0, "Success\n"),
+                ) as run,
+                mock.patch.object(COLLECTOR.BASE, "wait_for_package_handlers") as wait,
+                mock.patch.object(COLLECTOR.BASE, "install_apk") as install,
+                mock.patch.object(
+                    COLLECTOR.BASE, "verify_installed_apk", return_value=installed
+                ),
+            ):
+                receipt_path, installed_now = session.ensure_lane("scalar", 60.0)
+
+            self.assertTrue(installed_now)
+            self.assertEqual(package_present.call_count, 2)
+            self.assertEqual(
+                run.call_args.args[0][-2:],
+                ["uninstall", COLLECTOR.BASE.PACKAGE],
+            )
+            wait.assert_called_once_with("adb", "fixture-serial")
+            install.assert_called_once_with(
+                "adb",
+                "fixture-serial",
+                stage / "build/runtime/sample-app-debug.apk",
+                60.0,
+                replace=False,
+            )
+            receipt = COLLECTOR.json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["install_mode"], "fresh")
+            self.assertFalse(receipt["replacement_requested"])
+            self.assertTrue(receipt["preinstall_absence_verified"])
+            self.assertTrue(receipt["prior_package_removed"])
+
+    def test_q3_package_presence_accepts_android_missing_package_exit_one(self) -> None:
+        session = COLLECTOR.DeviceMatrixSession(
+            "adb", "fixture-serial", pathlib.Path("stage"), {}
+        )
+        with mock.patch.object(
+            COLLECTOR.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 1, ""),
+                subprocess.CompletedProcess(
+                    [], 0, "package:/data/app/com.gsplat.example/base.apk\n"
+                ),
+            ],
+        ):
+            self.assertFalse(COLLECTOR.q3_package_is_installed(session))
+            self.assertTrue(COLLECTOR.q3_package_is_installed(session))
+
+    def test_q3_fresh_install_rejects_if_uninstall_does_not_make_package_absent(self) -> None:
+        receipts = lane_receipts()
+        receipts["scalar"]["apk_path"] = "build/runtime/sample-app-debug.apk"
+        with tempfile.TemporaryDirectory() as directory:
+            stage = pathlib.Path(directory)
+            session = COLLECTOR.DeviceMatrixSession(
+                "adb", "fixture-serial", stage, receipts
+            )
+            with (
+                mock.patch.object(
+                    COLLECTOR, "q3_package_is_installed", side_effect=[True, True]
+                ),
+                mock.patch.object(
+                    COLLECTOR.BASE,
+                    "run_command",
+                    return_value=subprocess.CompletedProcess([], 0, "Success\n"),
+                ),
+                mock.patch.object(COLLECTOR.BASE, "wait_for_package_handlers"),
+                mock.patch.object(COLLECTOR.BASE, "install_apk") as install,
+            ):
+                with self.assertRaisesRegex(
+                    COLLECTOR.MatrixInfrastructureError,
+                    "remained installed before fresh install",
+                ):
+                    COLLECTOR.ensure_matrix_lane(session, "scalar", 60.0)
+
+            install.assert_not_called()
+            self.assertFalse((stage / "installations").exists())
 
     def test_workload_preparation_pushes_and_copies_only_at_workload_boundaries(self) -> None:
         trace_identity = {"bytes": 17, "sha256": "e" * 64}
@@ -1467,6 +1583,9 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                 "run_as_verified": True,
             }
             with (
+                mock.patch.object(
+                    COLLECTOR, "remove_existing_q3_package", return_value=True
+                ),
                 mock.patch.object(COLLECTOR.BASE, "install_apk") as install,
                 mock.patch.object(
                     COLLECTOR.BASE, "verify_installed_apk", return_value=installed
