@@ -1232,3 +1232,40 @@ incomplete spawn receipt are rejected. A later formal attempt still requires
 a new reviewed SHA, regenerated same-SHA authority and Wasm assets, a fresh
 root, identical dry runs and a separate go/no-go. Attempt 5 is retained
 unchanged and is never reused.
+
+### Q1 formal attempt 6 terminal and gsplat-rs throughput receipt repair (2026-07-28)
+
+The separately declared attempt 6 at reviewed root SHA
+`f8ad83cb571345f65ddef58f6b4235a395174c53` completed both gsplat-rs control
+views and stopped while materializing its first throughput artifact. PlayCanvas
+did not run, no complete timed endpoint pair exists, and this immutable attempt
+supports no quality or performance comparison. Its blocker keeps automatic
+retry disabled; the retained browser ownership receipt is verified and cleanup
+reports no surviving marked process or process group.
+
+The 80-frame renderer run completed, but the Q1 throughput decorator replaced
+the deliberately unavailable contributor count with `contributor: null` while
+leaving `exact_contributor_compaction` absent. The canonical artifact contract
+treats those keys as one optional evidence claim and correctly rejected the
+half-present pair. Throughput obtains exact V/C/D only from its two same-SHA
+control bindings, so the repair omits both optional contributor keys while
+continuing to publish visible/drawn as unavailable and retaining all three
+paths in `unavailable_fields`.
+
+A read-only replay of the retained 80-frame staging artifact after that repair
+then found a second stale owner before another browser run: the canonical
+Python validator still admitted only the older current-stats-poll terminal,
+while both the Web producer and Q1 fairness gate require the newer direct
+`queue.onSubmittedWorkDone` completion callback. The validator now admits that
+second form only with its exact timestamp source, V2 overhead kind, competitor
+Promise primitive, callback flag and same-primitive fairness receipt; the
+legacy fixture remains admitted under its original, field-absent contract.
+Mutation tests reject a wrong kind, missing fairness receipt and mismatched
+competitor primitive.
+
+This is an artifact-schema repair only. It does not change renderer execution,
+scene membership, camera input, resolution, timing, either competitor endpoint
+or the admission validator. A later formal attempt still requires a new
+reviewed SHA, regenerated same-SHA authority and Wasm assets, a fresh root,
+identical dry runs and a separate go/no-go. Attempt 6 is retained unchanged and
+is never reused.

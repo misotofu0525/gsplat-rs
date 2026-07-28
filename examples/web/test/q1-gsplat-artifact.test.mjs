@@ -72,6 +72,9 @@ test("Q1 throughput retains only control-bound counts and the continuous termina
   const summary = JSON.parse(parsed.summaries[0]);
   assert.equal(manifest.q1_comparison.artifact_role, "throughput");
   assert.deepEqual(frames[0].visible, null);
+  assert.equal(Object.hasOwn(frames[0], "contributor"), false);
+  assert.equal(Object.hasOwn(frames[0], "exact_contributor_compaction"), false);
+  assert.deepEqual(frames[0].drawn, null);
   assert.equal(summary.sustained_throughput.mean_frame_ms, 1);
   assert.equal(summary.sustained_throughput.mean_fps, 1000);
 });

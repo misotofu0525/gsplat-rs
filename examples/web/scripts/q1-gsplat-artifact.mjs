@@ -177,7 +177,12 @@ export function decorateQ1GsplatThroughput({
   }
   for (const frame of frames) {
     frame.visible = null;
-    frame.contributor = null;
+    // Throughput counts are intentionally unavailable and are bound to the
+    // exact control captures instead. The canonical artifact schema treats
+    // contributor and exact_contributor_compaction as one optional contract,
+    // so omit both rather than publishing a half-present null receipt.
+    delete frame.contributor;
+    delete frame.exact_contributor_compaction;
     frame.drawn = null;
     delete frame.capture_depth_precision;
   }

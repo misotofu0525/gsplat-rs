@@ -369,6 +369,48 @@ frames_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n")
 PY
 python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-throughput-valid"
 
+cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-direct-callback-valid"
+python3 - "$TMP_DIR/terminal-queue-direct-callback-valid/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+window = value["benchmark_window"]
+window["completion_primitive"] = "gpu_queue_on_submitted_work_done"
+window["queue_completion_timestamp_source"] = "wgpu_queue_callback_performance_now"
+window["terminal_receipt_overhead"].update({
+    "kind": "renderer_current_stats_map_plus_direct_queue_callback_v2",
+    "competitor_terminal_primitive": "queue_on_submitted_work_done_promise",
+    "queue_completion_callback": True,
+    "fairness_assessment": "same_queue_completion_primitive",
+})
+path.write_text(json.dumps(value))
+PY
+python3 "$VALIDATOR" "$TMP_DIR/terminal-queue-direct-callback-valid"
+
+for mutation in wrong-kind missing-fairness wrong-competitor-primitive; do
+  target="$TMP_DIR/terminal-queue-direct-callback-$mutation"
+  cp -R "$TMP_DIR/terminal-queue-direct-callback-valid" "$target"
+  python3 - "$target/manifest.json" "$mutation" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+mutation = sys.argv[2]
+value = json.loads(path.read_text())
+overhead = value["benchmark_window"]["terminal_receipt_overhead"]
+if mutation == "wrong-kind":
+    overhead["kind"] = "renderer_current_stats_same_submission_map_v1"
+elif mutation == "missing-fairness":
+    overhead.pop("fairness_assessment")
+elif mutation == "wrong-competitor-primitive":
+    overhead["competitor_terminal_primitive"] = "request_animation_frame"
+path.write_text(json.dumps(value))
+PY
+  if python3 "$VALIDATOR" "$target" >"$target.out" 2>&1; then
+    echo "expected direct queue callback $mutation to fail" >&2
+    exit 1
+  fi
+  grep -Fq 'terminal receipt overhead contract mismatch' "$target.out"
+done
+
 cp -R "$TMP_DIR/terminal-queue-throughput-valid" "$TMP_DIR/terminal-queue-fixed-compact-valid"
 python3 - "$TMP_DIR/terminal-queue-fixed-compact-valid" <<'PY'
 import json, pathlib, sys

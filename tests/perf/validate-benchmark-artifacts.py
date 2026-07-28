@@ -550,14 +550,30 @@ def validate_terminal_queue_throughput(
     expected_warmup_boundary = "same_submission_result_ready_before_first_measured_input" \
         if warmup_count > 0 else "not_applicable_no_warmup"
     expected_residual = "excluded" if warmup_count > 0 else "not_applicable"
-    if overhead.get("kind") != "renderer_current_stats_same_submission_map_v1" or \
-            require_int(overhead, "readback_buffer_bytes") != 8 or \
-            require_int(overhead, "encoded_copy_bytes") not in {4, 8} or \
-            require_int(overhead, "extra_queue_submissions") != 0 or \
-            overhead.get("map_async_result_required") is not True or \
-            overhead.get("included_in_terminal_window") is not True or \
-            overhead.get("warmup_terminal_boundary") != expected_warmup_boundary or \
-            overhead.get("residual_warmup_queue_tail") != expected_residual:
+    common_overhead_valid = \
+        require_int(overhead, "readback_buffer_bytes") == 8 and \
+            require_int(overhead, "encoded_copy_bytes") in {4, 8} and \
+            require_int(overhead, "extra_queue_submissions") == 0 and \
+            overhead.get("map_async_result_required") is True and \
+            overhead.get("included_in_terminal_window") is True and \
+            overhead.get("warmup_terminal_boundary") == expected_warmup_boundary and \
+            overhead.get("residual_warmup_queue_tail") == expected_residual
+    direct_queue_completion = \
+        window.get("completion_primitive") == "gpu_queue_on_submitted_work_done" and \
+        window.get("queue_completion_timestamp_source") == \
+            "wgpu_queue_callback_performance_now" and \
+        overhead.get("kind") == \
+            "renderer_current_stats_map_plus_direct_queue_callback_v2" and \
+        overhead.get("competitor_terminal_primitive") == \
+            "queue_on_submitted_work_done_promise" and \
+        overhead.get("queue_completion_callback") is True and \
+        overhead.get("fairness_assessment") == "same_queue_completion_primitive"
+    legacy_current_stats_completion = \
+        window.get("completion_primitive") is None and \
+        window.get("queue_completion_timestamp_source") is None and \
+        overhead.get("kind") == "renderer_current_stats_same_submission_map_v1"
+    if not common_overhead_valid or not (
+            direct_queue_completion or legacy_current_stats_completion):
         fail("terminal-queue throughput terminal receipt overhead contract mismatch")
 
     identity_fields = (
