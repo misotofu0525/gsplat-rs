@@ -91,6 +91,7 @@ GSPLAT_COMMAND_ENVIRONMENT = BROWSER_OWNERSHIP_ENVIRONMENT | frozenset({
 LOCKED_REPOSITORY_FILES = frozenset({
     "tests/perf/collect-q1-truck-paired-series.py",
     "tests/perf/browser-process-ownership.mjs",
+    "tests/perf/q1-host-start-gate.mjs",
     "tests/perf/validate-q1-truck-paired-comparison.py",
     "tests/perf/validate-benchmark-artifacts.py",
     "tests/perf/validate-balanced-image-gate.py",

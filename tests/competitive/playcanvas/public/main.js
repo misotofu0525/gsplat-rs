@@ -42,6 +42,10 @@ import {
   rgba8ToBase64
 } from '/harness/webgpu-renderer-capture.js';
 import { captureWebGpuEnvironmentReceipt } from '/harness/webgpu-environment-receipt.js';
+import {
+  captureQ1HostStartReceipt,
+  createQ1HostStartGate
+} from '/perf/q1-host-start-gate.mjs';
 
 const EXPECTED_VERSION = '2.21.0-beta.14';
 const EXPECTED_RUNTIME_REVISION = 'd5fe888';
@@ -122,6 +126,11 @@ const requestedCaptureTraceFrameIndex = requestedCaptureTraceFrameParameter === 
   ? null
   : Number(requestedCaptureTraceFrameParameter);
 const rendererCaptureEnabled = params.get('renderer_capture') !== '0';
+const hostStartGateParameter = params.get('host_start_gate');
+if (hostStartGateParameter !== null && hostStartGateParameter !== '1') {
+  throw new Error('host_start_gate must equal 1 when present');
+}
+const hostStartGateEnabled = hostStartGateParameter === '1';
 const status = document.querySelector('#status');
 // The status panel is useful for an interactive smoke, but it would obscure
 // the top-left of a formal device presentation and contaminate an external
@@ -685,6 +694,9 @@ async function main() {
   if (!['static', 'sequence'].includes(requestedCameraMode)) {
     fail('camera_mode must be static or sequence', { requestedCameraMode });
   }
+  if (hostStartGateEnabled && (!benchmarkMode || !qualificationMode)) {
+    fail('host start gate requires a benchmark qualification');
+  }
 
   const fetchJson = async (url, label) => {
     const response = await fetch(url);
@@ -914,6 +926,28 @@ async function main() {
     expectedHeight: requestedHeight,
     phase
   });
+  let hostStartReceipt = null;
+  if (hostStartGateEnabled) {
+    let releaseHostStart;
+    const hostStart = new Promise((resolve) => { releaseHostStart = resolve; });
+    const gate = createQ1HostStartGate({
+      capture: () => captureQ1HostStartReceipt({
+        canvas,
+        expectedWidth: requestedWidth,
+        expectedHeight: requestedHeight
+      }),
+      start: releaseHostStart
+    });
+    window.__PLAYCANVAS_Q1_HOST_START_READY__ = gate.arm();
+    window.__PLAYCANVAS_Q1_HOST_START__ = () => {
+      const receipt = gate.start();
+      window.__PLAYCANVAS_Q1_HOST_START_RECEIPT__ = receipt;
+      return receipt;
+    };
+    status.textContent = 'host_start_armed';
+    await hostStart;
+    hostStartReceipt = window.__PLAYCANVAS_Q1_HOST_START_RECEIPT__;
+  }
   const preCapturePresentation = presentationProbe('pre_capture');
   const initialCameraReceipt = trace
     ? applyAndCaptureTraceCamera({
@@ -1004,6 +1038,7 @@ async function main() {
     browserPresentationReceipt: {
       source: 'browser_page_visibility_focus_and_geometry',
       physicalPresentationClaim: false,
+      hostStart: hostStartReceipt,
       preCapture: preCapturePresentation,
       preMeasurement: capture?.presentation?.preMeasurement ?? null,
       postMeasurement: capture?.presentation?.postMeasurement ?? null,

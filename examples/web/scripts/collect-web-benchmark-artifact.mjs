@@ -70,6 +70,7 @@ import {
   browserProcessArgsReceipt,
   observedRunContext,
 } from './q1-browser-environment.mjs';
+import { validateQ1HostStartReceipt } from '../../../tests/perf/q1-host-start-gate.mjs';
 import { Q1ArtifactTransaction } from './q1-artifact-transaction.mjs';
 import { cleanupBrowserAndServer, waitForChildExit } from './q1-process-cleanup.mjs';
 import { gsplatQ1WebGpuEnvironmentFields } from '../../../tests/perf/q1-webgpu-environment.mjs';
@@ -1763,6 +1764,7 @@ let browser;
 let q1BrowserArgsReceipt = null;
 let q1BrowserVersionPre = null;
 let q1AdapterPre = null;
+let q1HostStartReceipt = null;
 let q1BuildSnapshotForWrite = null;
 let q1PendingResult = null;
 let q1CollectionFailure = null;
@@ -1839,6 +1841,7 @@ try {
   } else if (q1ArtifactRole === 'throughput') {
     params.set('gsplat_q1_queue_terminal', '1');
   }
+  if (q1ArtifactRole !== null) params.set('gsplat_q1_host_start_gate', '1');
   if (q1PackageUrl !== null) params.set('gsplat_wasm_package_url', q1PackageUrl);
   if (dataset) params.set('dataset', dataset);
   params.set('gsplat_geometry_path', geometryPath);
@@ -1860,6 +1863,55 @@ try {
   const url = `http://127.0.0.1:${port}/examples/web/?${params.toString()}`;
   await page.goto(url, { waitUntil: 'networkidle0', timeout: navigationTimeoutMs });
   if (q1ArtifactRole !== null) {
+    await page.waitForFunction(
+      () => globalThis.GSPLAT_Q1_HOST_START_READY?.state === 'armed',
+      { timeout: benchmarkTimeoutMs },
+    );
+    await page.bringToFront();
+    try {
+      await page.waitForFunction(
+        () => {
+          const canvas = document.getElementById('viewport');
+          const rect = canvas?.getBoundingClientRect();
+          return document.visibilityState === 'visible'
+            && document.hasFocus()
+            && window.devicePixelRatio === 1
+            && window.innerWidth === 1920
+            && window.innerHeight === 1080
+            && window.visualViewport?.width === 1920
+            && window.visualViewport?.height === 1080
+            && rect?.width === 1920
+            && rect?.height === 1080
+            && canvas?.width === 1920
+            && canvas?.height === 1080;
+        },
+        { timeout: Math.min(benchmarkTimeoutMs, 30_000) },
+      );
+    } catch (error) {
+      const observed = await page.evaluate(() => {
+        const canvas = document.getElementById('viewport');
+        const rect = canvas?.getBoundingClientRect();
+        return {
+          visibility_state: document.visibilityState,
+          document_has_focus: document.hasFocus(),
+          device_pixel_ratio: window.devicePixelRatio,
+          inner_width: window.innerWidth,
+          inner_height: window.innerHeight,
+          visual_viewport_width: window.visualViewport?.width ?? null,
+          visual_viewport_height: window.visualViewport?.height ?? null,
+          canvas_css_width: rect?.width ?? null,
+          canvas_css_height: rect?.height ?? null,
+          canvas_backing_width: canvas?.width ?? null,
+          canvas_backing_height: canvas?.height ?? null,
+        };
+      });
+      throw new Error(
+        `Q1 host start readiness timed out before warmup: ${JSON.stringify(observed)}; ${error}`,
+      );
+    }
+    q1HostStartReceipt = validateQ1HostStartReceipt(
+      await page.evaluate(() => globalThis.GSPLAT_Q1_HOST_START()),
+    );
     await page.waitForFunction(
       () => globalThis.GSPLAT_Q1_SURFACE_DEVICE_PRE != null,
       { timeout: benchmarkTimeoutMs },
@@ -1998,6 +2050,7 @@ try {
       page.evaluate(() => ({
         pre: globalThis.GSPLAT_Q1_BROWSER_RUNTIME_PRE ?? null,
         post: globalThis.GSPLAT_Q1_BROWSER_RUNTIME_POST ?? null,
+        host_start: globalThis.GSPLAT_Q1_HOST_START_RECEIPT ?? null,
         user_agent: navigator.userAgent,
         platform: navigator.platform,
       })),
@@ -2010,6 +2063,10 @@ try {
     ]);
     const browserVersionPost = await browser.version();
     assertStableBrowserRuntime(browserRuntime.pre, browserRuntime.post);
+    validateQ1HostStartReceipt(browserRuntime.host_start);
+    if (!sameJson(browserRuntime.host_start, q1HostStartReceipt)) {
+      throw new Error('Q1 host start receipt drifted after benchmark start');
+    }
     const q1AdapterPost = assertStableRendererSurfaceDevice(
       rendererDevice.pre,
       rendererDevice.post,

@@ -43,6 +43,10 @@ import {
   normalizeQ1SurfaceCapture,
   q1CaptureMeasuredFrame,
 } from "./q1-gsplat-producer.mjs";
+import {
+  captureQ1HostStartReceipt,
+  createQ1HostStartGate,
+} from "../../../tests/perf/q1-host-start-gate.mjs";
 
 const API_VERSION = "0.1";
 const ORBIT_RADIANS_PER_SCREEN = 3.2;
@@ -166,6 +170,7 @@ const state = {
   currentStatsControlArtifactIdentity: null,
   q1CaptureTraceFrameIndex: null,
   q1QueueTerminalEnabled: false,
+  q1HostStartGateEnabled: false,
   sampledWebglEnabled: false,
   currentStatsSmokeEnabled: false,
   currentStatsSmokeRequested: false,
@@ -226,6 +231,7 @@ const els = {
 
 let resizeMeasureFrame = null;
 let canvasResizeObserver = null;
+let q1HostStartGate = null;
 const wasmResizeCoordinator = new LatestAsyncRequestCoordinator({
   async perform(request) {
     await request.renderer.resize(request.width, request.height);
@@ -1057,11 +1063,7 @@ function installStreamedWasmScene(renderer, name, sourcePath) {
   );
   setLoadingProgress("Scene ready", "Complete source count is resident on the GPU.", 1);
   hideLoading();
-  if (state.autoStartBenchmark) {
-    state.autoStartBenchmark = false;
-    if (state.autoBenchmarkSync) runBenchmarkSync();
-    else startBenchmark();
-  }
+  maybeStartConfiguredBenchmark();
 }
 
 async function loadFile(file) {
@@ -1158,14 +1160,7 @@ async function applyScene(scene) {
   setStatus(`state=scene_ready backend=${usingWasm() ? "wasm" : "webgl"}`);
   setLoadingProgress("Scene ready", "Drag anywhere to explore.", 1);
   hideLoading();
-  if (state.autoStartBenchmark) {
-    state.autoStartBenchmark = false;
-    if (state.autoBenchmarkSync) {
-      runBenchmarkSync();
-    } else {
-      startBenchmark();
-    }
-  }
+  maybeStartConfiguredBenchmark();
 }
 
 function parsePly(bytes, name, sourcePath) {
@@ -2797,6 +2792,44 @@ function resizeCanvas() {
   }
 }
 
+function beginConfiguredBenchmark() {
+  if (!state.autoStartBenchmark) {
+    throw new TypeError("configured benchmark start is no longer available");
+  }
+  state.autoStartBenchmark = false;
+  if (state.autoBenchmarkSync) runBenchmarkSync();
+  else startBenchmark();
+}
+
+function maybeStartConfiguredBenchmark() {
+  if (!state.autoStartBenchmark) return;
+  if (!state.q1HostStartGateEnabled) {
+    beginConfiguredBenchmark();
+    return;
+  }
+  if (q1HostStartGate !== null) {
+    throw new TypeError("Q1 host start gate was armed more than once");
+  }
+  const expectedWidth = state.qualificationTrace?.display?.width;
+  const expectedHeight = state.qualificationTrace?.display?.height;
+  q1HostStartGate = createQ1HostStartGate({
+    capture: () => captureQ1HostStartReceipt({
+      canvas: els.canvas,
+      expectedWidth,
+      expectedHeight,
+    }),
+    start: beginConfiguredBenchmark,
+  });
+  globalThis.GSPLAT_Q1_HOST_START_READY = q1HostStartGate.arm();
+  globalThis.GSPLAT_Q1_HOST_START = () => {
+    const receipt = q1HostStartGate.start();
+    globalThis.GSPLAT_Q1_HOST_START_RECEIPT = receipt;
+    return receipt;
+  };
+  setStatus("state=benchmark_host_start_armed");
+  els.benchmarkResult.textContent = "Waiting for the verified host foreground start...";
+}
+
 function startBenchmark() {
   if (state.resizeMeasurePending || wasmResizeCoordinator.pending) {
     setStatus("state=benchmark_waiting_for_resize");
@@ -3093,6 +3126,11 @@ function applyUrlConfig() {
     (params.get("gsplat_benchmark") ?? params.get("benchmark") ?? "").toLowerCase(),
   );
   state.strictBenchmarkMode = state.autoStartBenchmark;
+  const q1HostStartGateText = params.get("gsplat_q1_host_start_gate");
+  if (q1HostStartGateText !== null && q1HostStartGateText !== "1") {
+    throw new TypeError("gsplat_q1_host_start_gate must equal 1 when present");
+  }
+  state.q1HostStartGateEnabled = q1HostStartGateText === "1";
   state.autoBenchmarkSync = ["1", "true", "yes"].includes(
     (params.get("gsplat_benchmark_sync") ?? params.get("benchmark_sync") ?? "").toLowerCase(),
   );
@@ -3230,6 +3268,11 @@ function applyUrlConfig() {
       );
     }
     state.q1QueueTerminalEnabled = true;
+  }
+  const q1FormalMode = state.q1CaptureTraceFrameIndex !== null
+    || state.q1QueueTerminalEnabled;
+  if (state.q1HostStartGateEnabled !== q1FormalMode) {
+    throw new TypeError("Q1 controls and throughput require the host start gate exactly once");
   }
   if (state.qualificationTraceSequenceEnabled) {
     if (params.has("gsplat_camera_frame")) {

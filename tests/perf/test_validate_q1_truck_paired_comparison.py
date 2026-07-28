@@ -718,7 +718,24 @@ def manifest(
             "sh_degree": TRUCK["sh_degree"],
         }
     )
-    return {
+    host_start = {
+        "schema": "gsplat-q1-host-start/v1",
+        "phase": "host_start",
+        "expected_width": WIDTH,
+        "expected_height": HEIGHT,
+        "inner_width": WIDTH,
+        "inner_height": HEIGHT,
+        "visual_viewport_width": WIDTH,
+        "visual_viewport_height": HEIGHT,
+        "canvas_css_width": WIDTH,
+        "canvas_css_height": HEIGHT,
+        "canvas_backing_width": WIDTH,
+        "canvas_backing_height": HEIGHT,
+        "device_pixel_ratio": 1,
+        "visibility_state": "visible",
+        "document_has_focus": True,
+    }
+    document = {
         "schema": "gsplat-benchmark/v1",
         "record_type": "manifest",
         "run_id": run_id,
@@ -735,6 +752,11 @@ def manifest(
         "pairing": {"series_id": series_id, "schedule_sha256": schedule_sha, "pair_id": pair_id, "run_order": order, "position": position, "fresh_output": True, "automatic_retry": False},
         "q1_comparison": q1,
     }
+    if endpoint == "playcanvas":
+        document["browser_presentation"] = {"hostStart": host_start}
+    else:
+        document["environment"]["browser_runtime"] = {"host_start": host_start}
+    return document
 
 
 def write_artifact(
@@ -1152,6 +1174,24 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         )
         self.assertEqual(value["dataset"], producer_dataset)
         self.assertEqual(evaluate(self.schedule)["state"], "Deferred")
+
+    def test_gsplat_host_start_receipt_is_required(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["environment"].pop("browser_runtime"),
+        )
+        with self.assertRaisesRegex(ValidationError, "browser_runtime"):
+            evaluate(self.schedule)
+
+    def test_playcanvas_unfocused_host_start_receipt_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/playcanvas/control-trace-0",
+            lambda value: value["browser_presentation"]["hostStart"].update(
+                {"document_has_focus": False}
+            ),
+        )
+        with self.assertRaisesRegex(ValidationError, "host-start"):
+            evaluate(self.schedule)
 
     def test_gsplat_webgpu_environment_owner_crosses_python_admission(self) -> None:
         fields = node_json(

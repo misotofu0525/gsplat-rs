@@ -1269,3 +1269,35 @@ or the admission validator. A later formal attempt still requires a new
 reviewed SHA, regenerated same-SHA authority and Wasm assets, a fresh root,
 identical dry runs and a separate go/no-go. Attempt 6 is retained unchanged and
 is never reused.
+
+### Q1 formal attempt 7 terminal and symmetric host-start repair (2026-07-28)
+
+The separately declared attempt 7 at reviewed root SHA
+`7aa61a1cdcfc66411af4084bc7543d2f45a45f9f` completed all six invocations in
+pair 1 and then stopped at pair 2's first gsplat-rs trace-0 control. The page
+reported that its pre-measurement browser runtime was not a visible, focused
+1920x1080 DPR-1 surface. The immutable root and producer blockers disable
+automatic retry, and the retained process receipt proves the marked Chrome
+process group was reaped with no survivors. Pair 1 is not a five-pair series,
+so attempt 7 supports no quality or performance comparison.
+
+The failure was a start-ownership race rather than a render or timing result.
+Both pages previously began warmup immediately when their 2,541,226-splat
+scene became ready. The gsplat-rs collector called `bringToFront()` only before
+navigation and the PlayCanvas collector did not own an equivalent post-load
+foreground boundary, so a later focus check could reject after useful work had
+already started. Pair 1 happened to retain focus; that did not make the
+mechanism deterministic.
+
+The repair is symmetric and does not change either renderer, workload or
+terminal timing primitive. Both pages now finish scene/device/surface setup,
+publish an armed host-start state with zero warmup frames consumed, and wait.
+Their collectors bring the page to the foreground, wait a bounded interval for
+live focus, visibility, DPR 1 and exact 1920x1080 window/visual-viewport/CSS/
+backing dimensions, then call a one-shot start function. The page atomically
+revalidates that receipt before starting the existing warmup. Timeout or drift
+fails before warmup; no sleep, `window.focus()`, relaxed focus condition or
+automatic retry is introduced. A later formal attempt still requires a new
+reviewed SHA, regenerated same-SHA authority and Wasm assets, a fresh root,
+identical dry runs and a separate go/no-go. Attempt 7 is retained unchanged and
+is never reused.

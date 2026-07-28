@@ -37,6 +37,7 @@ import {
   browserOwnershipConfig,
   publishBrowserOwnershipHandshake,
 } from '../../../perf/browser-process-ownership.mjs';
+import { validateQ1HostStartReceipt } from '../../../perf/q1-host-start-gate.mjs';
 import {
   assertQ1Invocation,
   loadQ1ProducerConfig,
@@ -318,16 +319,66 @@ try {
     ? ''
     : `&capture_trace_frame=${captureTraceFrame}`;
   const rendererCaptureQuery = `&renderer_capture=${rendererCaptureEnabled ? 1 : 0}`;
+  const hostStartGateQuery = q1Producer ? '&host_start_gate=1' : '';
   await page.goto(
     `http://127.0.0.1:${port}/?benchmark=1${qualificationQuery}` +
       `&trace_frame=${traceFrame}&warmup_frames=${warmupFrames}` +
       `&measured_frames=${measuredFrames}&camera_mode=${cameraMode}` +
-      captureTraceFrameQuery + rendererCaptureQuery,
+      captureTraceFrameQuery + rendererCaptureQuery + hostStartGateQuery,
     {
     waitUntil: 'networkidle0',
     timeout: qualification ? 600_000 : 30_000
     }
   );
+  let q1HostStartReceipt = null;
+  if (q1Producer) {
+    await page.waitForFunction(
+      () => window.__PLAYCANVAS_Q1_HOST_START_READY__?.state === 'armed',
+      { timeout: 1_800_000 }
+    );
+    await page.bringToFront();
+    try {
+      await page.waitForFunction(
+        (width, height) => {
+          const canvas = document.querySelector('#canvas');
+          const rect = canvas?.getBoundingClientRect();
+          return document.visibilityState === 'visible' && document.hasFocus() &&
+            window.devicePixelRatio === 1 && window.innerWidth === width &&
+            window.innerHeight === height && window.visualViewport?.width === width &&
+            window.visualViewport?.height === height && rect?.width === width &&
+            rect?.height === height && canvas?.width === width && canvas?.height === height;
+        },
+        { timeout: 30_000 },
+        viewportWidth,
+        viewportHeight
+      );
+    } catch (error) {
+      const observed = await page.evaluate(() => {
+        const canvas = document.querySelector('#canvas');
+        const rect = canvas?.getBoundingClientRect();
+        return {
+          visibility_state: document.visibilityState,
+          document_has_focus: document.hasFocus(),
+          device_pixel_ratio: window.devicePixelRatio,
+          inner_width: window.innerWidth,
+          inner_height: window.innerHeight,
+          visual_viewport_width: window.visualViewport?.width ?? null,
+          visual_viewport_height: window.visualViewport?.height ?? null,
+          canvas_css_width: rect?.width ?? null,
+          canvas_css_height: rect?.height ?? null,
+          canvas_backing_width: canvas?.width ?? null,
+          canvas_backing_height: canvas?.height ?? null
+        };
+      });
+      throw new Error(
+        `Q1 PlayCanvas host start readiness timed out before warmup: ` +
+        `${JSON.stringify(observed)}; ${error}`
+      );
+    }
+    q1HostStartReceipt = validateQ1HostStartReceipt(
+      await page.evaluate(() => window.__PLAYCANVAS_Q1_HOST_START__())
+    );
+  }
   await page.waitForFunction(
     () => window.__PLAYCANVAS_HARNESS_RESULT__ || window.__PLAYCANVAS_HARNESS_ERROR__,
     { timeout: qualification ? 1_800_000 : 60_000 }
@@ -344,6 +395,12 @@ try {
     : 'raw_frame_measurement_complete';
   if (outcome.result.status !== expectedPageStatus) throw new Error(JSON.stringify(outcome.result));
   const browserPresentation = outcome.result.browserPresentationReceipt;
+  if (q1Producer) {
+    validateQ1HostStartReceipt(browserPresentation?.hostStart);
+    if (JSON.stringify(browserPresentation.hostStart) !== JSON.stringify(q1HostStartReceipt)) {
+      throw new Error('Q1 PlayCanvas host start receipt drifted after benchmark start');
+    }
+  }
   const presentationReceipts = [
     ['preCapture', browserPresentation?.preCapture],
     ['preMeasurement', browserPresentation?.preMeasurement],

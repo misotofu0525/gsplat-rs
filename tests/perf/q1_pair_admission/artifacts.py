@@ -114,6 +114,26 @@ HOST_ADMISSION_JOIN_FIELDS = frozenset(
         "png_sha256",
     }
 )
+HOST_START_SCHEMA = "gsplat-q1-host-start/v1"
+HOST_START_FIELDS = frozenset(
+    {
+        "schema",
+        "phase",
+        "expected_width",
+        "expected_height",
+        "inner_width",
+        "inner_height",
+        "visual_viewport_width",
+        "visual_viewport_height",
+        "canvas_css_width",
+        "canvas_css_height",
+        "canvas_backing_width",
+        "canvas_backing_height",
+        "device_pixel_ratio",
+        "visibility_state",
+        "document_has_focus",
+    }
+)
 GSPLAT_RGBA_RECEIPT_FIELDS = frozenset(
     {
         "scene_generation",
@@ -656,6 +676,55 @@ def _environment(manifest: dict[str, Any], endpoint: str, context: str) -> dict[
     }
 
 
+def _host_start(manifest: dict[str, Any], endpoint: str, context: str) -> None:
+    receipt = (
+        obj(
+            obj(
+                manifest,
+                "browser_presentation",
+                context,
+            ),
+            "hostStart",
+            f"{context}.browser_presentation",
+        )
+        if endpoint == "playcanvas"
+        else obj(
+            obj(
+                obj(manifest, "environment", context),
+                "browser_runtime",
+                f"{context}.environment",
+            ),
+            "host_start",
+            f"{context}.environment.browser_runtime",
+        )
+    )
+    if set(receipt) != HOST_START_FIELDS:
+        fail(f"{context} host-start receipt fields are not frozen")
+    if (
+        receipt.get("schema") != HOST_START_SCHEMA
+        or receipt.get("phase") != "host_start"
+        or receipt.get("expected_width") != WIDTH
+        or receipt.get("expected_height") != HEIGHT
+        or receipt.get("device_pixel_ratio") != 1
+        or receipt.get("visibility_state") != "visible"
+        or receipt.get("document_has_focus") is not True
+    ):
+        fail(f"{context} host-start receipt is not admitted")
+    for stage in (
+        "inner",
+        "visual_viewport",
+        "canvas_css",
+        "canvas_backing",
+    ):
+        if (
+            number(receipt, f"{stage}_width", f"{context}.host_start")
+            != WIDTH
+            or number(receipt, f"{stage}_height", f"{context}.host_start")
+            != HEIGHT
+        ):
+            fail(f"{context} host-start {stage} dimensions are not exact")
+
+
 def _renderer(manifest: dict[str, Any], endpoint: str, context: str) -> None:
     renderer = obj(manifest, "renderer", context)
     if renderer.get("backend") != "webgpu":
@@ -1045,6 +1114,7 @@ def artifact(
         fail(f"{context} ended before it started")
     _common(manifest, endpoint, context)
     _renderer(manifest, endpoint, context)
+    _host_start(manifest, endpoint, context)
     commit, build_artifacts = _build(root, manifest, endpoint, context)
     environment = _environment(manifest, endpoint, context)
     pairing = obj(manifest, "pairing", context)

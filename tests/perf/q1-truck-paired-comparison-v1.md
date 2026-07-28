@@ -56,6 +56,18 @@ The two control artifacts are excluded from pair timing. Actual throughput
 start/end timestamps must prove the declared AB/BA endpoint order and
 non-overlapping pair order; labels alone do not prove randomization.
 
+Every formal browser invocation uses the same host-armed start boundary. The
+page may load the complete scene, create its renderer and publish an `armed`
+ready state, but it must not enter warmup yet. The collector then brings that
+page to the foreground and waits a bounded interval for live, simultaneous
+proof of a visible and focused document, DPR 1, and exact 1920x1080 window,
+visual viewport, canvas CSS and canvas backing dimensions. It invokes the
+page's one-shot start function exactly once; the page atomically rechecks the
+same conditions before entering warmup. Timeout or geometry/focus drift fails
+before warmup and terminates the immutable attempt. Neither endpoint may use a
+sleep, `window.focus()`, a relaxed focus predicate or a post-hoc receipt as a
+substitute for this boundary.
+
 ## Control and throughput separation
 
 Both endpoint artifacts use the canonical `manifest.json`, `frames.jsonl` and
