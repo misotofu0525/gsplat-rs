@@ -53,8 +53,8 @@ direction or winner.
 ## Upstream Truck authority
 
 The official Inria `tandt_db.zip` contains the source images and COLMAP
-calibration used by the pretrained Truck model. The first authority slice uses
-only two named views already represented by the current trace:
+calibration used by the pretrained Truck model. The first authority slice used
+two named views already represented by the current trace:
 
 - URL: `https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip`
 - bytes: `682628995`
@@ -82,6 +82,60 @@ The authority receipt locks:
 External assets remain local research inputs and are not committed while their
 redistribution rights are unresolved.
 
+This first slice is accepted as an input-integrity mechanism, but its second
+view is not the final product-quality view. `000108` was chosen to reuse the
+old performance trace. The paper's official held-out Truck sequence is
+`000001`, `000009`, `000017`, and so on. Formal two-view Product Quality uses
+`000001 + 000009`; it does not let an unrelated legacy trace choose the
+validation images.
+
+The upstream project also publishes the exact Evaluation Images used for its
+reported metrics:
+
+- URL: `https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/evaluation/images.zip`
+- HTTP byte length: `7,064,286,140`
+- Truck aggregate `ours_30000`: SSIM `0.8787403703`, PSNR `25.1867847443`,
+  LPIPS `0.1477580667`
+- `000001`: SSIM `0.9103236794`, PSNR `26.25909805298`, LPIPS
+  `0.1162385568`
+- `000009`: SSIM `0.9118889570`, PSNR `26.6379737854`, LPIPS
+  `0.1099530607`
+
+Both retained ground-truth and `ours_30000` PNGs are 979x546 RGB8. Product
+Quality will use the official ground-truth PNG bytes as its decoded pixel
+authority, rather than introducing a browser JPEG decoder. The official
+`ours_30000` render is a threshold-calibration baseline, not an endpoint and
+not a competitor.
+
+The raw PNG metric was extended to accept strict non-interlaced RGB8 as well
+as RGBA8, expanding RGB alpha to 255 without Canvas, color management or
+resampling. Its locked 8x8 sRGB-luma/RGB-byte results are:
+
+| View | SSIM | normalized RGB MAE | pixels with any RGB error >32 |
+| --- | ---: | ---: | ---: |
+| `000001` | `0.9169842309` | `0.0267901128` | `0.0318763633` |
+| `000009` | `0.9196254631` | `0.0258173395` | `0.0287334388` |
+
+Product Quality v1 is now frozen before either endpoint output exists. Every
+endpoint and every view must independently satisfy all of:
+
+- SSIM `>= 0.90`;
+- normalized RGB MAE `<= 0.05`;
+- fraction of pixels with any RGB channel error greater than 32 `<= 0.10`;
+- endpoint alpha exactly 255 at every pixel.
+
+There is no averaging across views or endpoints. The existing fraction over
+3/255 remains a tight renderer-conformance diagnostic and is not a Product
+Quality gate: even the accepted official render has roughly 69-70% of pixels
+above that very small per-pixel threshold. These v1 thresholds cannot be
+changed by a producer invocation and are not adjusted after seeing gsplat-rs
+or PlayCanvas output.
+
+The official repository describes these files as the reference images used to
+produce its reported metrics. It also warns that current cleaned-up code may
+not reproduce the paper metrics byte for byte, which is why Q1 pins the
+published files instead of rerunning an unpinned CUDA environment.
+
 Build the immutable local authority without launching a browser:
 
 ```bash
@@ -103,12 +157,19 @@ output is never overwritten.
    immutable receipt, and run no browser.
 2. **Lane reducer** — add pure Native/Product state reduction and focused tests;
    no producer or performance change.
-3. **One-view quality smoke** — generate one exact 979x546 camera trace and one
-   renderer-owned image per endpoint. Predeclare SSIM, normalized RGB MAE and
-   RGB-tail limits before examining endpoint output. No timing is retained.
-4. **Two-view qualification** — repeat for `000001` and `000108`; require both
+3. **RGB authority decoder** — admit the official RGB8 ground-truth and
+   `ours_30000` PNG bytes with the repository's raw PNG parser. Compute the
+   locked-metric upstream baseline and freeze Product Quality thresholds. Run
+   no endpoint. **Implemented; fixed-SHA review pending.**
+4. **Exact pinhole camera** — carry independent `fx/fy/cx/cy` through the trace
+   and both endpoint camera receipts. The existing vertical-FOV-only trace is
+   not formal Product Quality evidence because it assumes `fx == fy`.
+5. **One-view quality smoke** — render `000001` at exact 979x546 with one
+   renderer-owned image per endpoint. Apply the already frozen metrics. No
+   timing is retained and one view cannot unlock performance.
+6. **Two-view qualification** — repeat for `000001` and `000009`; require both
    lanes to accept and static-repeat stability to pass.
-5. **Performance admission** — only then bind the existing 1080p paired terminal
+7. **Performance admission** — only then bind the existing 1080p paired terminal
    timing to the dual-lane result. A new browser series requires the existing
    exact-SHA, immutable-root and one-shot authorization gates.
 
@@ -124,3 +185,23 @@ automatic retry loop.
 - deriving a performance ratio from Attempt 10;
 - tuning thresholds after observing both endpoint images;
 - using diagnostic shader timings or host screenshots as formal evidence.
+
+## Exact-pinhole prerequisite
+
+The source camera is centered but not square-pixel after exact per-axis image
+scaling:
+
+| Parameter | `000001` at 979x546 |
+| --- | ---: |
+| `fx` | `581.9245675736333` |
+| `fy` | `578.6701201866216` |
+| `cx` | `489.5` |
+| `cy` | `273.0` |
+
+The current trace and both render endpoints consume only vertical FOV, which
+implicitly produces `fx = fy = 578.6701201866216`. The resulting horizontal
+focal error is about `-0.5593%`. It is shared between the endpoints, but it is
+not the upstream camera; counting that projection error as renderer quality
+would be unfair. Therefore a 979x546 browser execution remains blocked until a
+reviewed exact-pinhole receipt proves the full normalized projection in both
+endpoints. Resizing or warping the authority image is not an allowed shortcut.

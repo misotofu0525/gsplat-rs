@@ -1489,3 +1489,55 @@ retained no endpoint timing and remains outside Git because upstream asset
 redistribution rights are unresolved. The next slice is the pure two-lane
 state reducer, followed by a one-view 979x546 quality-only smoke; neither step
 authorizes another five-pair performance series.
+
+### Q1 dual-lane reducer and official evaluation correction (2026-07-28)
+
+The pure Native Exact/Product Quality reducer is independently accepted at
+`15c63510930f198e9ebaab116c47075021786edc` with P0/P1/P2 `0/0/0`. Native
+Exact consumes only gsplat-rs scores and retains the exact `0.99` Direct-f32
+threshold. Product Quality accepts only the upstream authority class and both
+named endpoint states. Only `Accepted + Accepted` unlocks same-quality
+performance. Rejected or Deferred output recursively removes and rejects
+relative fields even through arbitrarily nested list/tuple structures, while
+retaining non-comparative absolute terminal means.
+
+The official 7,064,286,140-byte Evaluation Images archive was then inspected
+by HTTP range without downloading the complete archive. It corrects two
+assumptions before any endpoint run:
+
+1. the official held-out Truck views are `000001`, `000009`, `000017`, and so
+   on; `000108` was a legacy performance-trace choice, not the second formal
+   product-quality view;
+2. the archive already contains 979x546 RGB8 ground-truth PNGs and published
+   `ours_30000` renders, so Q1 does not need a browser-dependent JPEG decoder.
+
+The published `ours_30000` Truck aggregate is SSIM `0.8787403703`, PSNR
+`25.1867847443`, LPIPS `0.1477580667`. Its per-view results are SSIM
+`0.9103236794 / 0.9118889570`, PSNR `26.25909805298 / 26.6379737854` and
+LPIPS `0.1162385568 / 0.1099530607` for `000001 / 000009`. These upstream
+numbers are threshold-calibration evidence, not either tested endpoint.
+
+A separate camera audit found that the current 979x546 trace is still not
+eligible: exact scaling yields `fx=581.9245675736333` and
+`fy=578.6701201866216`, while the vertical-FOV-only runtime assumes `fx=fy`.
+The approximately `-0.5593%` horizontal focal error must not be charged to
+renderer quality. The next bounded implementation slices are therefore raw
+RGB/RGBA PNG authority support and exact-pinhole `fx/fy/cx/cy` carriage. No
+Chrome endpoint, performance pair, ratio, FPS or winner was produced here.
+
+The raw PNG authority slice then added strict non-interlaced RGB8 decoding to
+the existing CRC/chunk/zlib-bounded parser. RGB samples expand to opaque RGBA
+without Canvas or color management; all five PNG filters are covered and the
+existing partial-alpha RGBA8 contract is unchanged. The official ground-truth
+and `ours_30000` images produced the following locked-metric baselines:
+
+| View | SSIM | normalized RGB MAE | severe RGB tail over 32 |
+| --- | ---: | ---: | ---: |
+| `000001` | `0.9169842309` | `0.0267901128` | `0.0318763633` |
+| `000009` | `0.9196254631` | `0.0258173395` | `0.0287334388` |
+
+Before either endpoint image exists, Product Quality v1 is frozen per view and
+per endpoint at SSIM `>=0.90`, normalized RGB MAE `<=0.05`, severe-tail
+fraction `<=0.10`, and exact opaque alpha. No averaging can hide a failed view.
+The old over-3/255 tail is intentionally not reused: even the official render
+has roughly 69-70% of pixels above that conformance-oriented threshold.

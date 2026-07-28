@@ -45,12 +45,14 @@ function paeth(left, above, upperLeft) {
   return distances[1] <= distances[2] ? above : upperLeft;
 }
 
-function filterRow(row, previous, filterType) {
+function filterRow(row, previous, filterType, bytesPerPixel = 4) {
   const filtered = Buffer.alloc(row.length);
   for (let index = 0; index < row.length; index += 1) {
-    const left = index >= 4 ? row[index - 4] : 0;
+    const left = index >= bytesPerPixel ? row[index - bytesPerPixel] : 0;
     const above = previous === null ? 0 : previous[index];
-    const upperLeft = previous !== null && index >= 4 ? previous[index - 4] : 0;
+    const upperLeft = previous !== null && index >= bytesPerPixel
+      ? previous[index - bytesPerPixel]
+      : 0;
     let predictor = 0;
     if (filterType === 1) predictor = left;
     else if (filterType === 2) predictor = above;
@@ -61,16 +63,22 @@ function filterRow(row, previous, filterType) {
   return Buffer.concat([Buffer.from([filterType]), filtered]);
 }
 
-function filteredPng(rows, filterTypes) {
-  const width = rows[0].length / 4;
+function filteredPng(rows, filterTypes, colorType = 6) {
+  const bytesPerPixel = colorType === 0 ? 1 : colorType === 2 ? 3 : 4;
+  const width = rows[0].length / bytesPerPixel;
   const height = rows.length;
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
   header[8] = 8;
-  header[9] = 6;
+  header[9] = colorType;
   const filtered = Buffer.concat(rows.map((row, index) =>
-    filterRow(row, index === 0 ? null : rows[index - 1], filterTypes[index])));
+    filterRow(
+      row,
+      index === 0 ? null : rows[index - 1],
+      filterTypes[index],
+      bytesPerPixel
+    )));
   return Buffer.concat([
     PNG_SIGNATURE,
     pngChunk('IHDR', header),
@@ -118,6 +126,26 @@ test('raw PNG decoder implements all five non-interlaced RGBA8 filters', () => {
   ]));
   const decoded = decodeRawRgba8Png(filteredPng(rows, [0, 1, 2, 3, 4]));
   assert.deepEqual(decoded.rgba, Buffer.concat(rows));
+});
+
+test('raw PNG decoder implements all five RGB8 filters and expands opaque alpha', () => {
+  const rows = [0, 1, 2, 3, 4].map((row) => Buffer.from([
+    13 + row, 33 + row, 73 + row,
+    133 + row, 153 + row, 193 + row,
+  ]));
+  const decoded = decodeRawRgba8Png(filteredPng(rows, [0, 1, 2, 3, 4], 2));
+  const expected = Buffer.from(rows.flatMap((row) => [
+    row[0], row[1], row[2], 255,
+    row[3], row[4], row[5], 255,
+  ]));
+  assert.equal(decoded.width, 2);
+  assert.equal(decoded.height, 5);
+  assert.deepEqual(decoded.rgba, expected);
+});
+
+test('raw PNG contract still rejects unsupported color types', () => {
+  const grayscale = filteredPng([Buffer.from([17, 29])], [0], 0);
+  assert.throws(() => decodeRawRgba8Png(grayscale), /RGB8 or RGBA8/);
 });
 
 test('raw PNG decoder joins split IDAT chunks without changing samples', () => {

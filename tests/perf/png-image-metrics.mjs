@@ -28,9 +28,8 @@ function paethPredictor(left, above, upperLeft) {
   return upperLeft;
 }
 
-function unfilterScanline(filterType, source, previous) {
+function unfilterScanline(filterType, source, previous, bytesPerPixel) {
   const result = Buffer.allocUnsafe(source.length);
-  const bytesPerPixel = 4;
   for (let index = 0; index < source.length; index += 1) {
     const left = index >= bytesPerPixel ? result[index - bytesPerPixel] : 0;
     const above = previous === null ? 0 : previous[index];
@@ -50,7 +49,7 @@ function unfilterScanline(filterType, source, previous) {
 }
 
 /**
- * Decode the raw sample bytes of a non-interlaced RGBA8 PNG.
+ * Decode the raw sample bytes of a non-interlaced RGB8 or RGBA8 PNG.
  *
  * Q1 compares renderer-owned bytes, not browser-composited pixels. In
  * particular, this avoids Canvas2D's premultiply/unpremultiply round trip for
@@ -121,15 +120,17 @@ export function decodeRawRgba8Png(
       (expectedHeight !== null && height !== expectedHeight)) {
     throw new Error(`PNG dimensions differ from receipt: ${width}x${height}`);
   }
-  if (header[8] !== 8 || header[9] !== 6 || header[10] !== 0 ||
+  const colorType = header[9];
+  if (header[8] !== 8 || ![2, 6].includes(colorType) || header[10] !== 0 ||
       header[11] !== 0 || header[12] !== 0) {
-    throw new Error('PNG must be non-interlaced RGBA8');
+    throw new Error('PNG must be non-interlaced RGB8 or RGBA8');
   }
 
-  const rowBytes = width * 4;
+  const bytesPerPixel = colorType === 2 ? 3 : 4;
+  const rowBytes = width * bytesPerPixel;
   const expectedFilteredBytes = height * (rowBytes + 1);
   if (!Number.isSafeInteger(rowBytes) || !Number.isSafeInteger(expectedFilteredBytes)) {
-    throw new Error('PNG dimensions exceed the safe RGBA8 range');
+    throw new Error('PNG dimensions exceed the safe RGB8/RGBA8 range');
   }
   const compressed = Buffer.concat(idatChunks);
   let inflated;
@@ -155,9 +156,22 @@ export function decodeRawRgba8Png(
     const row = unfilterScanline(
       inflated[filteredOffset],
       inflated.subarray(filteredOffset + 1, filteredOffset + 1 + rowBytes),
-      previous
+      previous,
+      bytesPerPixel
     );
-    row.copy(rgba, y * rowBytes);
+    if (colorType === 6) {
+      row.copy(rgba, y * width * 4);
+    } else {
+      const outputOffset = y * width * 4;
+      for (let x = 0; x < width; x += 1) {
+        const sourceOffset = x * 3;
+        const destinationOffset = outputOffset + x * 4;
+        rgba[destinationOffset] = row[sourceOffset];
+        rgba[destinationOffset + 1] = row[sourceOffset + 1];
+        rgba[destinationOffset + 2] = row[sourceOffset + 2];
+        rgba[destinationOffset + 3] = 255;
+      }
+    }
     previous = row;
   }
   return { width, height, rgba };
