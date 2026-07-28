@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import unittest
+from enum import IntEnum
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -37,6 +38,9 @@ class NativeExactLaneTests(unittest.TestCase):
                 evaluate_native_exact([1.0], threshold=threshold)  # type: ignore[arg-type]
 
     def test_scores_must_be_nonempty_finite_numbers(self) -> None:
+        class Score(IntEnum):
+            ONE = 1
+
         for scores in (
             [],
             [float("nan")],
@@ -44,6 +48,7 @@ class NativeExactLaneTests(unittest.TestCase):
             [-0.001],
             [1.001],
             [True],
+            [Score.ONE],
             ["1.0"],
             "1.0",
         ):
@@ -151,6 +156,25 @@ class QualityReductionTests(unittest.TestCase):
             {"state": "Deferred", "performance": {"samples": [{}]}},
         )
         with self.assertRaisesRegex(QualityLaneError, "same-quality performance is ineligible"):
+            require_comparison_fields_eligible(decision, output)
+
+    def test_nested_sequences_cannot_hide_comparison_fields(self) -> None:
+        decision = reduce_quality_lanes("Accepted", "Deferred")
+        output = {
+            "series": [
+                [{"winner": "playcanvas", "ratio": 2.0}],
+                ({"fps": 60},),
+            ],
+            "absolute": {"playcanvas_terminal_frame_wall_mean_ms": 17.9},
+        }
+        self.assertEqual(
+            clear_ineligible_comparison_fields(decision, output),
+            {
+                "series": [[{}], ({},)],
+                "absolute": {"playcanvas_terminal_frame_wall_mean_ms": 17.9},
+            },
+        )
+        with self.assertRaisesRegex(QualityLaneError, "fps, ratio, winner"):
             require_comparison_fields_eligible(decision, output)
 
     def test_eligible_output_preserves_comparison_fields(self) -> None:

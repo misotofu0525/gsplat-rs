@@ -90,7 +90,7 @@ def _scores(values: object, context: str) -> tuple[float, ...]:
         raise QualityLaneError(f"{context} must not be empty")
     result: list[float] = []
     for index, value in enumerate(values):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if type(value) not in (int, float):
             raise QualityLaneError(f"{context}[{index}] must be a finite number")
         score = float(value)
         if not math.isfinite(score) or not 0.0 <= score <= 1.0:
@@ -219,13 +219,20 @@ def _comparison_fields(output: Mapping[str, Any]) -> frozenset[str]:
         tokens = set(field.lower().split("_"))
         if field in COMPARISON_FIELDS or tokens.intersection(COMPARISON_FIELD_TOKENS):
             fields.add(field)
-        elif isinstance(value, Mapping):
-            fields.update(_comparison_fields(value))
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                if isinstance(item, Mapping):
-                    fields.update(_comparison_fields(item))
+        else:
+            fields.update(_comparison_fields_in_value(value))
     return frozenset(fields)
+
+
+def _comparison_fields_in_value(value: object) -> frozenset[str]:
+    if isinstance(value, Mapping):
+        return _comparison_fields(value)
+    if isinstance(value, (list, tuple)):
+        fields: set[str] = set()
+        for item in value:
+            fields.update(_comparison_fields_in_value(item))
+        return frozenset(fields)
+    return frozenset()
 
 
 def _clear_comparison_fields(output: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,17 +243,15 @@ def _clear_comparison_fields(output: Mapping[str, Any]) -> dict[str, Any]:
         tokens = set(field.lower().split("_"))
         if field in COMPARISON_FIELDS or tokens.intersection(COMPARISON_FIELD_TOKENS):
             continue
-        if isinstance(value, Mapping):
-            value = _clear_comparison_fields(value)
-        elif isinstance(value, list):
-            value = [
-                _clear_comparison_fields(item) if isinstance(item, Mapping) else item
-                for item in value
-            ]
-        elif isinstance(value, tuple):
-            value = tuple(
-                _clear_comparison_fields(item) if isinstance(item, Mapping) else item
-                for item in value
-            )
-        cleaned[field] = value
+        cleaned[field] = _clear_comparison_fields_in_value(value)
     return cleaned
+
+
+def _clear_comparison_fields_in_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _clear_comparison_fields(value)
+    if isinstance(value, list):
+        return [_clear_comparison_fields_in_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clear_comparison_fields_in_value(item) for item in value)
+    return value
