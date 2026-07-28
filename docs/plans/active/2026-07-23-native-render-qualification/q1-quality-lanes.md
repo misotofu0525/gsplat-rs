@@ -157,8 +157,9 @@ Build the immutable local authority without launching a browser:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 \
   tests/perf/build-q1-product-quality-authority.py \
+  --view-set formal-000001-000009 \
   --archive target/qualification/q1-product-quality-source/tandt_db.zip \
-  --source-dir target/qualification/q1-product-quality-source/truck \
+  --source-dir target/qualification/q1-product-quality-source/truck-formal \
   --output /fresh/q1-product-quality-authority
 ```
 
@@ -166,6 +167,10 @@ The output path must not exist. The builder verifies the official archive,
 all four extracted inputs, JPEG dimensions, PINHOLE model, named image records
 and complete COLMAP binary boundaries before atomically publishing. Existing
 output is never overwritten.
+
+The CLI requires an explicit view-set name. The retained legacy
+`legacy-000001-000108` authority remains verifiable, while formal Product
+Quality uses `formal-000001-000009`; neither can be validated as the other.
 
 ## Independently verifiable slices
 
@@ -233,5 +238,6 @@ of `2^-16..=2^16` guarantees a finite, normal derived aspect for any positive
 This core slice does not unblock an endpoint run by itself. The canonical
 trace, Wasm/JS setter and receipt, and PlayCanvas custom projection still need
 to carry and prove the same ratio. Principal-point offsets remain unsupported;
-the selected Truck views are eligible for this narrower model only after their
-authority receipt proves that `cx=W/2` and `cy=H/2` at the decoded resolution.
+the formal source-camera authority proves that both selected Truck views have
+`cx=W/2` and `cy=H/2` at the decoded 979x546 resolution, so no principal-point
+approximation remains for this named scope.

@@ -1581,3 +1581,26 @@ qualification: the legacy trace adapter still selects ratio one, and the
 trace, Wasm/JS and PlayCanvas receipt carriers remain separate reviewed slices.
 The public Rust struct gains one field, so downstream literal construction is
 a source-compatibility change; the C ABI remains unchanged.
+
+### Q1 formal Truck camera view-set authority (2026-07-28)
+
+The source-camera authority now names two immutable view sets instead of
+silently changing the existing builder default. The retained legacy
+`000001+000108` input remains valid as `legacy-000001-000108`; formal Product
+Quality uses `formal-000001-000009`, with `000009.jpg` pinned at 469,920 bytes
+and SHA-256
+`3da0fedd20eb8df970ff7ff4596526c10f9f99c4766cfe776f6bb907c6751fbd`.
+Both reuse the same pinned archive, complete cameras/images metadata and Truck
+scene identity.
+
+A real fresh build at
+`target/qualification/q1-product-quality-source-camera-formal-v1` validates
+both named records. Each scales to `fx=581.9245675736333`,
+`fy=578.6701201866216`, `cx=489.5`, `cy=273.0` at 979x546; the two principal
+points are therefore exactly centered for the supported core model.
+
+Command-line construction now requires `--view-set`; the Python compatibility
+alias remains explicitly legacy so existing local authorities can still be
+revalidated. Cross-validating one view set as the other fails closed. This
+slice launches no endpoint and does not authorize performance; it supplies the
+formal `000001+000009` camera records needed by the next trace-carriage slice.

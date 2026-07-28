@@ -44,7 +44,11 @@ class AuthoritySpec:
     scene_sh_degree: int
 
 
-OFFICIAL_SPEC = AuthoritySpec(
+LEGACY_VIEW_SET = "legacy-000001-000108"
+FORMAL_VIEW_SET = "formal-000001-000009"
+
+
+LEGACY_OFFICIAL_SPEC = AuthoritySpec(
     archive_url=(
         "https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/"
         "datasets/input/tandt_db.zip"
@@ -81,6 +85,49 @@ OFFICIAL_SPEC = AuthoritySpec(
     scene_splat_count=2_541_226,
     scene_sh_degree=3,
 )
+
+
+def _legacy_file(name: str) -> FileSpec:
+    matches = tuple(item for item in LEGACY_OFFICIAL_SPEC.files if item.name == name)
+    if len(matches) != 1:
+        raise RuntimeError(f"legacy authority must contain exactly one {name}")
+    return matches[0]
+
+
+FORMAL_OFFICIAL_SPEC = AuthoritySpec(
+    archive_url=LEGACY_OFFICIAL_SPEC.archive_url,
+    archive=LEGACY_OFFICIAL_SPEC.archive,
+    files=(
+        _legacy_file("000001.jpg"),
+        FileSpec(
+            "000009.jpg",
+            469_920,
+            "3da0fedd20eb8df970ff7ff4596526c10f9f99c4766cfe776f6bb907c6751fbd",
+        ),
+        _legacy_file("cameras.bin"),
+        _legacy_file("images.bin"),
+    ),
+    image_names=("000001.jpg", "000009.jpg"),
+    scene_sha256=LEGACY_OFFICIAL_SPEC.scene_sha256,
+    scene_splat_count=LEGACY_OFFICIAL_SPEC.scene_splat_count,
+    scene_sh_degree=LEGACY_OFFICIAL_SPEC.scene_sh_degree,
+)
+
+OFFICIAL_SPECS = {
+    LEGACY_VIEW_SET: LEGACY_OFFICIAL_SPEC,
+    FORMAL_VIEW_SET: FORMAL_OFFICIAL_SPEC,
+}
+
+# Preserve the pre-existing Python API's legacy default. Command-line producers
+# must select a named view set explicitly and never inherit this alias.
+OFFICIAL_SPEC = LEGACY_OFFICIAL_SPEC
+
+
+def official_spec_for_view_set(view_set: str) -> AuthoritySpec:
+    try:
+        return OFFICIAL_SPECS[view_set]
+    except KeyError:
+        fail(f"unknown product-quality view set: {view_set}")
 
 
 def fail(message: str) -> None:

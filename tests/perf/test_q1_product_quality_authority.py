@@ -5,6 +5,7 @@ import hashlib
 import json
 import pathlib
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,8 +18,13 @@ from q1_product_quality_authority import (  # noqa: E402
     AUTHORITY_CLASS,
     AuthorityError,
     AuthoritySpec,
+    FORMAL_OFFICIAL_SPEC,
+    FORMAL_VIEW_SET,
     FileSpec,
+    LEGACY_OFFICIAL_SPEC,
+    LEGACY_VIEW_SET,
     build_authority,
+    official_spec_for_view_set,
     validate_authority,
 )
 
@@ -43,12 +49,13 @@ def cameras(*, model_id: int = 1, fx: float = 12.0) -> bytes:
 
 def images(
     *,
+    image_names: tuple[str, str] = ("000001.jpg", "000108.jpg"),
     duplicate: bool = False,
     duplicate_id: bool = False,
     qvec: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
 ) -> bytes:
     records = []
-    names = ["000001.jpg", "000001.jpg" if duplicate else "000108.jpg"]
+    names = [image_names[0], image_names[0] if duplicate else image_names[1]]
     for image_id, name in enumerate(names, 1):
         stored_image_id = 1 if duplicate_id else image_id
         records.append(
@@ -78,17 +85,21 @@ class AuthorityFixture:
         duplicate_id: bool = False,
         fx: float = 12.0,
         qvec: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+        image_names: tuple[str, str] = ("000001.jpg", "000108.jpg"),
     ):
         self.archive = root / "archive.zip"
         self.source = root / "input"
         self.output = root / "authority"
         self.source.mkdir()
         values = {
-            "000001.jpg": jpeg(10, 5),
-            "000108.jpg": jpeg(10, 5),
+            image_names[0]: jpeg(10, 5),
+            image_names[1]: jpeg(10, 5),
             "cameras.bin": cameras(model_id=model_id, fx=fx),
             "images.bin": images(
-                duplicate=duplicate, duplicate_id=duplicate_id, qvec=qvec
+                image_names=image_names,
+                duplicate=duplicate,
+                duplicate_id=duplicate_id,
+                qvec=qvec,
             ),
         }
         self.archive.write_bytes(b"archive")
@@ -98,7 +109,7 @@ class AuthorityFixture:
             archive_url="https://example.invalid/official.zip",
             archive=FileSpec("archive.zip", self.archive.stat().st_size, digest(b"archive")),
             files=tuple(FileSpec(name, len(data), digest(data)) for name, data in values.items()),
-            image_names=("000001.jpg", "000108.jpg"),
+            image_names=image_names,
             scene_sha256="a" * 64,
             scene_splat_count=2,
             scene_sh_degree=3,
@@ -106,6 +117,54 @@ class AuthorityFixture:
 
 
 class ProductAuthorityTests(unittest.TestCase):
+    def test_named_official_specs_are_distinct_and_formal_000009_is_pinned(self) -> None:
+        self.assertIs(official_spec_for_view_set(LEGACY_VIEW_SET), LEGACY_OFFICIAL_SPEC)
+        self.assertIs(official_spec_for_view_set(FORMAL_VIEW_SET), FORMAL_OFFICIAL_SPEC)
+        self.assertEqual(LEGACY_OFFICIAL_SPEC.image_names, ("000001.jpg", "000108.jpg"))
+        self.assertEqual(FORMAL_OFFICIAL_SPEC.image_names, ("000001.jpg", "000009.jpg"))
+        formal_image = next(
+            item for item in FORMAL_OFFICIAL_SPEC.files if item.name == "000009.jpg"
+        )
+        self.assertEqual(formal_image.bytes, 469_920)
+        self.assertEqual(
+            formal_image.sha256,
+            "3da0fedd20eb8df970ff7ff4596526c10f9f99c4766cfe776f6bb907c6751fbd",
+        )
+        with self.assertRaisesRegex(AuthorityError, "unknown product-quality view set"):
+            official_spec_for_view_set("default")
+
+    def test_formal_and_legacy_authorities_cannot_be_cross_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(
+                pathlib.Path(directory), image_names=("000001.jpg", "000009.jpg")
+            )
+            fixture.spec = dataclasses.replace(
+                fixture.spec,
+                scene_sha256=LEGACY_OFFICIAL_SPEC.scene_sha256,
+                scene_splat_count=LEGACY_OFFICIAL_SPEC.scene_splat_count,
+                scene_sh_degree=LEGACY_OFFICIAL_SPEC.scene_sh_degree,
+            )
+            receipt = build_authority(
+                fixture.archive, fixture.source, fixture.output, spec=fixture.spec
+            )
+            self.assertEqual(
+                [view["name"] for view in receipt["views"]],
+                ["000001.jpg", "000009.jpg"],
+            )
+            with self.assertRaisesRegex(AuthorityError, "view set mismatch"):
+                validate_authority(fixture.output, spec=LEGACY_OFFICIAL_SPEC)
+
+    def test_cli_requires_an_explicit_view_set(self) -> None:
+        script = pathlib.Path(__file__).with_name("build-q1-product-quality-authority.py")
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--view-set", result.stderr)
+
     def test_builds_and_revalidates_two_calibrated_views(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = AuthorityFixture(pathlib.Path(directory))
