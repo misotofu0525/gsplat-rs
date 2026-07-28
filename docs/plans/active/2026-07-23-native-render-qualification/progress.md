@@ -1608,3 +1608,32 @@ alias remains explicitly legacy so existing local authorities can still be
 revalidated. Cross-validating one view set as the other fails closed. This
 slice launches no endpoint and does not authorize performance; it supplies the
 formal `000001+000009` camera records needed by the next trace-carriage slice.
+
+### Q1 formal Truck Product Quality trace input (2026-07-28)
+
+The formal camera input now joins the two previously independent immutable
+authorities without launching either endpoint. A fresh no-replace builder
+revalidates every retained source-camera and Evaluation Images file, requires
+exact `000001+000009` membership and 979x546 dimensions, and rejects any
+off-center principal point before publication. Its trace and adjacent receipt
+bind both authority schemas, classes, authority-receipt hashes, and every
+retained input file identity.
+
+The generated trace converts the upstream COLMAP RDF world-to-camera poses to
+runtime RUF camera-to-world poses, derives the exact vertical FOV from
+`fy=578.6701201866216`, carries
+`focal_length_x_over_y=1.005624011459175`, and recomputes view, projection and
+view-projection matrices for 979x546 with the upstream 3DGS camera's
+`znear=0.01` and `zfar=100`. The retained content hash is
+`46819f71d5025bb61f6583392448d977051a0b4c67a0c05db860232033c0676c`.
+Eleven focused tests cover the checked-in fixture plus synthetic construction,
+complete input binding, no-replace publication, input-root output rejection,
+wrong view set, off-center intrinsics, missing/input drift, trace mutation and
+unreceipted output files. The real builder and the canonical trace validator
+both pass against
+`target/qualification/q1-formal-truck-product-quality-trace-v1`.
+
+This is an immutable formal camera input only. Product Quality remains
+`Deferred`, performance stays unauthorized, and no renderer, browser, device,
+endpoint image, timing ratio, FPS or winner was produced. The next slices are
+the independent Wasm/JS and PlayCanvas projection/receipt carriers.

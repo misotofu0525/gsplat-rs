@@ -20,7 +20,9 @@ recreate an orbit from engine-local yaw/pitch controls.
   camera_z`. There is no hidden OpenGL depth conversion or Y flip.
 - `view_projection_matrix` is exactly `projection_matrix * view_matrix`.
 - `vertical_fov_radians`, `near_plane`, and `far_plane` define projection;
-  aspect is `display.width / display.height`.
+  aspect is `display.width / display.height`. Optional
+  `focal_length_x_over_y` preserves a centered PINHOLE camera's independent
+  horizontal focal length and defaults exactly to one for legacy traces.
 
 Engines whose native convention is `-Z` forward, column-major storage, or
 OpenGL `[-1,1]` depth must transpose/convert at the API boundary. The committed
@@ -152,8 +154,40 @@ Packed offscreen path and inspect the PNGs before promoting a trace into an
 experiment plan. Do not treat the derivation algorithm alone as image-quality
 evidence.
 
+## Formal Truck Product Quality trace
+
+The formal 979x546 two-view trace is derived only from the immutable
+`formal-000001-000009` source-camera authority and the separately retained
+official Evaluation Images authority:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  tests/perf/build-q1-formal-truck-trace.py \
+  --source-camera-authority \
+    target/qualification/q1-product-quality-source-camera-formal-v1 \
+  --evaluation-authority \
+    target/qualification/q1-product-quality-evaluation-authority-v1 \
+  --output /fresh/q1-formal-truck-product-quality-trace-v1
+```
+
+The output path must not exist. The builder revalidates both authorities,
+requires exact views `000001+000009`, 979x546 source and ground-truth images,
+centered principal points, and complete byte identities before atomically
+publishing `camera-trace.json` with `receipt.json`. It converts the COLMAP RDF
+world-to-camera poses to RUF camera-to-world poses and carries the exact
+`fx/fy` ratio plus the upstream 3DGS camera's `znear=0.01` and `zfar=100`
+into every projection. Its trace content hash binds both complete
+authority trees, including each authority receipt and retained source file.
+
+The checked-in fixture is
+`fixtures/quality/formal-truck-product-quality-979x546-v1/camera-trace.json`.
+It is a formal camera input, not an endpoint image or Product Quality result;
+its receipt keeps Product Quality `Deferred` and performance unauthorized.
+
 The committed quality fixtures form an explicit resolution ladder:
 
+- `979x546` only for the independently authored two-view Truck Product Quality
+  image gate; it is not a throughput or cross-resolution comparison input;
 - `640x360` for quick functional and telemetry diagnostics only;
 - `1920x1080` for same-scene desktop/Web product-throughput experiments for
   Kitsune, Flowers, Bonsai, Truck, Garden, and Bicycle;

@@ -183,8 +183,10 @@ Quality uses `formal-000001-000009`; neither can be validated as the other.
    locked-metric upstream baseline and freeze Product Quality thresholds. Run
    no endpoint. **Implemented; fixed-SHA review pending.**
 4. **Exact pinhole camera** — carry independent `fx/fy/cx/cy` through the trace
-   and both endpoint camera receipts. The existing vertical-FOV-only trace is
-   not formal Product Quality evidence because it assumes `fx == fy`.
+   and both endpoint camera receipts. The centered core and canonical trace
+   input are implemented; Wasm/JS and PlayCanvas endpoint application and
+   receipts remain separate reviewed slices. The existing vertical-FOV-only
+   trace is not formal Product Quality evidence because it assumes `fx == fy`.
 5. **One-view quality smoke** — render `000001` at exact 979x546 with one
    renderer-owned image per endpoint. Apply the already frozen metrics. No
    timing is retained and one view cannot unlock performance.
@@ -242,9 +244,18 @@ retain v0.1 Rust source compatibility, this field must be replaced by an
 additive calibrated-camera carrier before integration, not hidden by release
 notes after the fact.
 
-This core slice does not unblock an endpoint run by itself. The canonical
-trace, Wasm/JS setter and receipt, and PlayCanvas custom projection still need
-to carry and prove the same ratio. Principal-point offsets remain unsupported;
-the formal source-camera authority proves that both selected Truck views have
+The canonical trace carrier now accepts an optional bounded focal ratio while
+legacy traces remain byte-identical and default to one. A fresh formal trace
+builder consumes only the two immutable upstream authority roots, revalidates
+their complete retained file trees, converts the exact `000001+000009` COLMAP
+poses into runtime RUF, and emits 979x546 matrices with
+`fx/fy=1.005624011459175` plus the upstream camera's `znear=0.01` and
+`zfar=100`. The checked-in trace content hash is
+`46819f71d5025bb61f6583392448d977051a0b4c67a0c05db860232033c0676c`.
+
+This input slice still does not unblock an endpoint run by itself. The
+Wasm/JS setter and receipt and PlayCanvas custom projection must each carry
+and prove the same ratio. Principal-point offsets remain unsupported; the
+formal source-camera authority proves that both selected Truck views have
 `cx=W/2` and `cy=H/2` at the decoded 979x546 resolution, so no principal-point
 approximation remains for this named scope.
