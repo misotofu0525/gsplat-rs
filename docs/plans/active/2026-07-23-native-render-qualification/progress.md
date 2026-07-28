@@ -622,6 +622,45 @@ result yet. The next root-owned action is one fresh doctor -> command -> run
 matrix at an exact clean integrated SHA; a failed cell is retained rather than
 retried or tuned in place.
 
+The first post-integration A065 attempt did not produce performance evidence.
+The app rendered its two correctness frames and drained the renderer-owned
+current-stats queue, but the Android benchmark host rejected the first frame as
+`refreshed measured frame 0 lacks its own order ticket`. Packed Exact is allowed
+to reuse an order without issuing a legacy order-measurement ticket, so the
+host had coupled two independent namespaces: order telemetry and same-present
+current-stats. The outer collector was manually stopped after this terminal
+app rejection rather than waiting through the remaining matrix cells; no run
+was retained as a performance sample.
+
+The bounded correction is now integrated in four independent commits:
+
+- `84dafa5` waits for the complete structured rejection before stopping
+  logcat, then terminates the matrix immediately instead of spending later
+  cells after an absorbing host rejection.
+- `24bcd38` removes every `sort_refreshed -> order ticket` inference and every
+  numeric join between order and current-stats tickets. Only tickets actually
+  issued by each namespace require their own terminal.
+- `f1fb63f` adds the frozen additive current-stats V2 C/JNI/Kotlin view. It
+  consumes the existing single-pop renderer queue and carries identity,
+  S/V/C/D, frame completion and validity-gated CPU preprocess/sort in one Ready
+  value; V1 layout and behavior remain unchanged.
+- `7b9d356` moves the Android benchmark consumer and validator to that V2 Ready
+  terminal. CPU phase and frame-completion fields are published only from the
+  matching current-stats ticket, and any missing provenance, partial phase or
+  frame/ledger drift fails closed. Order telemetry remains optional correctness
+  evidence and cannot supply Q3 timing.
+
+The default Android build failure caused by Bash 3 expanding an empty feature
+array was separately corrected at `7366f4f`; the unrelated default-feature
+all-target Clippy dead-field warning was corrected at `88406b3`. Fresh
+host-only verification passes the real Android release native build, JNI smoke,
+AAR, APK, Gradle library/sample tests, 101 collector tests, the complete
+artifact-extraction negative suite, FFI 39/39, renderer current-stats 5/5,
+default and diagnostic-feature Clippy, Rustdoc, formatting and source
+architecture. No A065 run has occurred after these corrections. Q3 therefore
+remains **Active** with no Android performance result; the next device action is
+one fresh exact-SHA execution after fixed-SHA review, never an automatic retry.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8
