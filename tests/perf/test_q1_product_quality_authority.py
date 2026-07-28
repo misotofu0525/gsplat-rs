@@ -295,6 +295,19 @@ class ProductAuthorityTests(unittest.TestCase):
             with self.assertRaisesRegex(AuthorityError, "bounded receipt size"):
                 validate_authority(fixture.output, spec=fixture.spec)
 
+    def test_duplicate_nested_json_key_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = AuthorityFixture(pathlib.Path(directory))
+            build_authority(fixture.archive, fixture.source, fixture.output, spec=fixture.spec)
+            receipt_path = fixture.output / "authority.json"
+            encoded = receipt_path.read_text()
+            encoded = encoded.replace(
+                '"splat_count": 2', '"splat_count": 999, "splat_count": 2', 1
+            )
+            receipt_path.write_text(encoded)
+            with self.assertRaisesRegex(AuthorityError, "repeats key 'splat_count'"):
+                validate_authority(fixture.output, spec=fixture.spec)
+
     def test_copied_source_drift_and_extra_files_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = AuthorityFixture(pathlib.Path(directory))

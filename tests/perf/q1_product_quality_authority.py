@@ -166,6 +166,15 @@ def canonical_json(value: Any) -> str:
         fail(f"authority contains non-canonical JSON: {error}")
 
 
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            fail(f"authority.json repeats key {key!r}")
+        value[key] = item
+    return value
+
+
 def checked_file(root: pathlib.Path, spec: FileSpec) -> pathlib.Path:
     path = root / spec.name
     if path.is_symlink() or not path.is_file():
@@ -483,7 +492,10 @@ def validate_authority(
     if receipt_path.stat().st_size > MAX_RECEIPT_BYTES:
         fail("authority.json exceeds the bounded receipt size")
     try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt = json.loads(
+            receipt_path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+        )
     except (OSError, ValueError) as error:
         fail(f"cannot read authority receipt: {error}")
     validate_receipt(receipt, spec=spec)
