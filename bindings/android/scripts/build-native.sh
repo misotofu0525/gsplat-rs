@@ -9,15 +9,12 @@ cd "$ROOT_DIR"
 GSPLAT_ANDROID_Q3_CPU_LANE="${GSPLAT_ANDROID_Q3_CPU_LANE:-}"
 case "$GSPLAT_ANDROID_Q3_CPU_LANE" in
   "")
-    CARGO_FEATURE_ARGS=()
     Q3_CPU_LANE="default"
     ;;
   scalar)
-    CARGO_FEATURE_ARGS=(--features qualification-q3-cpu-scalar)
     Q3_CPU_LANE="scalar"
     ;;
   neon)
-    CARGO_FEATURE_ARGS=(--features qualification-q3-cpu-neon)
     Q3_CPU_LANE="neon"
     ;;
   *)
@@ -107,11 +104,9 @@ fi
 ANDROID_RUST_PROFILE="${ANDROID_RUST_PROFILE:-release}"
 case "$ANDROID_RUST_PROFILE" in
   release)
-    CARGO_PROFILE_ARGS=(--release)
     CARGO_TARGET_DIR_NAME="release"
     ;;
   dev|debug)
-    CARGO_PROFILE_ARGS=()
     CARGO_TARGET_DIR_NAME="debug"
     ;;
   *)
@@ -122,9 +117,14 @@ case "$ANDROID_RUST_PROFILE" in
 esac
 
 rustup target add aarch64-linux-android >/dev/null
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG" \
-  cargo build -p gsplat-ffi-c --target aarch64-linux-android \
-  "${CARGO_PROFILE_ARGS[@]}" "${CARGO_FEATURE_ARGS[@]}"
+CARGO_BUILD_ARGS=(build -p gsplat-ffi-c --target aarch64-linux-android)
+if [[ "$ANDROID_RUST_PROFILE" == "release" ]]; then
+  CARGO_BUILD_ARGS+=(--release)
+fi
+if [[ -n "$GSPLAT_ANDROID_Q3_CPU_LANE" ]]; then
+  CARGO_BUILD_ARGS+=(--features "qualification-q3-cpu-$GSPLAT_ANDROID_Q3_CPU_LANE")
+fi
+CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG" cargo "${CARGO_BUILD_ARGS[@]}"
 
 RUST_STATIC_LIB="$ROOT_DIR/target/aarch64-linux-android/$CARGO_TARGET_DIR_NAME/libgsplat_ffi_c.a"
 if [[ ! -f "$RUST_STATIC_LIB" ]]; then
