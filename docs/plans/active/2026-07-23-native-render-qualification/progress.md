@@ -1716,3 +1716,14 @@ Cargo target and any unpublished candidate artifact, and keeps the requested
 native output absent. Focused tests exercise the real `collect` failure path
 with exactly one host invocation. A new endpoint execution remains deferred
 until this repair is committed and independently reviewed at a fixed SHA.
+
+Fixed-SHA review rejected the first diagnostic repair at `3abd05e` with three
+P1 gaps: timeout partial streams were not written, the shared build receipt
+still serialized its task-local Cargo environment, and strict staging cleanup
+could turn an already published success into a command failure. The follow-up
+repair records timeout/other subprocess exceptions after exactly one call,
+redacts the retained build command to argv only, and makes post-publication
+cleanup unable to reverse success. It adds fault-injection coverage for both
+exception classes, build failure before host launch, environment redaction and
+post-publication cleanup failure. No endpoint is authorized until the new SHA
+passes another independent review.

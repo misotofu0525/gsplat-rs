@@ -283,6 +283,9 @@ publishes an immutable nested `native-view000001.failed-q1-native-*` tree with
 its host command/stdout/stderr and build diagnostics. It removes the private
 Cargo target and any unpublished candidate artifact before publication, so
 failure evidence stays small and cannot masquerade as formal quality output.
+Timeouts retain the subprocess partial streams; other subprocess failures
+retain explicit empty streams when none exist. The build argv remains, but its
+task-local environment values are removed before the failure tree is frozen.
 
 ### Q1 WebGPU Truck 1080p prerequisite
 

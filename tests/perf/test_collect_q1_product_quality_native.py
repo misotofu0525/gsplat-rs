@@ -363,6 +363,19 @@ class NativeQualityProducerTests(unittest.TestCase):
             binary.write_bytes(b"binary")
             build = stage / "build"
             build.mkdir()
+            (build / "command.json").write_text(
+                json.dumps(
+                    {
+                        "argv": ["cargo", "build", "--release"],
+                        "environment": {
+                            "CARGO_TARGET_DIR": str(stage / "cargo-target"),
+                            "CARGO_BUILD_JOBS": "1",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             (build / "stderr.log").write_text("build ok\n", encoding="utf-8")
             return {"path": binary, "sha256": "b" * 64}
 
@@ -410,6 +423,16 @@ class NativeQualityProducerTests(unittest.TestCase):
             "fatal renderer detail\n",
         )
         self.assertFalse((failure / "cargo-target").exists())
+        build_command = json.loads(
+            (failure / "build/command.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            build_command,
+            {
+                "argv": ["cargo", "build", "--release"],
+                "environment_redacted": True,
+            },
+        )
         blocker = json.loads((failure / "blocker.json").read_text(encoding="utf-8"))
         self.assertEqual(
             blocker["retained_host_logs"],
@@ -419,6 +442,143 @@ class NativeQualityProducerTests(unittest.TestCase):
                 "stdout": "host/stdout.log",
             },
         )
+
+    def test_timeout_and_subprocess_exception_retain_available_streams(self) -> None:
+        for error, expected_stdout, expected_stderr in (
+            (
+                NATIVE.subprocess.TimeoutExpired(
+                    ["desktop-example"],
+                    30,
+                    output=b"partial stdout\n",
+                    stderr=b"partial stderr\n",
+                ),
+                "partial stdout\n",
+                "partial stderr\n",
+            ),
+            (NATIVE.subprocess.SubprocessError("launch failed"), "", ""),
+        ):
+            with self.subTest(error=type(error).__name__):
+                host = self.root / f"host-{type(error).__name__}"
+                host.mkdir()
+                calls = []
+
+                def invoke(command, cwd):
+                    calls.append((tuple(command), cwd))
+                    raise error
+
+                with self.assertRaisesRegex(
+                    NATIVE.ValidationError, "host invocation raised"
+                ):
+                    NATIVE.invoke_host_once(
+                        invoke, ["desktop-example", "truck.ply"], host
+                    )
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(
+                    (host / "stdout.log").read_text(encoding="utf-8"),
+                    expected_stdout,
+                )
+                self.assertEqual(
+                    (host / "stderr.log").read_text(encoding="utf-8"),
+                    expected_stderr,
+                )
+                receipt = json.loads(
+                    (host / "invocation-error.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(receipt["error_type"], type(error).__name__)
+                self.assertFalse(receipt["automatic_retry"])
+
+    def test_build_failure_is_retained_without_environment_or_host_invocation(self) -> None:
+        output = self.root / "native-build-failure"
+        dataset = self.root / "truck.ply"
+        dataset.write_bytes(b"truck")
+        trace_root = self.root / "trace-build"
+        trace_root.mkdir()
+        trace_path = trace_root / "camera-trace.json"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        commit = "c" * 40
+        args = types.SimpleNamespace(
+            output=output,
+            expected_commit=commit,
+            formal_trace_authority=trace_root,
+            dataset=dataset,
+        )
+        host_calls = []
+
+        def fake_build(repo, stage, expected_git, *, feature, build_jobs):
+            build = stage / "build"
+            build.mkdir()
+            NATIVE.write_json(
+                build / "command.json",
+                {
+                    "argv": ["cargo", "build", "--release"],
+                    "environment": {
+                        "CARGO_TARGET_DIR": str(stage / "cargo-target"),
+                        "CARGO_BUILD_JOBS": "1",
+                    },
+                },
+            )
+            (build / "stdout.log").write_text("compiler stdout\n", encoding="utf-8")
+            (build / "stderr.log").write_text("compiler stderr\n", encoding="utf-8")
+            (stage / "cargo-target").mkdir()
+            raise NATIVE.ValidationError("locked build failed")
+
+        def invoke(command, cwd):
+            host_calls.append((tuple(command), cwd))
+            raise AssertionError("host must not start after build failure")
+
+        with (
+            mock.patch.object(NATIVE, "validate_ignored_output"),
+            mock.patch.object(
+                NATIVE,
+                "git_receipt",
+                return_value={"dirty": False, "commit": commit},
+            ),
+            mock.patch.object(
+                NATIVE,
+                "load_formal_trace",
+                return_value={"root": trace_root, "path": trace_path},
+            ),
+            mock.patch.object(NATIVE, "load_truck", return_value=dataset),
+            mock.patch.object(NATIVE, "require_disjoint_output"),
+            mock.patch.object(
+                NATIVE.SHARED,
+                "build_locked_desktop_binary",
+                side_effect=fake_build,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                NATIVE.ValidationError, "retained native failure"
+            ):
+                NATIVE.collect(args, repo=self.root, invoke=invoke)
+
+        self.assertEqual(host_calls, [])
+        self.assertFalse(output.exists())
+        failures = list(self.root.glob("native-build-failure.failed-q1-native-*"))
+        self.assertEqual(len(failures), 1)
+        failure = failures[0]
+        self.assertFalse((failure / "cargo-target").exists())
+        self.assertFalse((failure / "host").exists())
+        command = json.loads(
+            (failure / "build/command.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(command["environment_redacted"], True)
+        self.assertNotIn("environment", command)
+        self.assertEqual(
+            (failure / "build/stderr.log").read_text(encoding="utf-8"),
+            "compiler stderr\n",
+        )
+        blocker = json.loads((failure / "blocker.json").read_text(encoding="utf-8"))
+        self.assertEqual(blocker["retained_host_logs"], {})
+
+    def test_cleanup_failure_cannot_reverse_an_already_published_success(self) -> None:
+        stage = self.root / "published-stage"
+        stage.mkdir()
+        with mock.patch.object(
+            NATIVE, "discard_tree", side_effect=OSError("cleanup failed")
+        ):
+            NATIVE.cleanup_stage(stage, formal_output_published=True)
+            with self.assertRaisesRegex(OSError, "cleanup failed"):
+                NATIVE.cleanup_stage(stage, formal_output_published=False)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,10 @@ failure retains an immutable `native-view000001.failed-q1-native-*` child with
 the host command/stdout/stderr and build diagnostics, while deleting its
 rebuildable private Cargo target and unpublished candidate artifact. That tree
 is diagnostic only and never substitutes for the requested native capture.
+Timeout partial streams are retained, absent streams are represented by empty
+logs, and the retained build command is stripped of task-local environment
+values. Cleanup after a successful no-replace publication cannot reverse that
+success into an endpoint failure.
 
 ```bash
 python3 tests/perf/collect-q1-product-quality-view000001.py \

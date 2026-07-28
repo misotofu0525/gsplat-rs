@@ -625,6 +625,88 @@ def discard_tree(path: pathlib.Path) -> None:
     shutil.rmtree(path)
 
 
+def cleanup_stage(stage: pathlib.Path, *, formal_output_published: bool) -> None:
+    """Clean staging without allowing cleanup to reverse a published success."""
+
+    if not stage.exists():
+        return
+    try:
+        discard_tree(stage)
+    except OSError:
+        if not formal_output_published:
+            raise
+
+
+def subprocess_stream_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def invoke_host_once(
+    invoke: HostInvoker,
+    command: Sequence[str],
+    host: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    """Invoke exactly once and retain even partial subprocess diagnostics."""
+
+    try:
+        completed = invoke(command, host)
+    except subprocess.SubprocessError as error:
+        stdout_value = getattr(error, "stdout", None)
+        if stdout_value is None:
+            stdout_value = getattr(error, "output", None)
+        stderr_value = getattr(error, "stderr", None)
+        (host / "stdout.log").write_text(
+            subprocess_stream_text(stdout_value), encoding="utf-8"
+        )
+        (host / "stderr.log").write_text(
+            subprocess_stream_text(stderr_value), encoding="utf-8"
+        )
+        write_json(
+            host / "invocation-error.json",
+            {
+                "error_type": type(error).__name__,
+                "reason": str(error),
+                "partial_stdout_available": stdout_value is not None,
+                "partial_stderr_available": stderr_value is not None,
+                "automatic_retry": False,
+            },
+        )
+        raise ValidationError(
+            f"native quality host invocation raised {type(error).__name__}"
+        ) from error
+    (host / "stdout.log").write_text(
+        subprocess_stream_text(completed.stdout), encoding="utf-8"
+    )
+    (host / "stderr.log").write_text(
+        subprocess_stream_text(completed.stderr), encoding="utf-8"
+    )
+    return completed
+
+
+def redact_build_environment(stage: pathlib.Path) -> None:
+    """Keep the exact build argv while removing task-local environment values."""
+
+    command_path = stage / "build/command.json"
+    if not command_path.exists():
+        return
+    require(
+        command_path.is_file() and not command_path.is_symlink(),
+        "build command diagnostic must be a regular file",
+    )
+    value = json.loads(command_path.read_text(encoding="utf-8"))
+    require(isinstance(value, dict), "build command diagnostic must be an object")
+    argv = value.get("argv")
+    require(
+        isinstance(argv, list) and all(isinstance(item, str) for item in argv),
+        "build command argv is unavailable",
+    )
+    write_json(command_path, {"argv": argv, "environment_redacted": True})
+
+
 def publish_failure(
     stage: pathlib.Path,
     output: pathlib.Path,
@@ -638,6 +720,7 @@ def publish_failure(
     # must not look like formal evidence inside a failure tree.
     discard_tree(stage / "cargo-target")
     discard_tree(stage / "artifact")
+    redact_build_environment(stage)
     destination = output.with_name(
         f"{output.name}.failed-q1-native-{commit[:12]}-{uuid.uuid4().hex[:12]}"
     )
@@ -688,6 +771,7 @@ def collect(
     require_disjoint_output(output, (trace["root"], dataset))
 
     stage = pathlib.Path(tempfile.mkdtemp(prefix=f".{output.name}.q1-native-", dir=output.parent))
+    published = False
     try:
         build = SHARED.build_locked_desktop_binary(
             repo, stage, initial_git, feature=FEATURE, build_jobs=1
@@ -697,9 +781,7 @@ def collect(
         host.mkdir()
         command = make_command(binary, dataset, trace["path"])
         write_json(host / "command.json", {"argv": command, "cwd": "host"})
-        completed = invoke(command, host)
-        (host / "stdout.log").write_text(completed.stdout, encoding="utf-8")
-        (host / "stderr.log").write_text(completed.stderr, encoding="utf-8")
+        completed = invoke_host_once(invoke, command, host)
         require(completed.returncode == 0, f"native quality host exited with {completed.returncode}")
         require(sha256_file(binary) == build["sha256"], "locked native binary changed")
         require(sha256_file(dataset) == TRUCK_SHA256, "formal Truck changed during capture")
@@ -728,6 +810,7 @@ def collect(
         fsync_tree(artifact)
         make_tree_immutable(artifact)
         Q1._publish_directory_noreplace(artifact, output)
+        published = True
         return output
     except Exception as error:
         if stage.exists():
@@ -745,8 +828,7 @@ def collect(
             ) from error
         raise
     finally:
-        if stage.exists():
-            discard_tree(stage)
+        cleanup_stage(stage, formal_output_published=published)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
