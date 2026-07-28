@@ -1673,3 +1673,28 @@ values with zero observed difference. The repair still requires a fresh
 fixed-SHA review. No endpoint was launched and no one-view image result exists;
 Product Quality remains `Deferred` and `performance_eligible=false` until both
 formal views independently qualify.
+
+### Q1 view 000001 one-shot coordination (2026-07-28)
+
+The two reviewed quality-only endpoint interfaces are now joined by one narrow
+root-owned transaction rather than an ad-hoc launch sequence. Before any build
+or browser action, it requires a clean exact full SHA, validates the retained
+formal trace and Evaluation Images trees, decodes the official ground truth,
+hashes the complete 630,225,580-byte Truck PLY, and proves the fresh output is
+disjoint from every immutable input.
+
+The execution order is frozen as Native quality-only once, PlayCanvas headful
+quality-only once, then the offline one-view gate once. Every child writes to a
+separate new directory below a hidden staging root. Any nonzero exit or
+exception terminalizes that invocation immediately with no automatic retry;
+the requested result stays absent and an immutable sibling failure tree keeps
+the blocker. Only three successes atomically publish the top-level receipt and
+children. The bootstrap profile `q1-product-quality-view000001` is opt-in and
+does not touch a device; doctor and command remain read-only.
+
+Focused tests cover exact ordering, one call per step, native/PlayCanvas/gate
+failure cutoffs, exception cutoff, fresh/disjoint outputs, headful request
+identity, commit/platform/tool/authority probes, and the single coordinator
+command. This slice did not launch Chrome, a native window, a device, or either
+endpoint and produced no formal artifact. Product Quality remains `Deferred`;
+performance stays unauthorized.

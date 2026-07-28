@@ -31,6 +31,11 @@ ANDROID_RUST_TARGET = "aarch64-linux-android"
 WEB_RUST_TARGET = "wasm32-unknown-unknown"
 WEB_WASM_PROFILE_ENV = "GSPLAT_WEB_WASM_PROFILE"
 WEB_WASM_OUT_DIR_ENV = "GSPLAT_WEB_WASM_OUT_DIR"
+Q1_QUALITY_EXPECTED_COMMIT_ENV = "GSPLAT_Q1_PRODUCT_QUALITY_EXPECTED_COMMIT"
+Q1_QUALITY_OUTPUT_ENV = "GSPLAT_Q1_PRODUCT_QUALITY_OUTPUT"
+Q1_QUALITY_FORMAL_TRACE_ENV = "GSPLAT_Q1_FORMAL_TRACE_AUTHORITY"
+Q1_QUALITY_EVALUATION_ENV = "GSPLAT_Q1_EVALUATION_AUTHORITY"
+Q1_QUALITY_TRUCK_ENV = "GSPLAT_Q1_TRUCK_DATASET"
 APPLE_XCFRAMEWORK_TARGETS = (
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
@@ -99,12 +104,14 @@ class Discovery:
         which: Callable[[str], str | None] = shutil.which,
         capture: Callable[[Sequence[str]], tuple[int, str]] | None = None,
         host_system: str | None = None,
+        host_machine: str | None = None,
     ) -> None:
         self.env = dict(os.environ if env is None else env)
         self.home = pathlib.Path.home() if home is None else home
         self.which = which
         self.capture = capture or self._capture
         self.host_system = platform.system() if host_system is None else host_system
+        self.host_machine = platform.machine() if host_machine is None else host_machine
 
     @staticmethod
     def _capture(argv: Sequence[str]) -> tuple[int, str]:
@@ -549,10 +556,15 @@ def full_sha_env_probe(discovery: Discovery, variable: str, purpose: str) -> Pro
     )
 
 
-def clean_exact_repository_probe(discovery: Discovery, expected: str) -> Probe:
+def clean_exact_repository_probe(
+    discovery: Discovery,
+    expected: str,
+    *,
+    key: str = "q3-clean-exact-repository",
+) -> Probe:
     git = discovery.command_path("git")
     if git is None:
-        return Probe("q3-clean-exact-repository", False, "git not found", "install Git")
+        return Probe(key, False, "git not found", "install Git")
     head_code, head = discovery.capture((str(git), "-C", str(REPO_ROOT), "rev-parse", "HEAD"))
     status_code, status = discovery.capture(
         (str(git), "-C", str(REPO_ROOT), "status", "--porcelain", "--untracked-files=normal")
@@ -560,11 +572,76 @@ def clean_exact_repository_probe(discovery: Discovery, expected: str) -> Probe:
     ok = head_code == 0 and status_code == 0 and head == expected and not status
     detail = f"head={head or 'unknown'} clean={status_code == 0 and not status} expected={expected or 'unset'}"
     return Probe(
-        "q3-clean-exact-repository",
+        key,
         ok,
         detail,
         None if ok else "check out the exact integrated SHA in a clean worktree before qualification",
     )
+
+
+def q1_product_quality_platform_probes(discovery: Discovery) -> list[Probe]:
+    apple_silicon = discovery.host_machine.lower() in {"arm64", "aarch64"}
+    profiler = discovery.command_path("system_profiler")
+    metal_detail = "system_profiler not found"
+    metal_ok = False
+    if profiler is not None:
+        code, output = discovery.capture((str(profiler), "SPDisplaysDataType"))
+        metal_detail = (output[:500] if output else f"system_profiler exited {code}")
+        metal_ok = code == 0 and "metal" in output.lower()
+    return [
+        Probe(
+            "q1-darwin-host",
+            discovery.host_system == "Darwin",
+            discovery.host_system,
+            None if discovery.host_system == "Darwin" else "run Q1 on macOS",
+        ),
+        Probe(
+            "q1-apple-silicon",
+            apple_silicon,
+            discovery.host_machine,
+            None if apple_silicon else "run Q1 on an Apple Silicon host",
+        ),
+        Probe(
+            "q1-metal-runtime",
+            metal_ok,
+            metal_detail,
+            None
+            if metal_ok
+            else "select a macOS host whose display adapter reports Metal support",
+        ),
+    ]
+
+
+def q1_pinned_puppeteer_probe() -> Probe:
+    lock_path = REPO_ROOT / "tests/competitive/playcanvas/package-lock.json"
+    installed_path = (
+        REPO_ROOT
+        / "tests/competitive/playcanvas/node_modules/puppeteer-core/package.json"
+    )
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        installed = json.loads(installed_path.read_text(encoding="utf-8"))
+        locked = lock["packages"]["node_modules/puppeteer-core"]["version"]
+        actual = installed["version"]
+        ok = isinstance(locked, str) and actual == locked
+        detail = f"installed={actual!r} locked={locked!r}"
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        ok = False
+        detail = f"cannot verify pinned puppeteer-core: {error}"
+    return Probe(
+        "q1-pinned-puppeteer-core",
+        ok,
+        detail,
+        None
+        if ok
+        else "run npm ci --ignore-scripts --prefix tests/competitive/playcanvas",
+    )
+
+
+def q1_input_path(discovery: Discovery, variable: str, default: str) -> pathlib.Path:
+    value = discovery.env.get(variable, default)
+    path = pathlib.Path(value)
+    return path if path.is_absolute() else REPO_ROOT / path
 
 
 def q3_a065_input_probes() -> list[Probe]:
@@ -844,6 +921,114 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
             (command,),
         )
 
+    if name == "q1-product-quality-view000001":
+        probes, env = web_environment(discovery)
+        env = exact_web_build_environment(discovery, probes, env)
+        probes.extend(q1_product_quality_platform_probes(discovery))
+        probes.append(q1_pinned_puppeteer_probe())
+        probes.append(
+            full_sha_env_probe(
+                discovery,
+                Q1_QUALITY_EXPECTED_COMMIT_ENV,
+                "the clean integrated Product Quality candidate",
+            )
+        )
+        expected = discovery.env.get(
+            Q1_QUALITY_EXPECTED_COMMIT_ENV,
+            f"<set-{Q1_QUALITY_EXPECTED_COMMIT_ENV}>",
+        )
+        probes.append(
+            clean_exact_repository_probe(
+                discovery,
+                expected,
+                key="q1-clean-exact-repository",
+            )
+        )
+        formal = q1_input_path(
+            discovery,
+            Q1_QUALITY_FORMAL_TRACE_ENV,
+            "target/qualification/q1-formal-truck-product-quality-trace-v1",
+        )
+        evaluation = q1_input_path(
+            discovery,
+            Q1_QUALITY_EVALUATION_ENV,
+            "target/qualification/q1-product-quality-evaluation-authority-v1",
+        )
+        truck = q1_input_path(
+            discovery,
+            Q1_QUALITY_TRUCK_ENV,
+            "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+        )
+        probes.extend(
+            (
+                directory_probe(
+                    "q1-formal-trace-authority",
+                    formal,
+                    f"set {Q1_QUALITY_FORMAL_TRACE_ENV} to the retained formal authority",
+                ),
+                file_probe(
+                    "q1-formal-trace-camera",
+                    formal / "camera-trace.json",
+                    "restore the reviewed formal Truck camera trace",
+                ),
+                file_probe(
+                    "q1-formal-trace-receipt",
+                    formal / "receipt.json",
+                    "restore the reviewed formal Truck trace receipt",
+                ),
+                directory_probe(
+                    "q1-evaluation-authority",
+                    evaluation,
+                    f"set {Q1_QUALITY_EVALUATION_ENV} to the retained Evaluation Images authority",
+                ),
+                file_probe(
+                    "q1-evaluation-receipt",
+                    evaluation / "authority.json",
+                    "restore the reviewed Evaluation Images authority receipt",
+                ),
+                file_probe(
+                    "q1-evaluation-gt-000001",
+                    evaluation / "source/gt/000001.png",
+                    "restore the official Truck 000001 ground-truth PNG",
+                ),
+                file_probe(
+                    "q1-complete-truck",
+                    truck,
+                    f"set {Q1_QUALITY_TRUCK_ENV} to the complete pinned Truck PLY",
+                ),
+            )
+        )
+        output = discovery.env.get(
+            Q1_QUALITY_OUTPUT_ENV,
+            f"target/qualification/q1-product-quality-view000001-{head}",
+        )
+        probes.append(fresh_output_probe(Q1_QUALITY_OUTPUT_ENV, output))
+        command = Command(
+            (
+                str(python),
+                "tests/perf/collect-q1-product-quality-view000001.py",
+                "--expected-commit",
+                expected,
+                "--formal-trace-authority",
+                str(formal),
+                "--evaluation-authority",
+                str(evaluation),
+                "--dataset",
+                str(truck),
+                "--output",
+                output,
+            ),
+            env,
+        )
+        return ProfileResult(
+            name,
+            "One-shot Q1 formal Truck view 000001 native plus PlayCanvas "
+            "quality-only capture and offline admission; no performance evidence",
+            False,
+            tuple(probes),
+            (command,),
+        )
+
     if name == "web-webgpu":
         probes, env = web_environment(discovery)
         env = exact_web_build_environment(discovery, probes, env)
@@ -1067,6 +1252,7 @@ PROFILES = (
     "android-a065",
     "android-a065-q3-simd",
     "macos-metal",
+    "q1-product-quality-view000001",
     "web-webgpu",
     "web-webgpu-truck-1080p",
     "web-webgpu-truck-fixed-gpu-preproject-compact",

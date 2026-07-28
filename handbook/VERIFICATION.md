@@ -185,6 +185,7 @@ or retries a failed command.
 | macOS / Metal | `python3 tests/verification_bootstrap.py doctor --profile macos-metal` | `python3 tests/verification_bootstrap.py run macos-metal` | Hardware-backed SortedAlpha Metal conformance; no benchmark artifact. |
 | Chrome / WebGPU | `GSPLAT_ARTIFACT_DIR=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile web-webgpu` | Repeat the same environment with `run web-webgpu` | Real Chrome WebGPU/WASM functional artifact; not a performance comparison. |
 | Chrome / WebGPU Truck 1080p | `GSPLAT_WEB_TRUCK_OUTPUT=<fresh-root> python3 tests/verification_bootstrap.py doctor --profile web-webgpu-truck-1080p` | Repeat the same environment through `command`, then once through `run web-webgpu-truck-1080p` | Q1 two-stage Packed Exact control plus bound terminal-throughput prerequisite; not a PlayCanvas conclusion or Q1 acceptance. |
+| Q1 Product Quality view 000001 | Set the exact commit and retained authorities, then run `python3 tests/verification_bootstrap.py doctor --profile q1-product-quality-view000001` | Repeat the unchanged environment through `command`, then once through `run q1-product-quality-view000001` | One native and one headful PlayCanvas quality-only capture followed by the offline one-view gate; no performance evidence. |
 | Android A065 | `GSPLAT_ANDROID_SERIAL=<serial> GSPLAT_ANDROID_DATASET=<absolute-ply> GSPLAT_ANDROID_OUTPUT=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile android-a065` | Repeat the same environment with `run android-a065 --allow-device` | One full-quality Packed/CPU functionality and strict-ledger artifact; not a CPU/GPU comparison. |
 | Android A065 Q3 SIMD | `GSPLAT_ANDROID_SERIAL=<serial> GSPLAT_Q3_A065_EXPECTED_COMMIT=<full-sha> GSPLAT_Q3_A065_OUTPUT=<fresh-path> python3 tests/verification_bootstrap.py doctor --profile android-a065-q3-simd` | Repeat the same environment through `command`, then once through `run android-a065-q3-simd --allow-device` | Physical element parity, diagnostic ladder, and complete-Truck five-pair terminal. No device run is implied by READY. |
 
@@ -233,6 +234,44 @@ python3 tests/verification_bootstrap.py doctor --profile android-a065
 Do not remove a retained artifact merely to make a profile `READY`. A runtime
 failure remains one finite failed attempt; inspect it, change only the proven
 cause, choose a fresh destination, and invoke `run` explicitly again.
+
+### Q1 Product Quality view 000001 one-shot transaction
+
+This opt-in profile is deliberately absent from the default doctor. Its doctor
+and command modes only inspect the clean exact commit, Darwin/Apple-Silicon
+Metal host, Cargo/Node/Chrome and locked Web tools, complete Truck, formal
+camera authority, official Evaluation Images authority, and a fresh output.
+They do not build, open a window, or start Chrome.
+
+```bash
+GSPLAT_Q1_PRODUCT_QUALITY_EXPECTED_COMMIT=<full-40-character-sha> \
+GSPLAT_Q1_FORMAL_TRACE_AUTHORITY=/absolute/q1-formal-trace-authority \
+GSPLAT_Q1_EVALUATION_AUTHORITY=/absolute/q1-evaluation-authority \
+GSPLAT_Q1_TRUCK_DATASET=/absolute/complete-truck.ply \
+GSPLAT_Q1_PRODUCT_QUALITY_OUTPUT=/absolute/fresh/q1-view000001-attempt-1 \
+python3 tests/verification_bootstrap.py doctor \
+  --profile q1-product-quality-view000001
+
+# Inspect the exact same environment with `command`, then invoke it once:
+GSPLAT_Q1_PRODUCT_QUALITY_EXPECTED_COMMIT=<full-40-character-sha> \
+GSPLAT_Q1_FORMAL_TRACE_AUTHORITY=/absolute/q1-formal-trace-authority \
+GSPLAT_Q1_EVALUATION_AUTHORITY=/absolute/q1-evaluation-authority \
+GSPLAT_Q1_TRUCK_DATASET=/absolute/complete-truck.ply \
+GSPLAT_Q1_PRODUCT_QUALITY_OUTPUT=/absolute/fresh/q1-view000001-attempt-1 \
+python3 tests/verification_bootstrap.py run q1-product-quality-view000001
+```
+
+The coordinator first fully validates the immutable authorities and complete
+Truck identity. It then invokes the native quality-only producer once, the
+PlayCanvas `quality:truck-view000001` headful 979x546 command once, and the
+offline one-view validator once, strictly in that order. A nonzero exit or
+exception stops the transaction immediately; no step is repeated. Each
+producer owns a separate child directory in one hidden staging root. Only all
+three successes publish the requested root atomically. A failed attempt keeps
+an immutable sibling named `<output>.failed-<session>` with `blocker.json`,
+while the requested formal output remains absent. The result keeps Product
+Quality `Deferred` until view 000009 qualifies and always records
+`performance_authorized=false`.
 
 ### Q1 WebGPU Truck 1080p prerequisite
 

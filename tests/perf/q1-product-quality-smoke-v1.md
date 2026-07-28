@@ -68,3 +68,23 @@ python3 tests/perf/validate-q1-product-quality-smoke.py \
   --playcanvas-capture /retained/playcanvas-control \
   --output /fresh/q1-product-quality-view-000001
 ```
+
+## One-shot view 000001 transaction
+
+The repository also provides a one-shot coordinator for producing and
+evaluating view `000001`. It requires a clean exact full commit SHA, validates
+both authorities and complete Truck before either endpoint starts, then runs
+the native quality-only producer once, the PlayCanvas headful quality-only
+producer once, and this validator once. The requested output appears atomically
+only after all three succeed. Any failure stops the sequence without retry and
+is retained in an immutable sibling failure directory; it cannot masquerade as
+a one-view result.
+
+```bash
+python3 tests/perf/collect-q1-product-quality-view000001.py \
+  --expected-commit <full-40-character-sha> \
+  --formal-trace-authority /retained/formal-trace \
+  --evaluation-authority /retained/evaluation-authority \
+  --dataset /retained/complete-truck.ply \
+  --output /fresh/q1-product-quality-view-000001-transaction
+```

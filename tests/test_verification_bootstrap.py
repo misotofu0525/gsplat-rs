@@ -61,6 +61,8 @@ class FakeHost:
             return 1, "unsupported fake git command"
         if binary == "wasm-bindgen":
             return 0, f"wasm-bindgen {BOOTSTRAP.read_locked_wasm_bindgen_version()}"
+        if binary == "system_profiler" and argv[1:] == ("SPDisplaysDataType",):
+            return 0, "Chipset Model: Apple M4\nMetal Support: Metal 3"
         return 1, "unsupported fake command"
 
 
@@ -894,6 +896,127 @@ class VerificationBootstrapTests(unittest.TestCase):
         self.assertNotIn("android-a065-q3-simd", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
         self.assertNotIn("ios-simulator", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
         self.assertNotIn("web-webgpu-truck-1080p", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES)
+        self.assertNotIn(
+            "q1-product-quality-view000001", BOOTSTRAP.DEFAULT_DOCTOR_PROFILES
+        )
+
+    def test_q1_product_quality_profile_is_one_read_only_coordinator_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host = FakeHost(root)
+            for name in (
+                "bash",
+                "cargo",
+                "rustup",
+                "node",
+                "npm",
+                "python3",
+                "wasm-bindgen",
+                "git",
+                "system_profiler",
+            ):
+                host.add_executable(name)
+            chrome = host.add_executable("chrome")
+            formal = root / "formal"
+            evaluation = root / "evaluation"
+            truck = root / "truck.ply"
+            (formal).mkdir()
+            (formal / "camera-trace.json").write_text("{}", encoding="utf-8")
+            (formal / "receipt.json").write_text("{}", encoding="utf-8")
+            (evaluation / "source/gt").mkdir(parents=True)
+            (evaluation / "authority.json").write_text("{}", encoding="utf-8")
+            (evaluation / "source/gt/000001.png").write_bytes(b"png")
+            truck.write_bytes(b"ply")
+            puppeteer = (
+                root / "tests/competitive/playcanvas/node_modules/puppeteer-core/package.json"
+            )
+            puppeteer.parent.mkdir(parents=True)
+            puppeteer.write_text('{"version":"24.15.0"}', encoding="utf-8")
+            lock = root / "tests/competitive/playcanvas/package-lock.json"
+            lock.write_text(
+                json.dumps(
+                    {
+                        "packages": {
+                            "node_modules/puppeteer-core": {"version": "24.15.0"}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            shutil.copy2(pathlib.Path(__file__).parents[1] / "Cargo.lock", root / "Cargo.lock")
+            output = root / "fresh-output"
+            environment = {
+                "CHROME_PATH": str(chrome),
+                BOOTSTRAP.Q1_QUALITY_EXPECTED_COMMIT_ENV: "1" * 40,
+                BOOTSTRAP.Q1_QUALITY_FORMAL_TRACE_ENV: str(formal),
+                BOOTSTRAP.Q1_QUALITY_EVALUATION_ENV: str(evaluation),
+                BOOTSTRAP.Q1_QUALITY_TRUCK_ENV: str(truck),
+                BOOTSTRAP.Q1_QUALITY_OUTPUT_ENV: str(output),
+            }
+            discovery = BOOTSTRAP.Discovery(
+                env=environment,
+                home=root,
+                which=host.which,
+                capture=host.capture,
+                host_system="Darwin",
+                host_machine="arm64",
+            )
+            with mock.patch.object(BOOTSTRAP, "REPO_ROOT", root):
+                result = BOOTSTRAP.profile_result(
+                    "q1-product-quality-view000001", discovery
+                )
+
+            self.assertTrue(result.ready, [probe.to_json() for probe in result.probes])
+            self.assertFalse(result.touches_device)
+            self.assertEqual(len(result.commands), 1)
+            command = result.commands[0]
+            self.assertEqual(
+                command.argv[1], "tests/perf/collect-q1-product-quality-view000001.py"
+            )
+            self.assertEqual(command.argv.count("--expected-commit"), 1)
+            self.assertEqual(command.argv.count("--output"), 1)
+            self.assertEqual(command.env["CHROME_PATH"], str(chrome))
+            self.assertEqual(command.env[BOOTSTRAP.WEB_WASM_PROFILE_ENV], "exact")
+            self.assertEqual(command.env[BOOTSTRAP.WEB_WASM_OUT_DIR_ENV], "")
+            self.assertFalse(output.exists())
+            self.assertFalse(any("npm" in call or "chrome" in call for call in host.calls))
+
+    def test_q1_product_quality_profile_blocks_used_output_and_wrong_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            output = root / "used"
+            output.mkdir()
+            discovery = BOOTSTRAP.Discovery(
+                env={
+                    BOOTSTRAP.Q1_QUALITY_EXPECTED_COMMIT_ENV: "2" * 40,
+                    BOOTSTRAP.Q1_QUALITY_OUTPUT_ENV: str(output),
+                },
+                home=root,
+                which=FakeHost(root).which,
+                capture=FakeHost(root).capture,
+                host_system="Darwin",
+                host_machine="arm64",
+            )
+            with (
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "web_environment",
+                    return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+                ),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "q1_product_quality_platform_probes",
+                    return_value=[BOOTSTRAP.Probe("platform", True, "ready")],
+                ),
+            ):
+                result = BOOTSTRAP.profile_result(
+                    "q1-product-quality-view000001", discovery
+                )
+            failed = {probe.key for probe in result.probes if not probe.ok}
+            self.assertIn("q1-clean-exact-repository", failed)
+            self.assertIn(
+                f"fresh-output:{BOOTSTRAP.Q1_QUALITY_OUTPUT_ENV}", failed
+            )
 
     def test_command_display_shell_quotes_environment_and_arguments(self) -> None:
         command = BOOTSTRAP.Command(
