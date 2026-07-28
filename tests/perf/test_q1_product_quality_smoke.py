@@ -47,16 +47,40 @@ def rgba_png(rgba: bytes) -> bytes:
     )
 
 
-def rgb_png(rgb: bytes) -> bytes:
-    rows = b"".join(
-        b"\x00" + rgb[y * WIDTH * 3 : (y + 1) * WIDTH * 3]
-        for y in range(HEIGHT)
-    )
+def filtered_row(raw: bytes, previous: bytes, bytes_per_pixel: int, filter_type: int) -> bytes:
+    encoded = bytearray(len(raw))
+    for index, value in enumerate(raw):
+        left = raw[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+        above = previous[index] if previous else 0
+        upper_left = (
+            previous[index - bytes_per_pixel]
+            if previous and index >= bytes_per_pixel
+            else 0
+        )
+        if filter_type == 0:
+            predictor = 0
+        elif filter_type == 1:
+            predictor = left
+        elif filter_type == 4:
+            predictor = SMOKE.PNG.paeth_predictor(left, above, upper_left)
+        else:
+            raise ValueError(filter_type)
+        encoded[index] = (value - predictor) & 0xFF
+    return bytes(encoded)
+
+
+def rgb_png(rgb: bytes, *, filter_type: int = 0) -> bytes:
+    rows = []
+    previous = b""
+    for y in range(HEIGHT):
+        raw = rgb[y * WIDTH * 3 : (y + 1) * WIDTH * 3]
+        rows.append(bytes((filter_type,)) + filtered_row(raw, previous, 3, filter_type))
+        previous = raw
     header = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + b"".join(
         (
             png_chunk(b"IHDR", header),
-            png_chunk(b"IDAT", zlib.compress(rows, 1)),
+            png_chunk(b"IDAT", zlib.compress(b"".join(rows), 1)),
             png_chunk(b"IEND", b""),
         )
     )
@@ -496,6 +520,17 @@ class ProductQualitySmokeTests(unittest.TestCase):
                 "source",
                 allowed_color_types=frozenset({2}),
             )
+
+    def test_ground_truth_decoder_uses_rgb_stride_for_sub_and_paeth(self) -> None:
+        for filter_type in (1, 4):
+            source = self.root / f"source-filter-{filter_type}.png"
+            source.write_bytes(rgb_png(self.source_rgb, filter_type=filter_type))
+            decoded = SMOKE._decode_png(
+                source,
+                f"source filter {filter_type}",
+                allowed_color_types=frozenset({2}),
+            )
+            self.assertEqual(decoded, self.good_rgba)
 
     def test_native_camera_hash_drift_fails_closed(self) -> None:
         native = self.root / "native"

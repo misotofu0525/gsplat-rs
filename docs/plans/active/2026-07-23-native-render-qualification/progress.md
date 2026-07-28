@@ -1664,9 +1664,10 @@ camera, joins PlayCanvas capture to its stable presentation/copy/drain chain,
 and independently recomputes all PlayCanvas camera matrices from the formal
 trace. Publication also rejects every overlap with an immutable input tree.
 
-Fifteen focused synthetic tests now pass. The real retained RGB8 ground truth
+Sixteen focused synthetic tests now pass, including RGB8 Sub and Paeth filter
+rows with the correct three-byte pixel stride. The real retained RGB8 ground truth
 decodes to 1,603,602 RGB bytes with SHA-256
-`14b5487d242a35aa33727e59e4a3774c53551261e320ebc502fbd42440a010c1`;
+`c0e93747c7d07c30b2e2c740084bd08b1651bcc61a53424800f3e23194146d39`;
 the Python camera oracle matches the reviewed JavaScript oracle across 94
 values with zero observed difference. The repair still requires a fresh
 fixed-SHA review. No endpoint was launched and no one-view image result exists;

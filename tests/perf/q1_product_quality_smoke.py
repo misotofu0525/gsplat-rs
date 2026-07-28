@@ -258,6 +258,40 @@ def _load_png_decoder() -> Any:
 PNG = _load_png_decoder()
 
 
+def _unfilter_scanline(
+    filter_type: int,
+    source: bytes,
+    previous: bytes,
+    *,
+    bytes_per_pixel: int,
+) -> bytes:
+    """Undo one PNG filter using the color type's actual pixel stride."""
+
+    result = bytearray(len(source))
+    for index, raw in enumerate(source):
+        left = result[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+        above = previous[index] if previous else 0
+        upper_left = (
+            previous[index - bytes_per_pixel]
+            if previous and index >= bytes_per_pixel
+            else 0
+        )
+        if filter_type == 0:
+            value = raw
+        elif filter_type == 1:
+            value = raw + left
+        elif filter_type == 2:
+            value = raw + above
+        elif filter_type == 3:
+            value = raw + ((left + above) // 2)
+        elif filter_type == 4:
+            value = raw + PNG.paeth_predictor(left, above, upper_left)
+        else:
+            fail(f"unsupported PNG filter type: {filter_type}")
+        result[index] = value & 0xFF
+    return bytes(result)
+
+
 def _decode_png(
     path: pathlib.Path,
     context: str,
@@ -336,7 +370,12 @@ def _decode_png(
         for _ in range(height):
             filter_type = filtered[offset]
             source = filtered[offset + 1 : offset + 1 + row_bytes]
-            row = PNG.unfilter_scanline(filter_type, source, previous)
+            row = _unfilter_scanline(
+                filter_type,
+                source,
+                previous,
+                bytes_per_pixel=channels,
+            )
             rows.append(row)
             previous = row
             offset += row_bytes + 1
