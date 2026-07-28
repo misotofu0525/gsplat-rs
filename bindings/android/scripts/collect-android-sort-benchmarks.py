@@ -977,6 +977,32 @@ def has_complete_summary_artifact(log: str) -> bool:
     return True
 
 
+FORMAL_BENCHMARK_REJECTION_MARKER = "formal benchmark artifact rejected"
+FORMAL_BENCHMARK_REJECTION_THROWABLE = re.compile(
+    r"(?P<throwable>[A-Za-z_$][\w.$]*(?:Exception|Error):\s*\S.*)$"
+)
+
+
+def formal_benchmark_rejection_reason(log: str) -> str | None:
+    """Return the app's terminal formal-artifact rejection once complete.
+
+    Android writes ``Log.e(message, throwable)`` as at least two logcat lines.
+    The marker alone is not terminal for the collector because stopping at that
+    point could discard the exception reason that makes the retained log useful.
+    """
+    marker_seen = False
+    for line in log.splitlines():
+        if FORMAL_BENCHMARK_REJECTION_MARKER in line:
+            marker_seen = True
+            continue
+        if not marker_seen:
+            continue
+        match = FORMAL_BENCHMARK_REJECTION_THROWABLE.search(line)
+        if match is not None:
+            return match.group("throwable")
+    return None
+
+
 def collect_logcat_run(
     adb: pathlib.Path | str,
     serial: str,
@@ -1016,6 +1042,12 @@ def collect_logcat_run(
                         qualification_q3_phase_receipt, "evidence"
                     )
                     evidence_recorded = True
+                rejection_reason = formal_benchmark_rejection_reason(contents)
+                if rejection_reason is not None:
+                    raise RuntimeError(
+                        "formal benchmark artifact rejected: "
+                        f"{rejection_reason}; see {log_path}"
+                    )
                 if "BENCHMARK_RESULT " in contents:
                     try:
                         completed_benchmark_run_id(contents)

@@ -1454,6 +1454,71 @@ class ParsingTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_formal_rejection_requires_marker_and_throwable_reason(self) -> None:
+        marker = "I/GsplatExample: formal benchmark artifact rejected"
+        self.assertIsNone(COLLECTOR.formal_benchmark_rejection_reason(marker))
+        self.assertIsNone(
+            COLLECTOR.formal_benchmark_rejection_reason(
+                "E/GsplatExample: java.lang.IllegalStateException: unrelated"
+            )
+        )
+        self.assertEqual(
+            COLLECTOR.formal_benchmark_rejection_reason(
+                marker
+                + "\nE/GsplatExample: java.lang.IllegalStateException: "
+                + "terminal projected-draw receipt is missing\n"
+                + "E/GsplatExample: at com.gsplat.example.MainActivity"
+            ),
+            "java.lang.IllegalStateException: terminal projected-draw receipt is missing",
+        )
+
+    def test_collect_logcat_run_fails_fast_on_formal_artifact_rejection(self) -> None:
+        log = (
+            "07-28 09:59:59.999 I/GsplatExample: BENCHMARK_RESULT samples=1\n"
+            "07-28 10:00:00.000 E/GsplatExample: formal benchmark artifact rejected\n"
+            "07-28 10:00:00.001 E/GsplatExample: java.lang.IllegalStateException: "
+            "terminal projected-draw receipt is missing\n"
+        )
+        process = mock.Mock()
+        process.poll.return_value = None
+
+        def start_logcat(*_args, **kwargs):
+            kwargs["stdout"].write(log)
+            kwargs["stdout"].flush()
+            return process
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = pathlib.Path(directory) / "terminal-rejection.logcat.txt"
+            with (
+                mock.patch.object(
+                    COLLECTOR,
+                    "run_command",
+                    return_value=COLLECTOR.subprocess.CompletedProcess([], 0, ""),
+                ),
+                mock.patch.object(
+                    COLLECTOR.subprocess, "Popen", side_effect=start_logcat
+                ),
+                mock.patch.object(COLLECTOR.time, "sleep") as sleep,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "formal benchmark artifact rejected: "
+                    "java.lang.IllegalStateException: "
+                    "terminal projected-draw receipt is missing",
+                ) as raised:
+                    COLLECTOR.collect_logcat_run(
+                        "adb",
+                        "serial",
+                        ["shell", "am", "start", "example"],
+                        log_path,
+                        timeout_seconds=1800.0,
+                    )
+
+            sleep.assert_not_called()
+            process.terminate.assert_called_once_with()
+            self.assertIn(str(log_path), str(raised.exception))
+            self.assertEqual(log_path.read_text(), log)
+
     def test_async_sort_rejects_gpu_or_adaptive_backend(self) -> None:
         args = COLLECTOR.parser().parse_args(
             [
