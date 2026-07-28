@@ -1637,3 +1637,30 @@ This is an immutable formal camera input only. Product Quality remains
 `Deferred`, performance stays unauthorized, and no renderer, browser, device,
 endpoint image, timing ratio, FPS or winner was produced. The next slices are
 the independent Wasm/JS and PlayCanvas projection/receipt carriers.
+
+### Q1 view 000001 offline Product Quality admission gate (2026-07-28)
+
+The one-view slice now has a pure offline gate over the existing renderer-owned
+capture shapes. The gsplat-rs adapter requires the benchmark manifest's
+same-present identity, terminal-frame hash, diagnostic Surface capture receipt,
+and decoded PNG RGBA digest to join. The PlayCanvas adapter requires the pinned
+WebGPU copy-to-buffer producer, calibrated custom-projection camera JSON hash,
+terminal queue drain, materialization receipt, and raw RGBA file. Neither
+adapter changes an endpoint producer or artifact schema.
+
+The gate revalidates the retained formal trace and Evaluation Images authority,
+locks exact view `000001`, 979x546, complete Truck SH3 membership and the
+calibrated focal ratio, then invokes the already frozen Product Quality reducer.
+Well-formed threshold misses terminate as endpoint `Rejected`; missing,
+malformed, nonopaque, stale-camera, wrong-producer, or mismatched byte evidence
+fails closed before publication. Successful structural evaluation publishes a
+fresh atomic `result.json` with separate endpoint decisions and no timing,
+throughput, pairing, speed ratio, FPS or winner fields.
+
+Eight focused synthetic tests pass, including dual acceptance, finite quality
+rejection, nonopaque input, camera/hash drift, producer drift, same-present PNG
+binding, and immutable publication. The real retained formal trace/evaluation
+authority pair also revalidates. No endpoint was launched and no one-view image
+result exists yet; Product Quality remains `Deferred` and
+`performance_eligible=false` until the second formal view is independently
+qualified.

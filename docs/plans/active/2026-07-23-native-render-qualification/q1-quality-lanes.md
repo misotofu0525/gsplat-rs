@@ -189,7 +189,10 @@ Quality uses `formal-000001-000009`; neither can be validated as the other.
    trace is not formal Product Quality evidence because it assumes `fx == fy`.
 5. **One-view quality smoke** — render `000001` at exact 979x546 with one
    renderer-owned image per endpoint. Apply the already frozen metrics. No
-   timing is retained and one view cannot unlock performance.
+   timing is retained and one view cannot unlock performance. The pure offline
+   admission gate is implemented in
+   `tests/perf/validate-q1-product-quality-smoke.py`; endpoint execution remains
+   separate and no formal one-view result exists yet.
 6. **Two-view qualification** — repeat for `000001` and `000009`; require both
    lanes to accept and static-repeat stability to pass.
 7. **Performance admission** — only then bind the existing 1080p paired terminal
