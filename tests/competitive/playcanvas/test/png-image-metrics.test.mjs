@@ -143,6 +143,15 @@ test('raw PNG decoder implements all five RGB8 filters and expands opaque alpha'
   assert.deepEqual(decoded.rgba, expected);
 });
 
+test('raw RGB8 PNG contract rejects tRNS instead of fabricating opaque alpha', () => {
+  const rgb = filteredPng([Buffer.from([1, 2, 3])], [0], 2);
+  const transparentSample = Buffer.from([0, 1, 0, 2, 0, 3]);
+  assert.throws(
+    () => decodeRawRgba8Png(insertChunkAfterIhdr(rgb, 'tRNS', transparentSample)),
+    /transparency semantics/
+  );
+});
+
 test('raw PNG contract still rejects unsupported color types', () => {
   const grayscale = filteredPng([Buffer.from([17, 29])], [0], 0);
   assert.throws(() => decodeRawRgba8Png(grayscale), /RGB8 or RGBA8/);

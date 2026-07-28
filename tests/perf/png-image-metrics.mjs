@@ -5,6 +5,7 @@ const WINDOW_SIZE = 8;
 const C1 = (0.01 * 255) ** 2;
 const C2 = (0.03 * 255) ** 2;
 const COLOR_MANAGEMENT_CHUNKS = new Set(['cHRM', 'gAMA', 'iCCP', 'sRGB']);
+const UNSUPPORTED_SAMPLE_SEMANTICS_CHUNKS = new Set(['tRNS']);
 const SUPPORTED_CRITICAL_CHUNKS = new Set(['IHDR', 'IDAT', 'IEND']);
 
 function crc32(bytes) {
@@ -53,8 +54,10 @@ function unfilterScanline(filterType, source, previous, bytesPerPixel) {
  *
  * Q1 compares renderer-owned bytes, not browser-composited pixels. In
  * particular, this avoids Canvas2D's premultiply/unpremultiply round trip for
- * partial alpha. The checks intentionally mirror the offline Python admission
- * decoder so both sides operate on the same byte domain.
+ * partial alpha. RGB8 is accepted only when it is intrinsically opaque:
+ * transparency-bearing tRNS is rejected instead of being expanded to a false
+ * alpha value of 255. The checks intentionally mirror the offline Python
+ * admission decoder so both sides operate on the same byte domain.
  */
 export function decodeRawRgba8Png(
   input,
@@ -104,6 +107,9 @@ export function decodeRawRgba8Png(
     }
     if (rejectColorManagement && COLOR_MANAGEMENT_CHUNKS.has(type)) {
       throw new Error('PNG uses color-management chunks outside the raw sRGB byte contract');
+    }
+    if (UNSUPPORTED_SAMPLE_SEMANTICS_CHUNKS.has(type)) {
+      throw new Error('PNG uses transparency semantics outside the raw RGB8/RGBA8 byte contract');
     }
   }
 
