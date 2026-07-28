@@ -530,7 +530,10 @@ pub(crate) fn make_surface_render_params(
 ) -> GpuSurfaceRenderParams {
     let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
     let view_rot = quat_to_mat3(camera_inv_q);
-    let viewport_aspect = (width as f32 / height.max(1) as f32).max(1e-6);
+    // Zero-sized surfaces never render, but keep their staged params finite.
+    // Every positive u32 viewport must retain its exact representable aspect;
+    // clamping here would make GPU projection disagree with CPU/FFI.
+    let viewport_aspect = width.max(1) as f32 / height.max(1) as f32;
     GpuSurfaceRenderParams {
         camera_pos: [
             camera.pose.position.x,

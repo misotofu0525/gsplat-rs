@@ -969,4 +969,39 @@ mod tests {
         assert!((cpu.fy * height as f32 * 0.5 - fy_pixels).abs() <= 1.0e-4);
         assert!((cpu.fx * width as f32 * 0.5 - fx_pixels).abs() <= 1.0e-4);
     }
+
+    #[test]
+    fn every_positive_u32_viewport_keeps_cpu_and_gpu_projection_aspect_identical() {
+        for (width, height, ratio) in [
+            (1, u32::MAX, 1.0),
+            (u32::MAX, 1, 1.0),
+            (
+                1,
+                u32::MAX,
+                gsplat_core::CameraIntrinsics::MIN_FOCAL_LENGTH_X_OVER_Y,
+            ),
+            (
+                u32::MAX,
+                1,
+                gsplat_core::CameraIntrinsics::MAX_FOCAL_LENGTH_X_OVER_Y,
+            ),
+        ] {
+            let mut camera = Camera::default();
+            camera.intrinsics.focal_length_x_over_y = ratio;
+            camera.validate().expect("representable centered pinhole");
+            let config = RendererConfig {
+                width,
+                height,
+                ..RendererConfig::default()
+            };
+            let cpu = InstanceBuildParams::new(&camera, config).expect("CPU projection params");
+            let gpu = crate::make_surface_render_params(&camera, width, height, 1, 0);
+            assert_eq!(
+                cpu.aspect.to_bits(),
+                gpu.aspect.to_bits(),
+                "viewport={width}x{height} ratio={ratio}"
+            );
+            assert!(gpu.aspect.is_normal());
+        }
+    }
 }
