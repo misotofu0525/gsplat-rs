@@ -96,6 +96,7 @@ LOCKED_REPOSITORY_FILES = frozenset({
     "tests/perf/validate-benchmark-artifacts.py",
     "tests/perf/validate-balanced-image-gate.py",
     "tests/perf/compare-image-ssim.mjs",
+    "tests/perf/png-image-metrics.mjs",
     "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json",
     "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
     "tests/competitive/playcanvas/package.json",

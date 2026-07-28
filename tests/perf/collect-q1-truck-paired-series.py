@@ -33,6 +33,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from q1_pair_admission.artifacts import (  # noqa: E402
     HOST_ADMISSION_JOIN_SCHEMA,
+    IMAGE_METRIC_IMPLEMENTATION_SHA256,
     IMAGE_TOOL_SHA256,
     artifact as admit_artifact,
     reference_authority as admit_reference_authority,
@@ -69,6 +70,7 @@ REFERENCE_AUTHORITY_DESTINATION = pathlib.Path("reference-authority")
 GSPLAT_QUALIFICATION = "truck-quality-1080p-fixed-gpu-preproject-compact-v1"
 TRACE_URL = "/tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json"
 IMAGE_TOOL = pathlib.Path("tests/perf/compare-image-ssim.mjs")
+IMAGE_METRIC_IMPLEMENTATION = pathlib.Path("tests/perf/png-image-metrics.mjs")
 
 SAFE_HOST_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE")
 PROCESS_TIMEOUTS_SECONDS = {
@@ -96,6 +98,7 @@ LOCKED_REPOSITORY_FILES = (
     "tests/perf/validate-benchmark-artifacts.py",
     "tests/perf/validate-balanced-image-gate.py",
     "tests/perf/compare-image-ssim.mjs",
+    "tests/perf/png-image-metrics.mjs",
     "tests/perf/trace/fixtures/quality/candidate-truck-quality-1920x1080-v1.json",
     "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
     "tests/competitive/playcanvas/package.json",
@@ -1752,6 +1755,8 @@ def build_plan(args: argparse.Namespace, *, predeclared_at: str) -> dict[str, An
                 "count": 20,
                 "tool": IMAGE_TOOL.as_posix(),
                 "tool_sha256": IMAGE_TOOL_SHA256,
+                "metric_implementation": IMAGE_METRIC_IMPLEMENTATION.as_posix(),
+                "metric_implementation_sha256": IMAGE_METRIC_IMPLEMENTATION_SHA256,
                 "threshold_is_decided_only_by_final_validator": True,
             },
             "final_validator": {
@@ -2229,6 +2234,11 @@ def compare_image(
             str(IMAGE_TOOL),
             str(root / reference["path"]),
             str(candidate),
+            "--expected-width",
+            str(WIDTH),
+            "--expected-height",
+            str(HEIGHT),
+            "--raw-rgba8-contract",
             "--output",
             str(raw),
         ],
@@ -2272,6 +2282,19 @@ def compare_image(
         },
         "image comparison did not use the locked Chrome executable",
     )
+    require(
+        raw_value.get("metricImplementation")
+        == {
+            "path": IMAGE_METRIC_IMPLEMENTATION.as_posix(),
+            "sha256": IMAGE_METRIC_IMPLEMENTATION_SHA256,
+        },
+        "image comparison did not use the locked raw PNG metric implementation",
+    )
+    require(
+        raw_value.get("pixelDomain")
+        == "raw_noninterlaced_rgba8_no_color_management",
+        "image comparison did not use the strict Q1 raw RGBA8 pixel domain",
+    )
     score = raw_value.get("score")
     require(isinstance(score, (int, float)) and 0 <= score <= 1, "image comparison score is invalid")
     receipt = {
@@ -2279,6 +2302,9 @@ def compare_image(
         "metric": "ssim-luma-srgb-window8",
         "tool": IMAGE_TOOL.as_posix(),
         "tool_sha256": IMAGE_TOOL_SHA256,
+        "metric_implementation": IMAGE_METRIC_IMPLEMENTATION.as_posix(),
+        "metric_implementation_sha256": IMAGE_METRIC_IMPLEMENTATION_SHA256,
+        "pixel_domain": "raw_noninterlaced_rgba8_no_color_management",
         "browser_executable_path": browser["executablePath"],
         "browser_executable_sha256": browser["sha256"],
         "trace_frame_index": trace,

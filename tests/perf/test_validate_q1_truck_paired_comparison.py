@@ -19,7 +19,9 @@ from unittest import mock
 from q1_pair_admission.artifacts import (
     BUILD_ARTIFACT_KEYS,
     HOST_ADMISSION_JOIN_SCHEMA,
+    IMAGE_METRIC_IMPLEMENTATION_SHA256,
     IMAGE_TOOL_SHA256,
+    IMAGE,
     PLAYCANVAS_RGBA_UNAVAILABLE,
     REFERENCE_RUST_TOOLCHAIN_SHA256,
     REFERENCE_SOURCE_PATHS,
@@ -216,6 +218,31 @@ def write_rgba_png(path: pathlib.Path, value: int = 0) -> str:
 def write_reencoded_rgba_png(path: pathlib.Path, value: int = 0) -> str:
     path.write_bytes(rgba_png_bytes(value, ancillary=b"noncanonical=reencode"))
     return file_sha256(path)
+
+
+def small_rgba_png_bytes(rgba: bytes, width: int, height: int) -> bytes:
+    if len(rgba) != width * height * 4:
+        raise ValueError("small RGBA fixture length mismatch")
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    row_bytes = width * 4
+    filtered = b"".join(
+        b"\0" + rgba[y * row_bytes : (y + 1) * row_bytes]
+        for y in range(height)
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(filtered, 9))
+        + chunk(b"IEND", b"")
+    )
 
 
 def local_identity(relative: str) -> dict[str, object]:
@@ -1022,7 +1049,29 @@ def build_series(
                 image_path = base / f"view-{trace}.png"
                 image_sha = write_rgba_png(root / image_path)
                 comparison_path = base / f"view-{trace}-comparison.json"
-                write_json(root / comparison_path, {"schema": IMAGE_SCHEMA, "metric": "ssim-luma-srgb-window8", "tool": "tests/perf/compare-image-ssim.mjs", "tool_sha256": IMAGE_TOOL_SHA256, "trace_frame_index": trace, "reference_sha256": references[trace]["sha256"], "candidate_sha256": image_sha, "width": WIDTH, "height": HEIGHT, "minimum_ssim": 0.99, "score": score})
+                write_json(
+                    root / comparison_path,
+                    {
+                        "schema": IMAGE_SCHEMA,
+                        "metric": "ssim-luma-srgb-window8",
+                        "tool": "tests/perf/compare-image-ssim.mjs",
+                        "tool_sha256": IMAGE_TOOL_SHA256,
+                        "metric_implementation": "tests/perf/png-image-metrics.mjs",
+                        "metric_implementation_sha256": (
+                            IMAGE_METRIC_IMPLEMENTATION_SHA256
+                        ),
+                        "pixel_domain": (
+                            "raw_noninterlaced_rgba8_no_color_management"
+                        ),
+                        "trace_frame_index": trace,
+                        "reference_sha256": references[trace]["sha256"],
+                        "candidate_sha256": image_sha,
+                        "width": WIDTH,
+                        "height": HEIGHT,
+                        "minimum_ssim": 0.99,
+                        "score": score,
+                    },
+                )
                 control_relative, control_sha = controls_by_trace[trace]
                 images.append(
                     {
@@ -1063,6 +1112,63 @@ def build_series(
     if playcanvas_producer:
         install_complete_playcanvas_producers(root, schedule_path)
     return schedule_path
+
+
+class RawPngMetricContractTests(unittest.TestCase):
+    def test_node_metric_matches_python_raw_partial_alpha_bytes(self) -> None:
+        width = 8
+        height = 8
+        reference_rgba = bytearray()
+        candidate_rgba = bytearray()
+        for pixel in range(width * height):
+            reference_rgba.extend(
+                (
+                    (pixel * 17 + 19) & 0xFF,
+                    (pixel * 29 + 7) & 0xFF,
+                    (pixel * 43 + 3) & 0xFF,
+                    (pixel * 53 + 1) & 0xFF,
+                )
+            )
+            candidate_rgba.extend(
+                (
+                    (pixel * 11 + 5) & 0xFF,
+                    (pixel * 23 + 13) & 0xFF,
+                    (pixel * 37 + 31) & 0xFF,
+                    255,
+                )
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            reference = root / "reference.png"
+            candidate = root / "candidate.png"
+            reference.write_bytes(
+                small_rgba_png_bytes(bytes(reference_rgba), width, height)
+            )
+            candidate.write_bytes(
+                small_rgba_png_bytes(bytes(candidate_rgba), width, height)
+            )
+            observed = node_json(
+                "import { readFileSync } from 'node:fs';\n"
+                "import { createHash } from 'node:crypto';\n"
+                "import { decodeRawRgba8Png, computeRawRgba8ImageMetrics } "
+                "from './tests/perf/png-image-metrics.mjs';\n"
+                f"const reference = decodeRawRgba8Png(readFileSync({json.dumps(str(reference))}));\n"
+                f"const candidate = decodeRawRgba8Png(readFileSync({json.dumps(str(candidate))}));\n"
+                "console.log(JSON.stringify({"
+                "score: computeRawRgba8ImageMetrics(reference, candidate).score, "
+                "referenceRgbaSha256: createHash('sha256').update(reference.rgba).digest('hex')"
+                "}));\n"
+            )
+        exact = IMAGE.DecodedImage(width, height, bytes(reference_rgba))
+        candidate_image = IMAGE.DecodedImage(width, height, bytes(candidate_rgba))
+        expected = IMAGE.compute_frame_metrics(exact, candidate_image)[
+            "ssim_luma_srgb_window8"
+        ]
+        self.assertLessEqual(abs(observed["score"] - expected), 1.0e-9)
+        self.assertEqual(
+            observed["referenceRgbaSha256"],
+            hashlib.sha256(reference_rgba).hexdigest(),
+        )
 
 
 class ScheduleAndAdmissionTests(unittest.TestCase):
@@ -1690,6 +1796,22 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
         value["tool_sha256"] = SHA_A
         write_json(receipt, value)
         with self.assertRaisesRegex(ValidationError, "locked tool"):
+            evaluate(self.schedule)
+
+    def test_image_receipt_without_metric_implementation_hash_is_rejected(self) -> None:
+        receipt = self.root / "pairs/pair-01/playcanvas/view-0-comparison.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        del value["metric_implementation_sha256"]
+        write_json(receipt, value)
+        with self.assertRaisesRegex(ValidationError, "metric_implementation_sha256"):
+            evaluate(self.schedule)
+
+    def test_fake_metric_implementation_hash_is_rejected(self) -> None:
+        receipt = self.root / "pairs/pair-01/playcanvas/view-0-comparison.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["metric_implementation_sha256"] = SHA_A
+        write_json(receipt, value)
+        with self.assertRaisesRegex(ValidationError, "locked raw PNG metric"):
             evaluate(self.schedule)
 
     def test_self_reported_score_is_rejected_when_decoded_pixels_disagree(self) -> None:

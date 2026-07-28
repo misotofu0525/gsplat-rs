@@ -1301,3 +1301,40 @@ automatic retry is introduced. A later formal attempt still requires a new
 reviewed SHA, regenerated same-SHA authority and Wasm assets, a fresh root,
 identical dry runs and a separate go/no-go. Attempt 7 is retained unchanged and
 is never reused.
+
+### Q1 formal attempt 8 terminal and raw-PNG metric repair (2026-07-28)
+
+The separately declared attempt 8 at reviewed root SHA
+`048faeabbfb2377332b4f0c8db7dd6e2a788977d` completed all 30 predeclared
+browser invocations across five counterbalanced pairs. The symmetric host-start
+gate therefore fixed attempt 7's focus race, and neither endpoint produced a
+runtime or queue-terminal blocker. The final offline validator nevertheless
+rejected the series before quality or performance admission because every
+recorded image score differed from the score recomputed from the retained PNG
+sample bytes. The immutable result remains `Rejected`,
+`evidence_admitted=false`, `performance=null`, `retry_authorized=false`; the
+30 completed runs cannot be recovered into a comparison.
+
+The mismatch was deterministic evidence plumbing, not a renderer-performance
+result or a wrong image join. The locked Node comparator decoded each PNG via
+`Image -> Canvas2D -> getImageData`, while the independent Python validator
+decoded the raw non-interlaced RGBA8 samples. The Direct-f32 references contain
+partial alpha, so Canvas premultiplication and unpremultiplication changed many
+RGB samples by one code value; the opaque endpoint images were unchanged. All
+20 comparisons therefore failed in the same direction by approximately
+`6.6e-5` to `8.0e-5`, far outside the intentionally strict `1e-9` receipt
+tolerance.
+
+The repair does not loosen that tolerance or alter either renderer. The Node
+tool now strictly parses CRC-checked non-interlaced RGBA8 PNGs, rejects color
+management outside the raw-byte contract, unfilters the original samples and
+runs the existing metric directly on those bytes. Chrome launch and ownership
+remain part of the formal execution identity, but Canvas is no longer a pixel
+decoder. The imported metric module has its own path and SHA receipt and is a
+formal locked input. A partial-alpha cross-language fixture requires Node and
+Python to agree within `1e-9`; all PNG filter types and fail-closed chunk/CRC
+boundaries have focused coverage.
+
+A later formal attempt still requires a new reviewed SHA, regenerated same-SHA
+authority and Wasm assets, a fresh root, two identical dry runs and a separate
+go/no-go decision. Attempt 8 is retained unchanged and is never reused.

@@ -9,10 +9,16 @@ import {
   browserOwnershipConfig,
   publishBrowserOwnershipHandshake,
 } from './browser-process-ownership.mjs';
+import {
+  assertImageMetricSelfTest,
+  computeRawRgba8ImageMetrics,
+  decodeRawRgba8Png,
+} from './png-image-metrics.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '..', '..');
 const playcanvasRoot = resolve(repoRoot, 'tests/competitive/playcanvas');
+const metricImplementationPath = resolve(scriptDir, 'png-image-metrics.mjs');
 const chromeCandidates = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -61,6 +67,9 @@ function parseArguments(argv) {
   let maxRgbMaeNormalized = null;
   let maxPixelsOver3Fraction = null;
   let requireAlphaExact = false;
+  let expectedWidth = null;
+  let expectedHeight = null;
+  let rawRgba8Contract = false;
   let output = null;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--threshold') {
@@ -71,6 +80,12 @@ function parseArguments(argv) {
       maxPixelsOver3Fraction = Number(argv[++index]);
     } else if (argv[index] === '--require-alpha-exact') {
       requireAlphaExact = true;
+    } else if (argv[index] === '--expected-width') {
+      expectedWidth = Number(argv[++index]);
+    } else if (argv[index] === '--expected-height') {
+      expectedHeight = Number(argv[++index]);
+    } else if (argv[index] === '--raw-rgba8-contract') {
+      rawRgba8Contract = true;
     } else if (argv[index] === '--output') {
       output = resolve(argv[++index]);
     } else {
@@ -78,7 +93,7 @@ function parseArguments(argv) {
     }
   }
   if (positional.length !== 2) {
-    throw new Error('usage: compare-image-ssim.mjs <reference.png> <candidate.png> [--threshold 0.9999] [--max-rgb-mae-normalized 0.00005] [--max-pixels-over3-fraction 0.001] [--require-alpha-exact] [--output result.json]');
+    throw new Error('usage: compare-image-ssim.mjs <reference.png> <candidate.png> [--threshold 0.9999] [--max-rgb-mae-normalized 0.00005] [--max-pixels-over3-fraction 0.001] [--require-alpha-exact] [--expected-width N --expected-height N] [--raw-rgba8-contract] [--output result.json]');
   }
   if (threshold !== null && (!Number.isFinite(threshold) || threshold < -1 || threshold > 1)) {
     throw new Error('--threshold must be a finite number between -1 and 1');
@@ -91,6 +106,12 @@ function parseArguments(argv) {
       throw new Error(`${name} must be a finite number between 0 and 1`);
     }
   }
+  if ((expectedWidth === null) !== (expectedHeight === null) ||
+      (expectedWidth !== null &&
+        (!Number.isSafeInteger(expectedWidth) || expectedWidth <= 0 ||
+          !Number.isSafeInteger(expectedHeight) || expectedHeight <= 0))) {
+    throw new Error('--expected-width and --expected-height must be positive safe integers supplied together');
+  }
   return {
     reference: resolve(positional[0]),
     candidate: resolve(positional[1]),
@@ -98,75 +119,46 @@ function parseArguments(argv) {
     maxRgbMaeNormalized,
     maxPixelsOver3Fraction,
     requireAlphaExact,
+    expectedWidth,
+    expectedHeight,
+    rawRgba8Contract,
     output
   };
 }
 
-const args = parseArguments(process.argv.slice(2));
-const [referenceBytes, candidateBytes, puppeteer, chrome] = await Promise.all([
-  readFile(args.reference),
-  readFile(args.candidate),
-  loadPuppeteer(),
-  findChrome()
-]);
-if (!chrome) throw new Error(`no supported Chrome/Chromium found: ${chromeCandidates.join(', ')}`);
-
-const chromeBytes = await readFile(chrome);
-const browserIdentity = {
-  executablePath: resolve(chrome),
-  sha256: createHash('sha256').update(chromeBytes).digest('hex')
-};
-const browserOwnership = browserOwnershipConfig(process.env, false);
-const browserLaunchOptions = {
-  executablePath: browserIdentity.executablePath,
-  headless: true,
-};
-if (browserOwnership !== null) {
-  browserLaunchOptions.userDataDir = browserOwnership.userDataDir;
-}
-const browser = await puppeteer.launch(browserLaunchOptions);
-try {
-  await publishBrowserOwnershipHandshake(browser, browserOwnership);
-  const page = await browser.newPage();
-  const result = await page.evaluate(async ({ referenceBase64, candidateBase64 }) => {
+async function computeCanvasImageMetrics(page, referenceBytes, candidateBytes) {
+  return page.evaluate(async ({ referenceBase64, candidateBase64 }) => {
     const WINDOW_SIZE = 8;
     const C1 = (0.01 * 255) ** 2;
     const C2 = (0.03 * 255) ** 2;
 
-    function selfTest() {
-      const same = windowSsim([0, 64, 128, 255], [0, 64, 128, 255]);
-      const opposite = windowSsim([0, 0, 0, 0], [255, 255, 255, 255]);
-      if (Math.abs(same - 1) > 1e-12 || !(opposite >= 0 && opposite < 0.001)) {
-        throw new Error(`SSIM self-test failed: same=${same} opposite=${opposite}`);
-      }
-    }
-
-    function windowSsim(a, b) {
-      const count = a.length;
-      let sumA = 0;
-      let sumB = 0;
+    function windowSsim(reference, candidate) {
+      const count = reference.length;
+      let referenceSum = 0;
+      let candidateSum = 0;
       for (let index = 0; index < count; index += 1) {
-        sumA += a[index];
-        sumB += b[index];
+        referenceSum += reference[index];
+        candidateSum += candidate[index];
       }
-      const meanA = sumA / count;
-      const meanB = sumB / count;
-      let varianceA = 0;
-      let varianceB = 0;
+      const referenceMean = referenceSum / count;
+      const candidateMean = candidateSum / count;
+      let referenceVariance = 0;
+      let candidateVariance = 0;
       let covariance = 0;
       for (let index = 0; index < count; index += 1) {
-        const deltaA = a[index] - meanA;
-        const deltaB = b[index] - meanB;
-        varianceA += deltaA * deltaA;
-        varianceB += deltaB * deltaB;
-        covariance += deltaA * deltaB;
+        const referenceDelta = reference[index] - referenceMean;
+        const candidateDelta = candidate[index] - candidateMean;
+        referenceVariance += referenceDelta * referenceDelta;
+        candidateVariance += candidateDelta * candidateDelta;
+        covariance += referenceDelta * candidateDelta;
       }
       const denominator = Math.max(count - 1, 1);
-      varianceA /= denominator;
-      varianceB /= denominator;
+      referenceVariance /= denominator;
+      candidateVariance /= denominator;
       covariance /= denominator;
-      return ((2 * meanA * meanB + C1) * (2 * covariance + C2)) /
-        ((meanA * meanA + meanB * meanB + C1) * (varianceA + varianceB + C2));
+      return ((2 * referenceMean * candidateMean + C1) * (2 * covariance + C2)) /
+        ((referenceMean * referenceMean + candidateMean * candidateMean + C1) *
+          (referenceVariance + candidateVariance + C2));
     }
 
     async function decode(base64) {
@@ -178,13 +170,22 @@ try {
       canvas.height = image.naturalHeight;
       const context = canvas.getContext('2d', { willReadFrequently: true });
       context.drawImage(image, 0, 0);
-      return { width: canvas.width, height: canvas.height, rgba: context.getImageData(0, 0, canvas.width, canvas.height).data };
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        rgba: context.getImageData(0, 0, canvas.width, canvas.height).data
+      };
     }
 
-    selfTest();
-    const [reference, candidate] = await Promise.all([decode(referenceBase64), decode(candidateBase64)]);
+    const [reference, candidate] = await Promise.all([
+      decode(referenceBase64),
+      decode(candidateBase64)
+    ]);
     if (reference.width !== candidate.width || reference.height !== candidate.height) {
-      throw new Error(`image dimensions differ: ${reference.width}x${reference.height} vs ${candidate.width}x${candidate.height}`);
+      throw new Error(
+        `image dimensions differ: ${reference.width}x${reference.height} vs ` +
+        `${candidate.width}x${candidate.height}`
+      );
     }
 
     const pixelCount = reference.width * reference.height;
@@ -197,13 +198,17 @@ try {
       const offset = pixel * 4;
       let pixelOverThree = false;
       for (let channel = 0; channel < 3; channel += 1) {
-        const error = Math.abs(reference.rgba[offset + channel] - candidate.rgba[offset + channel]);
+        const error = Math.abs(
+          reference.rgba[offset + channel] - candidate.rgba[offset + channel]
+        );
         rgbAbsoluteError += error;
         rgbSquaredError += error * error;
         maxRgbError = Math.max(maxRgbError, error);
         pixelOverThree ||= error > 3;
       }
-      alphaAbsoluteError += Math.abs(reference.rgba[offset + 3] - candidate.rgba[offset + 3]);
+      alphaAbsoluteError += Math.abs(
+        reference.rgba[offset + 3] - candidate.rgba[offset + 3]
+      );
       pixelsOverThree += Number(pixelOverThree);
     }
     const rgbMse8bit = rgbSquaredError / (pixelCount * 3);
@@ -219,10 +224,14 @@ try {
           for (let x = left; x < right; x += 1) {
             const offset = (y * reference.width + x) * 4;
             referenceLuma.push(
-              0.2126 * reference.rgba[offset] + 0.7152 * reference.rgba[offset + 1] + 0.0722 * reference.rgba[offset + 2]
+              0.2126 * reference.rgba[offset] +
+              0.7152 * reference.rgba[offset + 1] +
+              0.0722 * reference.rgba[offset + 2]
             );
             candidateLuma.push(
-              0.2126 * candidate.rgba[offset] + 0.7152 * candidate.rgba[offset + 1] + 0.0722 * candidate.rgba[offset + 2]
+              0.2126 * candidate.rgba[offset] +
+              0.7152 * candidate.rgba[offset + 1] +
+              0.0722 * candidate.rgba[offset + 2]
             );
           }
         }
@@ -248,6 +257,53 @@ try {
     referenceBase64: referenceBytes.toString('base64'),
     candidateBase64: candidateBytes.toString('base64')
   });
+}
+
+const args = parseArguments(process.argv.slice(2));
+const [referenceBytes, candidateBytes, metricImplementationBytes, puppeteer, chrome] = await Promise.all([
+  readFile(args.reference),
+  readFile(args.candidate),
+  readFile(metricImplementationPath),
+  loadPuppeteer(),
+  findChrome()
+]);
+if (!chrome) throw new Error(`no supported Chrome/Chromium found: ${chromeCandidates.join(', ')}`);
+
+const chromeBytes = await readFile(chrome);
+const browserIdentity = {
+  executablePath: resolve(chrome),
+  sha256: createHash('sha256').update(chromeBytes).digest('hex')
+};
+const metricImplementation = {
+  path: 'tests/perf/png-image-metrics.mjs',
+  sha256: createHash('sha256').update(metricImplementationBytes).digest('hex')
+};
+const browserOwnership = browserOwnershipConfig(process.env, false);
+const browserLaunchOptions = {
+  executablePath: browserIdentity.executablePath,
+  headless: true,
+};
+if (browserOwnership !== null) {
+  browserLaunchOptions.userDataDir = browserOwnership.userDataDir;
+}
+const browser = await puppeteer.launch(browserLaunchOptions);
+try {
+  await publishBrowserOwnershipHandshake(browser, browserOwnership);
+  assertImageMetricSelfTest();
+  let result;
+  if (args.rawRgba8Contract) {
+    const decodeOptions = {
+      expectedWidth: args.expectedWidth,
+      expectedHeight: args.expectedHeight,
+      rejectColorManagement: true,
+    };
+    const reference = decodeRawRgba8Png(referenceBytes, decodeOptions);
+    const candidate = decodeRawRgba8Png(candidateBytes, decodeOptions);
+    result = computeRawRgba8ImageMetrics(reference, candidate);
+  } else {
+    const page = await browser.newPage();
+    result = await computeCanvasImageMetrics(page, referenceBytes, candidateBytes);
+  }
 
   const checks = {
     ssim: args.threshold === null ? null : result.score >= args.threshold,
@@ -264,6 +320,10 @@ try {
     schema: 'gsplat-image-parity/v1',
     metric: 'ssim-luma-srgb-window8',
     browser: browserIdentity,
+    ...(args.rawRgba8Contract ? {
+      metricImplementation,
+      pixelDomain: 'raw_noninterlaced_rgba8_no_color_management'
+    } : {}),
     constants: { k1: 0.01, k2: 0.03, dynamicRange: 255 },
     reference: args.reference,
     candidate: args.candidate,

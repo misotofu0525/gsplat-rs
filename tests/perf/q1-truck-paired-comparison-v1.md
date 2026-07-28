@@ -198,10 +198,13 @@ header is not an image. Its comparison
 receipt has schema `gsplat-q1-reference-image-comparison/v1` and binds:
 
 - the raw reference and candidate SHA-256 values;
-- `tests/perf/compare-image-ssim.mjs` and its content SHA-256;
+- `tests/perf/compare-image-ssim.mjs`, its raw RGBA8 PNG metric module and both
+  content SHA-256 values;
 - the trace view, dimensions, metric and predeclared SSIM threshold;
-- a finite score in `[0, 1]`, which is checked against SSIM recomputed from the
-  decoded reference and candidate bytes with the repository's locked algorithm.
+- a finite score in `[0, 1]`, computed and independently checked from the raw
+  non-interlaced RGBA8 PNG samples with the repository's locked algorithm.
+  Browser Canvas decoding is forbidden because its partial-alpha
+  premultiply/unpremultiply round trip changes the retained source bytes.
 
 Until both real producers exist, image scores are diagnostic inputs only. They
 do not become an admitted quality pass/miss or unlock a performance result.
@@ -299,7 +302,8 @@ reviewed SHA and clean-tree state; the actual Chrome executable; the
 quality-exact Wasm JS, Wasm binary and build receipt; Truck and trace inputs;
 both fully decoded 1920x1080 non-interlaced RGBA8 references; endpoint
 producer/runtime module trees; the canonical artifact validator; this Q1
-validator; the locked image tool; and the installed production dependency
+validator; the locked image tool and raw PNG metric module; and the installed
+production dependency
 closure rooted at `puppeteer-core`, resolved from `package-lock.json` without
 cache, test or temporary files. `commands.json` contains the complete
 child environment rather than overrides, and its file digest is part of the

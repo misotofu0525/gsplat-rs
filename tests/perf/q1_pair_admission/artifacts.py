@@ -67,6 +67,10 @@ def _load_image_validator() -> Any:
 IMAGE = _load_image_validator()
 IMAGE_TOOL = pathlib.Path(__file__).parents[1] / "compare-image-ssim.mjs"
 IMAGE_TOOL_SHA256 = file_sha256(IMAGE_TOOL)
+IMAGE_METRIC_IMPLEMENTATION = (
+    pathlib.Path(__file__).parents[1] / "png-image-metrics.mjs"
+)
+IMAGE_METRIC_IMPLEMENTATION_SHA256 = file_sha256(IMAGE_METRIC_IMPLEMENTATION)
 _IMAGE_SCORE_CACHE: dict[tuple[str, str], float] = {}
 REFERENCE_SCHEMA = "gsplat-q1-direct-f32-reference/v1"
 REFERENCE_RECEIPT_FIELDS = frozenset(
@@ -1841,6 +1845,8 @@ def endpoint_images(
             "schema": IMAGE_SCHEMA,
             "metric": "ssim-luma-srgb-window8",
             "tool": "tests/perf/compare-image-ssim.mjs",
+            "metric_implementation": "tests/perf/png-image-metrics.mjs",
+            "pixel_domain": "raw_noninterlaced_rgba8_no_color_management",
             "trace_frame_index": trace,
             "reference_sha256": references[trace]["sha256"],
             "candidate_sha256": digest,
@@ -1852,6 +1858,14 @@ def endpoint_images(
             fail(f"{context}.comparison identity mismatch")
         if receipt.get("tool_sha256") != IMAGE_TOOL_SHA256:
             fail(f"{context}.comparison.tool_sha256 does not match the locked tool")
+        if (
+            receipt.get("metric_implementation_sha256")
+            != IMAGE_METRIC_IMPLEMENTATION_SHA256
+        ):
+            fail(
+                f"{context}.comparison.metric_implementation_sha256 does not match "
+                "the locked raw PNG metric implementation"
+            )
         if locked_browser is not None and (
             receipt.get("browser_executable_path") != locked_browser.get("path")
             or receipt.get("browser_executable_sha256") != locked_browser.get("sha256")
