@@ -43,7 +43,9 @@ pub(crate) struct TestSessionSurfaceOwner {
     size: (u32, u32),
     addressable_splat_count: usize,
     adapter_info: wgpu::AdapterInfo,
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
     adapter_supported_limits: wgpu::Limits,
+    #[cfg(feature = "diagnostic-surface-capture-receipt")]
     effective_device_limits: wgpu::Limits,
     geometry_path: GeometryPath,
     raster_execution_plan: SurfaceRasterExecutionPlan,
@@ -119,7 +121,9 @@ impl SessionSurfaceOwner {
                 subgroup_max_size: 1,
                 transient_saves_memory: false,
             },
+            #[cfg(feature = "diagnostic-surface-capture-receipt")]
             adapter_supported_limits: wgpu::Limits::downlevel_defaults(),
+            #[cfg(feature = "diagnostic-surface-capture-receipt")]
             effective_device_limits: wgpu::Limits::downlevel_defaults(),
             geometry_path: GeometryPath::SortedIndexDirect,
             raster_execution_plan: SurfaceRasterExecutionPlan::GlobalQuads,
