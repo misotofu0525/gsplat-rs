@@ -11,6 +11,7 @@ import tempfile
 import types
 import unittest
 import zlib
+from contextlib import ExitStack
 from unittest import mock
 
 
@@ -237,6 +238,172 @@ class NativeQualityProducerTests(unittest.TestCase):
         NATIVE.reject_performance_fields(manifest)
         NATIVE.reject_performance_fields(frame)
         NATIVE.Q1._native_capture(artifact, NATIVE.trace_for_gate(self.trace))
+
+    def collect_fixture(self, output, *, publish=None):
+        dataset = self.root / "truck.ply"
+        dataset.write_bytes(b"truck")
+        commit = "a" * 40
+        args = types.SimpleNamespace(
+            output=output,
+            expected_commit=commit,
+            formal_trace_authority=self.trace["root"],
+            dataset=dataset,
+        )
+
+        def fake_build(repo, stage, expected_git, *, feature, build_jobs):
+            binary = stage / "cargo-target/release/desktop-example"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"binary")
+            return {"path": binary, "sha256": "b" * 64}
+
+        def invoke(command, cwd):
+            (cwd / "capture.png").write_bytes(self.capture_path.read_bytes())
+            return NATIVE.subprocess.CompletedProcess(command, 0, self.stdout, "")
+
+        def frozen_hash(path):
+            if path == dataset:
+                return NATIVE.TRUCK_SHA256
+            if path == self.trace["path"]:
+                return self.trace["file_sha256"]
+            return "b" * 64
+
+        patches = (
+            mock.patch.object(NATIVE, "validate_ignored_output"),
+            mock.patch.object(
+                NATIVE,
+                "git_receipt",
+                return_value={"dirty": False, "commit": commit},
+            ),
+            mock.patch.object(NATIVE, "load_formal_trace", return_value=self.trace),
+            mock.patch.object(NATIVE, "load_truck", return_value=dataset),
+            mock.patch.object(NATIVE, "require_disjoint_output"),
+            mock.patch.object(NATIVE, "sha256_file", side_effect=frozen_hash),
+            mock.patch.object(
+                NATIVE.SHARED,
+                "build_locked_desktop_binary",
+                side_effect=fake_build,
+            ),
+        )
+        with ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            if publish is not None:
+                stack.enter_context(
+                    mock.patch.object(
+                        NATIVE.Q1,
+                        "_publish_directory_noreplace",
+                        side_effect=publish,
+                    )
+                )
+            return NATIVE.collect(args, repo=self.root, invoke=invoke)
+
+    def test_collect_publishes_frozen_artifact_from_same_parent_staging(self) -> None:
+        outer_stage = self.root / ".outer-staging"
+        outer_stage.mkdir()
+        output = outer_stage / "native-view000001"
+        result = self.collect_fixture(output)
+
+        self.assertEqual(result, output)
+        self.assertTrue((output / "manifest.json").is_file())
+        self.assertEqual(list(outer_stage.glob(".native-view000001.q1-native-*")), [])
+        self.assertEqual(list(outer_stage.glob(".native-view000001.artifact-*")), [])
+        for path in [output, *output.rglob("*")]:
+            self.assertFalse(os.access(path, os.W_OK), path)
+
+    def test_publish_race_removes_sibling_candidate_and_retains_failure(self) -> None:
+        outer_stage = self.root / ".outer-race-staging"
+        outer_stage.mkdir()
+        output = outer_stage / "native-view000001"
+        original_publish = NATIVE.Q1._publish_directory_noreplace
+
+        def racing_publish(staging, destination):
+            if destination == output:
+                output.mkdir()
+                raise NATIVE.Q1.OneViewQualityError(f"output already exists: {output}")
+            return original_publish(staging, destination)
+
+        with self.assertRaisesRegex(NATIVE.ValidationError, "retained native failure"):
+            self.collect_fixture(output, publish=racing_publish)
+
+        self.assertTrue(output.is_dir())
+        self.assertEqual(list(outer_stage.glob(".native-view000001.artifact-*")), [])
+        failures = list(outer_stage.glob("native-view000001.failed-q1-native-*"))
+        self.assertEqual(len(failures), 1)
+        self.assertFalse((failures[0] / "artifact").exists())
+        blocker = json.loads((failures[0] / "blocker.json").read_text())
+        self.assertFalse(blocker["formal_output_published"])
+
+    def test_freeze_failure_publishes_no_formal_output(self) -> None:
+        outer_stage = self.root / ".outer-freeze-staging"
+        outer_stage.mkdir()
+        output = outer_stage / "native-view000001"
+        original_freeze = NATIVE.make_tree_immutable
+
+        def fail_artifact_freeze(path):
+            if path.name.startswith(".native-view000001.artifact-"):
+                raise OSError("artifact freeze failed")
+            return original_freeze(path)
+
+        with (
+            mock.patch.object(
+                NATIVE, "make_tree_immutable", side_effect=fail_artifact_freeze
+            ),
+            self.assertRaisesRegex(NATIVE.ValidationError, "artifact freeze failed"),
+        ):
+            self.collect_fixture(output)
+
+        self.assertFalse(output.exists())
+        self.assertEqual(list(outer_stage.glob(".native-view000001.artifact-*")), [])
+        failures = list(outer_stage.glob("native-view000001.failed-q1-native-*"))
+        self.assertEqual(len(failures), 1)
+        blocker = json.loads((failures[0] / "blocker.json").read_text())
+        self.assertEqual(blocker["reason"], "artifact freeze failed")
+
+    def test_candidate_cleanup_failure_retains_original_error_and_logs(self) -> None:
+        outer_stage = self.root / ".outer-cleanup-staging"
+        outer_stage.mkdir()
+        output = outer_stage / "native-view000001"
+        original_publish = NATIVE.Q1._publish_directory_noreplace
+        original_discard = NATIVE.discard_tree
+
+        def fail_formal_publish(staging, destination):
+            if destination == output:
+                raise NATIVE.Q1.OneViewQualityError("formal publication failed")
+            return original_publish(staging, destination)
+
+        def fail_candidate_cleanup(path):
+            if path.name.startswith(".native-view000001.artifact-"):
+                raise OSError("candidate cleanup failed")
+            return original_discard(path)
+
+        with (
+            mock.patch.object(
+                NATIVE, "discard_tree", side_effect=fail_candidate_cleanup
+            ),
+            self.assertRaisesRegex(
+                NATIVE.ValidationError,
+                "formal publication failed; unpublished artifact cleanup failed: "
+                "candidate cleanup failed; retained native failure",
+            ),
+        ):
+            self.collect_fixture(output, publish=fail_formal_publish)
+
+        self.assertFalse(output.exists())
+        candidates = list(outer_stage.glob(".native-view000001.artifact-*"))
+        self.assertEqual(len(candidates), 1)
+        failures = list(outer_stage.glob("native-view000001.failed-q1-native-*"))
+        self.assertEqual(len(failures), 1)
+        blocker = json.loads((failures[0] / "blocker.json").read_text())
+        self.assertEqual(blocker["reason"], "formal publication failed")
+        self.assertEqual(
+            blocker["unpublished_artifact_cleanup"],
+            {
+                "status": "failed",
+                "reason": "candidate cleanup failed",
+                "candidate_name": candidates[0].name,
+            },
+        )
+        self.assertTrue((failures[0] / "host/stdout.log").is_file())
 
     def test_missing_renderer_owned_camera_terminal_fails_closed(self) -> None:
         without_camera = "\n".join(

@@ -505,7 +505,15 @@ def materialize_artifact(
     commit: str,
     binary_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    directory.mkdir()
+    if directory.exists():
+        require(
+            directory.is_dir()
+            and not directory.is_symlink()
+            and next(directory.iterdir(), None) is None,
+            "precreated artifact staging must be a real empty directory",
+        )
+    else:
+        directory.mkdir()
     final_png = directory / "final-frame.png"
     shutil.copyfile(capture_path, final_png)
     frame = {
@@ -717,6 +725,9 @@ def publish_failure(
     output: pathlib.Path,
     commit: str,
     error: Exception,
+    *,
+    artifact_cleanup_error: Exception | None = None,
+    unpublished_artifact: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Retain diagnostic logs without publishing an incomplete quality artifact."""
 
@@ -734,20 +745,28 @@ def publish_failure(
         path = stage / "host" / f"{name}.{'json' if name == 'command' else 'log'}"
         if path.is_file() and not path.is_symlink():
             retained_host_logs[name] = path.relative_to(stage).as_posix()
-    write_json(
-        stage / "blocker.json",
-        {
-            "schema": "gsplat-q1-native-quality-failure/v1",
-            "status": "failed_attempt",
-            "reason": str(error),
-            "git_commit": commit,
-            "automatic_retry": False,
-            "formal_output_published": False,
-            "product_quality": "Deferred",
-            "performance_authorized": False,
-            "retained_host_logs": retained_host_logs,
-        },
-    )
+    blocker = {
+        "schema": "gsplat-q1-native-quality-failure/v1",
+        "status": "failed_attempt",
+        "reason": str(error),
+        "git_commit": commit,
+        "automatic_retry": False,
+        "formal_output_published": False,
+        "product_quality": "Deferred",
+        "performance_authorized": False,
+        "retained_host_logs": retained_host_logs,
+    }
+    if artifact_cleanup_error is not None:
+        require(
+            unpublished_artifact is not None,
+            "artifact cleanup failure requires the unpublished candidate path",
+        )
+        blocker["unpublished_artifact_cleanup"] = {
+            "status": "failed",
+            "reason": str(artifact_cleanup_error),
+            "candidate_name": unpublished_artifact.name,
+        }
+    write_json(stage / "blocker.json", blocker)
     fsync_tree(stage)
     make_tree_immutable(stage)
     Q1._publish_directory_noreplace(stage, destination)
@@ -776,6 +795,7 @@ def collect(
     require_disjoint_output(output, (trace["root"], dataset))
 
     stage = pathlib.Path(tempfile.mkdtemp(prefix=f".{output.name}.q1-native-", dir=output.parent))
+    artifact_stage: pathlib.Path | None = None
     published = False
     try:
         build = SHARED.build_locked_desktop_binary(
@@ -796,9 +816,15 @@ def collect(
         camera, capture = validate_host(
             completed.stdout, completed.stderr, trace=trace, capture_path=capture_path
         )
-        artifact = stage / "artifact"
+        # Darwin refuses to move a write-disabled directory to a different
+        # parent because that would update its `..` entry. Create the final
+        # artifact staging beside its destination so the frozen no-replace
+        # publication remains a same-parent rename.
+        artifact_stage = pathlib.Path(
+            tempfile.mkdtemp(prefix=f".{output.name}.artifact-", dir=output.parent)
+        )
         materialize_artifact(
-            artifact,
+            artifact_stage,
             trace=trace,
             native_camera=camera,
             capture=capture,
@@ -807,29 +833,49 @@ def collect(
             binary_sha256=build["sha256"],
         )
         require(
-            {path.name for path in artifact.iterdir()}
+            {path.name for path in artifact_stage.iterdir()}
             == {"manifest.json", "frames.jsonl", "final-frame.png"},
             "quality artifact contains an unexpected file",
         )
-        Q1._native_capture(artifact, trace_for_gate(trace))
-        fsync_tree(artifact)
-        make_tree_immutable(artifact)
-        Q1._publish_directory_noreplace(artifact, output)
+        Q1._native_capture(artifact_stage, trace_for_gate(trace))
+        fsync_tree(artifact_stage)
+        make_tree_immutable(artifact_stage)
+        Q1._publish_directory_noreplace(artifact_stage, output)
+        artifact_stage = None
         published = True
         return output
     except Exception as error:
+        artifact_cleanup_error: Exception | None = None
+        unpublished_artifact: pathlib.Path | None = None
+        if artifact_stage is not None and os.path.lexists(artifact_stage):
+            try:
+                discard_tree(artifact_stage)
+                artifact_stage = None
+            except Exception as cleanup_error:
+                artifact_cleanup_error = cleanup_error
+                unpublished_artifact = artifact_stage
         if stage.exists():
             try:
                 failure = publish_failure(
-                    stage, output, initial_git["commit"], error
+                    stage,
+                    output,
+                    initial_git["commit"],
+                    error,
+                    artifact_cleanup_error=artifact_cleanup_error,
+                    unpublished_artifact=unpublished_artifact,
                 )
             except Exception as publication_error:
                 raise ValidationError(
                     f"{error}; native failure staging could not be published: "
                     f"{publication_error}"
                 ) from error
+            cleanup_detail = (
+                f"; unpublished artifact cleanup failed: {artifact_cleanup_error}"
+                if artifact_cleanup_error is not None
+                else ""
+            )
             raise ValidationError(
-                f"{error}; retained native failure: {failure}"
+                f"{error}{cleanup_detail}; retained native failure: {failure}"
             ) from error
         raise
     finally:

@@ -1784,3 +1784,29 @@ requirements for presentation and issued generations. Focused tests use the
 realistic zero baseline and retain mismatch rejection. Another endpoint remains
 deferred until this evidence-contract correction passes verification and
 fixed-SHA review.
+
+Fixed-SHA review accepted `828f601` with no P0/P1/P2. Its single authorized
+endpoint execution again completed the full Native render and capture, then
+failed while publishing `native-view000001` with Darwin `EACCES`. The Native
+producer froze `work-stage/artifact` and then attempted to move that directory
+to a different parent. macOS must update a moved directory's `..` entry and
+rejects that cross-parent rename after write permission is removed. The outer
+transaction had not frozen its staging root, and cleanup had not started.
+
+The correction keeps the private build/host work stage separate and creates the
+artifact staging as a hidden sibling of its requested output. After validation,
+fsync and freeze, publication is an atomic no-replace same-parent rename; no
+permission is restored and no writable artifact is published. A new full
+Native `collect()` success test exercises the nested outer-stage topology on
+the real temporary filesystem and proves immutable output plus removal of both
+private staging roots. Another endpoint remains deferred until this transaction
+repair passes verification and fixed-SHA review.
+
+The transaction repair now also fails closed across its negative boundaries:
+an output race never replaces the winner, a freeze failure publishes no formal
+output, and an unpublished-candidate cleanup failure cannot hide the original
+producer error or discard the retained host/build diagnostics. The failure
+ledger records the hidden candidate name and cleanup error explicitly instead
+of presenting it as formal evidence. The focused Q1 protocol suite passes 75
+tests, source architecture policy passes, and the diff is clean. Endpoint work
+remains deferred pending a fixed-SHA review of this atomic change.
