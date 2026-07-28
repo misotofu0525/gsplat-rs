@@ -1382,3 +1382,40 @@ rejects duplicate, absolute, parent-traversing or non-portable paths and any
 real file-set, byte-count or content-hash difference. A later formal attempt
 requires a new reviewed SHA, regenerated same-SHA assets, fresh root and the
 existing one-shot gates; attempt 9 is never reused.
+
+### Q1 formal attempt 10 admitted workload and image-gate rejection (2026-07-28)
+
+Attempt 10 at fixed reviewed SHA
+`630f9d3f173b89c068274ddb931608cd5fdfb15f` used regenerated same-SHA
+quality-exact Wasm and Direct-f32 authority assets, two byte-identical dry
+runs, and an independent go/no-go review. The one authorized execution
+completed all 30 predeclared browser invocations across five counterbalanced
+pairs. Every command returned successfully with 80/80 retained frames; runtime
+tree, authority, browser, cleanup and thermal admission passed, and no blocker
+or survivor was published.
+
+The immutable v2 result is nevertheless `Rejected` because the predeclared
+common-reference image gate failed. Raw RGBA8 recomputation over all 20 images
+matched the retained scores exactly. gsplat-rs scored approximately
+`0.999970` to `0.999971` against the independent Direct-f32 authority, while
+PlayCanvas scored approximately `0.938169` to `0.948069`; the minimum observed
+score `0.9381693241147921` is below the shared `0.99` threshold. The result is
+therefore `evidence_admitted=true` but `quality_passed=false`, with
+`performance=null`, `claim_scope=null` and `retry_authorized=false`.
+
+The forward-only workload receipt retains only non-comparative absolute
+terminal means. Across the five pairs, the median gsplat-rs observation was
+`20.74125000089407 ms` and the median PlayCanvas observation was
+`17.93500000089407 ms`. These values prove that both endpoints completed the
+named matched Truck/Chrome/WebGPU/1080p workload; they do not support a ratio,
+relative slowdown, FPS advantage, winner or broader product-performance
+claim. An independent result audit accepted the root with P0/P1/P2 `0/0/0`.
+The earlier `66.875 ms` versus `17.668 ms` diagnostic is not a valid formal
+comparison and is superseded as a decision input by this admitted workload
+receipt.
+
+Q1 remains active. The next bounded slice is image-contract attribution:
+identify the smallest renderer-semantic differences responsible for the
+PlayCanvas reference gap before changing either performance path or quality
+threshold. Attempt 10 remains immutable and must not be revalidated into a
+same-quality comparison.
