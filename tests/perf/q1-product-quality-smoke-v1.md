@@ -54,9 +54,12 @@ endpoint independently receives `Accepted` or `Rejected` from:
 
 A threshold miss is a finite `Rejected` result. Structural, provenance,
 camera, alpha, resolution, producer, hash, or file failures produce no result.
-The one-view aggregate is Accepted only when both endpoints accept, but formal
-Product Quality remains `Deferred` because view `000009` is still required.
-`performance_eligible` is always false.
+The one-view aggregate is Accepted only when both endpoints accept. An
+Accepted first view leaves formal Product Quality `Deferred` because view
+`000009` is still required. A Rejected endpoint makes Product Quality
+immediately and monotonically `Rejected`: another view cannot erase that miss,
+so the coordinator does not spend another endpoint run waiting for an
+impossible acceptance. `performance_eligible` is always false.
 
 The result deliberately contains no timing, frame-wall, FPS, throughput,
 pairing, speed ratio, or winner fields. Publication is one fresh directory

@@ -1947,3 +1947,30 @@ Clippy, wasm32 check, formatting and source architecture pass. All-target
 Clippy remains independently Deferred on two pre-existing unread test-owner
 limit fields. No endpoint has run after this correction; a new one-shot remains
 unauthorized until the change is committed and fixed-SHA reviewed.
+
+Fixed-SHA review accepted the Surface color-domain correction at `0d23f7f`
+with no P0/P1/P2. Doctor and command were READY, and one new explicitly
+authorized transaction ran once into the fresh immutable output
+`target/qualification/q1-product-quality-view000001-0d23f7f-attempt1/`; no
+automatic retry occurred. Both endpoints again proved complete 2,541,226-point
+SH3 Truck membership, the same formal camera and exact 979x546 render surface.
+
+The corrected gsplat-rs endpoint is **Accepted** by all three frozen metrics:
+SSIM `0.912844`, normalized RGB MAE `0.026692`, and severe-error fraction
+`0.034643`. The washed-out image is gone. PlayCanvas remains **Rejected** on
+the same reference because SSIM is `0.839861`; its RGB MAE `0.045763` and
+severe-error fraction `0.093841` pass. This is a quality result, not a
+performance comparison, and it does not revive the earlier invalid “3.8x”
+claim.
+
+The one-view protocol previously mislabeled every finite result as Product
+Quality `Deferred / second_formal_view_required`. That is not monotonic: the
+frozen lane is a conjunction over both endpoints and both views, and an
+already Rejected endpoint cannot be repaired by view `000009`. The coordinator
+and offline gate now preserve the absorbing state: an Accepted first view stays
+Deferred pending the second view, while a Rejected first view immediately
+terminalizes Product Quality as `Rejected / product_quality_endpoint_rejected`.
+Failures before a finite result remain Deferred. Therefore view `000009` is not
+run, same-quality performance stays ineligible, and no ratio, direction or
+winner is published. Focused one-view/coordinator tests, source architecture
+policy and diff hygiene pass.

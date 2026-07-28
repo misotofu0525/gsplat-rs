@@ -509,6 +509,25 @@ class ProductQualitySmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "Rejected")
         self.assertEqual(result["endpoints"]["gsplat_rs"]["state"], "Accepted")
         self.assertEqual(result["endpoints"]["playcanvas"]["state"], "Rejected")
+        self.assertEqual(result["qualification"]["product_quality"], "Rejected")
+        self.assertEqual(
+            result["qualification"]["reason"], "product_quality_endpoint_rejected"
+        )
+        self.assertFalse(result["qualification"]["performance_eligible"])
+
+    def test_rejected_view_cannot_be_relabelled_deferred(self) -> None:
+        rejected = bytes((0, 0, 0, 255)) * PIXELS
+        result = self.evaluate(playcanvas=rejected)
+        result["qualification"] = {
+            "one_view_smoke": "Rejected",
+            "product_quality": "Deferred",
+            "reason": "second_formal_view_required",
+            "performance_eligible": False,
+        }
+        with self.assertRaisesRegex(
+            SMOKE.OneViewQualityError, "monotonic Product Quality state"
+        ):
+            SMOKE.validate_result(result)
 
     def test_nonopaque_endpoint_fails_closed_instead_of_scoring(self) -> None:
         malformed = bytearray(self.good_rgba)

@@ -1224,14 +1224,6 @@ def validate_result(result: dict[str, Any]) -> None:
         or result.get("resolution") != {"width": FORMAL_WIDTH, "height": FORMAL_HEIGHT}
     ):
         fail("one-view result identity mismatch")
-    qualification = _object(result, "qualification", "result")
-    if qualification != {
-        "one_view_smoke": result.get("status"),
-        "product_quality": "Deferred",
-        "reason": "second_formal_view_required",
-        "performance_eligible": False,
-    }:
-        fail("one-view result must remain performance-ineligible and Product Quality Deferred")
     endpoints = _object(result, "endpoints", "result")
     if set(endpoints) != {"gsplat_rs", "playcanvas"}:
         fail("one-view result must contain exactly two endpoints")
@@ -1244,6 +1236,19 @@ def validate_result(result: dict[str, Any]) -> None:
     expected = "Accepted" if all(state == "Accepted" for state in states) else "Rejected"
     if result.get("status") != expected:
         fail("one-view aggregate status does not reduce endpoint states")
+    qualification = _object(result, "qualification", "result")
+    expected_qualification = {
+        "one_view_smoke": expected,
+        "product_quality": "Deferred" if expected == "Accepted" else "Rejected",
+        "reason": (
+            "second_formal_view_required"
+            if expected == "Accepted"
+            else "product_quality_endpoint_rejected"
+        ),
+        "performance_eligible": False,
+    }
+    if qualification != expected_qualification:
+        fail("one-view qualification must preserve the monotonic Product Quality state")
 
 
 def evaluate_one_view(
@@ -1300,8 +1305,12 @@ def evaluate_one_view(
         "endpoints": endpoints,
         "qualification": {
             "one_view_smoke": status,
-            "product_quality": "Deferred",
-            "reason": "second_formal_view_required",
+            "product_quality": "Deferred" if status == "Accepted" else "Rejected",
+            "reason": (
+                "second_formal_view_required"
+                if status == "Accepted"
+                else "product_quality_endpoint_rejected"
+            ),
             "performance_eligible": False,
         },
     }

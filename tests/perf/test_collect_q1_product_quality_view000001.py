@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -59,7 +60,12 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
         return lambda _: inputs["immutable_binding"]
 
     @staticmethod
-    def successful_invoke(calls: list[tuple[str, ...]]):
+    def successful_invoke(
+        calls: list[tuple[str, ...]],
+        *,
+        result_status: str = "Accepted",
+        product_quality: str = "Deferred",
+    ):
         def invoke(argv, cwd, env):
             calls.append(tuple(argv))
             if "collect-q1-product-quality-native.py" in " ".join(argv):
@@ -70,7 +76,16 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
                 output = pathlib.Path(argv[argv.index("--output") + 1])
                 output.mkdir()
                 (output / "result.json").write_text(
-                    json.dumps({"status": "Accepted"}) + "\n", encoding="utf-8"
+                    json.dumps(
+                        {
+                            "status": result_status,
+                            "qualification": {
+                                "product_quality": product_quality,
+                            },
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
                 )
             return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -176,6 +191,50 @@ class Q1OneShotCoordinatorTests(unittest.TestCase):
             )
             self.assertFalse((result / "process-home").exists())
             self.assertFalse((result / "browser-handshakes").exists())
+
+    def test_rejected_one_view_terminalizes_transaction_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args, inputs = self.fixture(root)
+            calls: list[tuple[str, ...]] = []
+            with (
+                mock.patch.object(COLLECTOR, "require_clean_exact"),
+                mock.patch.object(COLLECTOR.Q1, "validate_result"),
+            ):
+                result = COLLECTOR.collect(
+                    args,
+                    invoke=self.successful_invoke(
+                        calls,
+                        result_status="Rejected",
+                        product_quality="Rejected",
+                    ),
+                    owned_invoke=self.successful_owned_invoke(calls),
+                    preflight=lambda _: inputs,
+                    revalidate=self.accepted_revalidation(inputs),
+                )
+            receipt = json.loads((result / "receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["one_view_smoke"], "Rejected")
+            self.assertEqual(receipt["product_quality"], "Rejected")
+            self.assertFalse(receipt["performance_authorized"])
+
+    def test_cli_reports_terminal_product_quality_from_published_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "published"
+            output.mkdir()
+            (output / "receipt.json").write_text(
+                json.dumps({"product_quality": "Rejected"}) + "\n",
+                encoding="utf-8",
+            )
+            stream = io.StringIO()
+            with (
+                mock.patch.object(COLLECTOR, "parse_args", return_value=object()),
+                mock.patch.object(COLLECTOR, "collect", return_value=output),
+                mock.patch("sys.stdout", stream),
+            ):
+                self.assertEqual(COLLECTOR.main([]), 0)
+            published = json.loads(stream.getvalue())
+            self.assertEqual(published["product_quality"], "Rejected")
+            self.assertFalse(published["performance_authorized"])
 
     def test_first_failure_stops_without_retry_and_preserves_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

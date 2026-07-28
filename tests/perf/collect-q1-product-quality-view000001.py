@@ -650,7 +650,7 @@ def collect(
                 "playcanvas": tree_receipt(playcanvas_output),
                 "quality_result": tree_receipt(result_output),
             },
-            "product_quality": "Deferred",
+            "product_quality": result["qualification"]["product_quality"],
             "one_view_smoke": result["status"],
             "performance_authorized": False,
             "automatic_retry": False,
@@ -699,13 +699,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (CollectionError, OSError, subprocess.SubprocessError, Q1.OneViewQualityError) as error:
         print(f"Q1 view 000001 collection rejected: {error}", file=sys.stderr)
         return 1
+    receipt = Q1._load_json(output / "receipt.json", "one-view transaction receipt")
     print(
         canonical_json(
             {
                 "status": "complete",
                 "output": str(output),
                 "view_id": "000001",
-                "product_quality": "Deferred",
+                "product_quality": receipt["product_quality"],
                 "performance_authorized": False,
             }
         )

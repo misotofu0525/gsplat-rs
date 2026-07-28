@@ -191,13 +191,14 @@ Quality uses `formal-000001-000009`; neither can be validated as the other.
    renderer-owned image per endpoint. Apply the already frozen metrics. No
    timing is retained and one view cannot unlock performance. The pure offline
    admission gate is implemented in
-   `tests/perf/validate-q1-product-quality-smoke.py`; endpoint execution remains
-   separate and no formal one-view result exists yet.
-6. **Two-view qualification** — repeat for `000001` and `000009`; require both
-   lanes to accept and static-repeat stability to pass.
-7. **Performance admission** — only then bind the existing 1080p paired terminal
-   timing to the dual-lane result. A new browser series requires the existing
-   exact-SHA, immutable-root and one-shot authorization gates.
+   `tests/perf/validate-q1-product-quality-smoke.py`. The formal `000001` run is
+   terminally Rejected because PlayCanvas misses the frozen SSIM threshold;
+   gsplat-rs passes after the reviewed Surface color-domain correction.
+6. **Two-view qualification** — not executed after the first-view rejection.
+   Every endpoint and view is an independent conjunct, so `000009` cannot turn
+   the already Rejected Product Quality lane back into Accepted.
+7. **Performance admission** — unavailable for this Q1 result. No same-quality
+   performance ratio, direction or winner is authorized.
 
 Each slice can terminate Accepted, Rejected or Deferred without forcing the
 next slice. There is no required percentage lead over PlayCanvas and no
