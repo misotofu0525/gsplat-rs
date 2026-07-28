@@ -1102,3 +1102,30 @@ semantic re-admission of the complete retained tree. Authority copying now
 anchors root directory descriptors and opens every relative directory/file
 with no-follow `dir_fd` operations, rejecting an intermediate-directory
 symlink swap. These are mechanism tests only; no producer or endpoint ran.
+
+### Q1 formal attempt 1 terminal and capture phase repair (2026-07-28)
+
+The reviewed root SHA `16855499a73707dba0ab447dfdf76633589bb378`
+produced a same-SHA Direct-f32 reference authority and quality-exact Wasm
+package, then passed the complete dry-run twice. The separately declared
+formal series stopped fail-closed on invocation 1 of 30, the gsplat-rs trace-0
+control. No PlayCanvas endpoint ran and the failed series therefore supports
+no quality or performance comparison. Its immutable attempt-1 root retains the
+claim, browser ownership handshake, process cleanup receipt and non-retryable
+blocker; Chrome and the HTTP server left no surviving process.
+
+The failure was a producer state-machine contract drift. The canonical camera
+trace labels measured steps `measure`, while both Q1 capture consumers in the
+Web example tested the unreachable string `measured`. The renderer capture was
+armed, but JavaScript could neither take it nor attach its same-present receipt,
+so the final guard correctly rejected publication. A shared
+`isQ1CaptureTraceStep` predicate now owns this phase/index/trace match for both
+consumers. Focused tests use the real 20-warmup/80-measured alternating trace:
+logical frames 98 and 99 select measured indices 78/79 and trace frames 0/1;
+warmup, non-target and wrong-trace steps reject.
+
+This repair does not change renderer execution, camera input, scene membership,
+resolution, timing policy or either competitor endpoint. It authorizes no
+automatic retry. A new attempt requires a new reviewed SHA, regenerated
+same-SHA authority and Wasm artifacts, a fresh immutable series root and a new
+successful dry-run/go-no-go review.

@@ -31,6 +31,12 @@ export function q1CaptureMeasuredFrame(traceFrameIndex) {
   return result;
 }
 
+export function isQ1CaptureTraceStep(step, traceFrameIndex) {
+  return step?.phase === "measure"
+    && step.phaseFrameIndex === q1CaptureMeasuredFrame(traceFrameIndex)
+    && step.traceFrameIndex === traceFrameIndex;
+}
+
 export function normalizeQ1SurfaceCapture(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     fail("capture must be an object");

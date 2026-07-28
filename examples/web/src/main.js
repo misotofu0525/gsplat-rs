@@ -39,6 +39,7 @@ import {
   WEB_DATASET_PATHS,
 } from "./dataset-identity.mjs";
 import {
+  isQ1CaptureTraceStep,
   normalizeQ1SurfaceCapture,
   q1CaptureMeasuredFrame,
 } from "./q1-gsplat-producer.mjs";
@@ -1599,9 +1600,7 @@ function maybeTakeQ1ControlCapture(benchmark, stats) {
   const step = benchmark.currentTraceStep;
   if (!capture || !capture.armed || capture.takePending || capture.ready
       || !stats.framePresented || stats.currentStatsSubmission !== "issued"
-      || step?.phase !== "measured"
-      || step.phaseFrameIndex !== capture.measuredFrameIndex
-      || step.traceFrameIndex !== capture.traceFrameIndex) {
+      || !isQ1CaptureTraceStep(step, capture.traceFrameIndex)) {
     return;
   }
   capture.armed = false;
@@ -4335,10 +4334,8 @@ function accumulateBenchmark(
     presentedHeight: stats.presentedHeight ?? null,
   };
   if (benchmark.q1Capture
-      && traceStep?.phase === "measured"
-      && traceStep.phaseFrameIndex === benchmark.q1Capture.measuredFrameIndex) {
-    if (traceStep.traceFrameIndex !== benchmark.q1Capture.traceFrameIndex
-        || benchmark.q1Capture.ready === null) {
+      && isQ1CaptureTraceStep(traceStep, benchmark.q1Capture.traceFrameIndex)) {
+    if (benchmark.q1Capture.ready === null) {
       throw new Error("Q1 terminal frame lacks its renderer-owned same-present capture");
     }
     frameReceipt.captureDepthPrecision = benchmark.q1Capture.ready.receipt;

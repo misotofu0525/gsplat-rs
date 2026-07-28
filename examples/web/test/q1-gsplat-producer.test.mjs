@@ -5,11 +5,16 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  isQ1CaptureTraceStep,
   normalizeQ1SurfaceCapture,
   q1CaptureMeasuredFrame,
   q1PresentationIdentity,
   validateQ1SamePresentCapture,
 } from "../src/q1-gsplat-producer.mjs";
+import {
+  createCameraTraceSequence,
+  validateCameraTraceV1,
+} from "../../../tests/perf/trace/camera-trace-v1.mjs";
 
 const SHA = "a".repeat(64);
 const EXAMPLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -60,6 +65,34 @@ test("Q1 controls place one capture on alternating terminal frames", () => {
   assert.equal(q1CaptureMeasuredFrame(0), 78);
   assert.equal(q1CaptureMeasuredFrame(1), 79);
   assert.throws(() => q1CaptureMeasuredFrame(2), /must be 0 or 1/);
+});
+
+test("Q1 capture gate uses the camera trace measure-phase contract", async () => {
+  const trace = validateCameraTraceV1(JSON.parse(await readFile(
+    resolve(EXAMPLE_ROOT, "../../tests/perf/trace/fixtures/camera-trace-v1.json"),
+    "utf8",
+  )));
+  const sequence = createCameraTraceSequence(trace, {
+    frameIndices: [0, 1],
+    warmupFrames: 20,
+    measuredFrames: 80,
+  });
+  const trace0 = sequence.step(98);
+  const trace1 = sequence.step(99);
+
+  assert.deepEqual(
+    [trace0.phase, trace0.phaseFrameIndex, trace0.traceFrameIndex],
+    ["measure", 78, 0],
+  );
+  assert.deepEqual(
+    [trace1.phase, trace1.phaseFrameIndex, trace1.traceFrameIndex],
+    ["measure", 79, 1],
+  );
+  assert.equal(isQ1CaptureTraceStep(trace0, 0), true);
+  assert.equal(isQ1CaptureTraceStep(trace1, 1), true);
+  assert.equal(isQ1CaptureTraceStep(sequence.step(19), 0), false);
+  assert.equal(isQ1CaptureTraceStep(sequence.step(97), 0), false);
+  assert.equal(isQ1CaptureTraceStep(trace0, 1), false);
 });
 
 test("Q1 capture retains only the frozen renderer-owned receipt", () => {
@@ -125,4 +158,5 @@ test("Q1 collector uses the renderer-selected device and atomic publication", as
     collector.indexOf("await cleanupBrowserAndServer") < collector.indexOf("q1ArtifactTransaction.publish"),
   );
   assert.match(main, /diagnosticSurfaceDeviceReceipt\(\)/);
+  assert.equal(main.match(/isQ1CaptureTraceStep\(/g)?.length, 2);
 });
