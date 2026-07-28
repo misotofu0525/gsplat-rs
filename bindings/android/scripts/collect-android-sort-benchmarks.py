@@ -58,6 +58,7 @@ AAR_OUTPUT = (
 )
 AAR_NATIVE_LIBRARY = "jni/arm64-v8a/libgsplat_jni.so"
 PACKAGE = "com.gsplat.example"
+PACKAGE_REPLACEMENT_SETTLE_SECONDS = 5.0
 ACTIVITY = f"{PACKAGE}/.MainActivity"
 LOG_TAG = "GsplatExample:I"
 BACKENDS = ("cpu", "gpu", "adaptive")
@@ -631,9 +632,12 @@ def install_apk(
         ),
         timeout=15.0,
     )
-    # Some vendor builds deliver PACKAGE_REPLACED after both package queues
-    # report idle. This remains one wait inside the single install attempt.
-    time.sleep(2.0)
+    # Some vendor builds report both package queues idle before installPackageLI
+    # delivers the final package replacement. A physical A065 observation
+    # arrived 2.68 seconds after the installed-APK receipt and killed an app
+    # launched behind the former two-second window. Keep this bounded wait
+    # inside the single install attempt; callers still never retry installation.
+    time.sleep(PACKAGE_REPLACEMENT_SETTLE_SECONDS)
 
 
 def inject_device_dataset(

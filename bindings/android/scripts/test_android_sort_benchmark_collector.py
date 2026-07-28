@@ -1553,7 +1553,8 @@ class SafetyTests(unittest.TestCase):
             sum("install" in call.args[0] for call in run.call_args_list),
             1,
         )
-        sleep.assert_called_once_with(2.0)
+        sleep.assert_called_once_with(COLLECTOR.PACKAGE_REPLACEMENT_SETTLE_SECONDS)
+        self.assertEqual(COLLECTOR.PACKAGE_REPLACEMENT_SETTLE_SECONDS, 5.0)
 
     def test_formal_rejection_requires_marker_and_throwable_reason(self) -> None:
         marker = "I/GsplatExample: formal benchmark artifact rejected"

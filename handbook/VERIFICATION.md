@@ -163,6 +163,14 @@ The trace is pushed and copied once for the matrix, each PLY is pushed and
 copied once per workload, and the one-shot correctness/timing commands reuse
 hash-bound prepared-input and installed-lane receipts without automatic retry.
 
+Each APK lane transition uses one `adb install --no-streaming --no-fastdeploy
+-r` transaction with a 60-second install timeout, package-handler drains and a
+five-second vendor replacement settle window before the Activity may launch.
+It has no streamed-install fallback and no automatic install retry. Keep
+`ANDROID_SDK_ROOT` and `JAVA_HOME` explicit when Homebrew discovery is slow;
+the values printed by a successful `doctor` are supported inputs to the
+unchanged `command` and `run` invocations.
+
 Both device collectors require a fresh output directory. Override
 `GSPLAT_ANDROID_OUTPUT` or `GSPLAT_IOS_OUTPUT` when retaining multiple runs;
 otherwise the bootstrap derives a target-local directory from the current
