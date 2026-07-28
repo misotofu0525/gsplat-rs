@@ -4,6 +4,7 @@
 
 <!-- gsplat-program-task-states: begin -->
 Q0 = Accepted
+Q1 = Rejected
 Q2 = Accepted
 <!-- gsplat-program-task-states: end -->
 
@@ -1974,3 +1975,12 @@ Failures before a finite result remain Deferred. Therefore view `000009` is not
 run, same-quality performance stays ineligible, and no ratio, direction or
 winner is published. Focused one-view/coordinator tests, source architecture
 policy and diff hygiene pass.
+
+Independent fixed-SHA review accepted the monotonic terminal-state correction
+at `9a3eeb8100f4ef3daca188ba561a240d4ad20140` with no P0/P1/P2. The review
+confirmed that finite first-view rejection, pre-result infrastructure failure,
+coordinator publication and CLI reporting remain distinct and fail closed.
+Q1 is therefore terminal machine-state **Rejected**: gsplat-rs passes the
+frozen Product Quality view, the pinned PlayCanvas endpoint does not, and no
+same-quality performance comparison is available. This is not Q2's
+`not_applicable` vocabulary and does not publish a winner.
