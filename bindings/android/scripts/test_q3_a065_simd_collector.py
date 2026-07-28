@@ -26,24 +26,22 @@ SPEC.loader.exec_module(COLLECTOR)
 
 
 def lane_receipts() -> dict[str, dict]:
+    common = {
+        "cargo_feature": "qualification-q3-cpu-runtime",
+        "selector_environment": {
+            COLLECTOR.Q3_LANE_ENV: COLLECTOR.Q3_RUNTIME_BUILD,
+        },
+        "apk": {"bytes": 10, "sha256": "1" * 64},
+        "native_library": {"bytes": 5, "sha256": "2" * 64},
+    }
     return {
         "scalar": {
             "lane": "scalar",
-            "cargo_feature": "qualification-q3-cpu-scalar",
-            "selector_environment": {
-                COLLECTOR.Q3_LANE_ENV: "scalar",
-            },
-            "apk": {"bytes": 10, "sha256": "1" * 64},
-            "native_library": {"bytes": 5, "sha256": "2" * 64},
+            **copy.deepcopy(common),
         },
         "neon": {
             "lane": "neon",
-            "cargo_feature": "qualification-q3-cpu-neon",
-            "selector_environment": {
-                COLLECTOR.Q3_LANE_ENV: "neon",
-            },
-            "apk": {"bytes": 10, "sha256": "3" * 64},
-            "native_library": {"bytes": 5, "sha256": "4" * 64},
+            **copy.deepcopy(common),
         },
     }
 
@@ -130,8 +128,10 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
 
         scalar = COLLECTOR.android_build_environment("scalar", base)
         neon = COLLECTOR.android_build_environment("neon", base)
+        runtime = COLLECTOR.android_build_environment("runtime", base)
         self.assertEqual(scalar[COLLECTOR.Q3_LANE_ENV], "scalar")
         self.assertEqual(neon[COLLECTOR.Q3_LANE_ENV], "neon")
+        self.assertEqual(runtime[COLLECTOR.Q3_LANE_ENV], "runtime")
         with self.assertRaisesRegex(ValueError, "unsupported Q3 Android CPU lane"):
             COLLECTOR.android_build_environment("avx2", base)
         build_script = (
@@ -164,14 +164,45 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
         self.assertIn("Unsupported GSPLAT_ANDROID_Q3_CPU_LANE", completed.stdout)
         self.assertNotIn("ANDROID_SDK_ROOT not found", completed.stdout)
 
-    def test_lane_receipts_bind_feature_selector_and_distinct_binary_hash(self) -> None:
+    def test_lane_receipts_bind_one_runtime_binary_identity(self) -> None:
         receipts = lane_receipts()
         COLLECTOR.validate_lane_build_receipts(receipts)
-        receipts["neon"]["native_library"]["sha256"] = "2" * 64
+        receipts["neon"]["native_library"]["sha256"] = "3" * 64
         with self.assertRaisesRegex(
-            COLLECTOR.IntegrityRejectedError, "same native-library hash"
+            COLLECTOR.IntegrityRejectedError, "share one APK"
         ):
             COLLECTOR.validate_lane_build_receipts(receipts)
+
+    def test_terminal_kernel_attestation_is_rust_owned_and_fail_closed(self) -> None:
+        scalar = (
+            "SURFACE_CURRENT_STATS_TERMINAL status=ready ticket_namespace=current_stats "
+            "qualification_cpu_kernel=scalar count_semantics=direct_draw_equals_visible\n"
+        )
+        self.assertEqual(
+            COLLECTOR.validate_terminal_kernel_attestation(scalar * 2, "scalar"),
+            2,
+        )
+        with self.assertRaisesRegex(
+            COLLECTOR.IntegrityRejectedError, "lacks ticket-bound Rust"
+        ):
+            COLLECTOR.validate_terminal_kernel_attestation(
+                "qualification_q3_cpu_kernel_requested=scalar", "scalar"
+            )
+        with self.assertRaisesRegex(
+            COLLECTOR.IntegrityRejectedError, "attested.*neon"
+        ):
+            COLLECTOR.validate_terminal_kernel_attestation(
+                scalar.replace("scalar", "neon"), "scalar"
+            )
+        with self.assertRaisesRegex(
+            COLLECTOR.IntegrityRejectedError, "unavailable"
+        ):
+            COLLECTOR.validate_terminal_kernel_attestation(
+                scalar
+                + "SURFACE_CURRENT_STATS_TERMINAL status=ready "
+                + "qualification_cpu_kernel=unavailable\n",
+                "scalar",
+            )
 
     def test_schedule_is_finite_staged_and_terminal_is_five_pairs(self) -> None:
         self.assertEqual(COLLECTOR.REQUIRED_WORKLOAD_IDS[-1], "truck-full")
@@ -673,38 +704,25 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                     prepared_path, args, dataset, trace
                 )
 
-    def test_lane_install_is_reused_until_the_counterbalanced_lane_changes(self) -> None:
+    def test_runtime_apk_is_installed_once_for_all_counterbalanced_lanes(self) -> None:
         receipts = lane_receipts()
         for lane_name in ("scalar", "neon"):
-            receipts[lane_name]["apk_path"] = (
-                f"build/{lane_name}/sample-app-debug.apk"
-            )
+            receipts[lane_name]["apk_path"] = "build/runtime/sample-app-debug.apk"
         with tempfile.TemporaryDirectory() as directory:
             stage = pathlib.Path(directory)
             session = COLLECTOR.DeviceMatrixSession(
                 "adb", "fixture-serial", stage, receipts
             )
-            installed_by_lane = {
-                lane_name: {
-                    "device_path": "/data/app/base.apk",
-                    **receipts[lane_name]["apk"],
-                    "run_as_verified": True,
-                }
-                for lane_name in ("scalar", "neon")
+            installed = {
+                "device_path": "/data/app/base.apk",
+                **receipts["scalar"]["apk"],
+                "run_as_verified": True,
             }
-            current_lane = {"value": None}
-
-            def install(*args: object, **kwargs: object) -> None:
-                apk = pathlib.Path(args[2])
-                current_lane["value"] = "scalar" if "scalar" in apk.parts else "neon"
-
-            def verify(*unused_args: object, **unused_kwargs: object) -> dict:
-                return installed_by_lane[current_lane["value"]]
 
             requested_lanes = []
             with (
-                mock.patch.object(COLLECTOR.BASE, "install_apk", side_effect=install) as install_mock,
-                mock.patch.object(COLLECTOR.BASE, "verify_installed_apk", side_effect=verify),
+                mock.patch.object(COLLECTOR.BASE, "install_apk") as install_mock,
+                mock.patch.object(COLLECTOR.BASE, "verify_installed_apk", return_value=installed),
             ):
                 requested_lanes.append("scalar")
                 session.ensure_lane("scalar", 10.0)
@@ -718,14 +736,8 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
                     for lane_name in workload_lanes:
                         requested_lanes.append(lane_name)
                         session.ensure_lane(lane_name, 10.0)
-            expected_transitions = sum(
-                index == 0 or lane != requested_lanes[index - 1]
-                for index, lane in enumerate(requested_lanes)
-            )
-            self.assertEqual(install_mock.call_count, expected_transitions)
-            self.assertEqual(session.install_count, expected_transitions)
-            self.assertEqual(session.install_count, 34)
-            self.assertLess(session.install_count, 44)
+            self.assertEqual(install_mock.call_count, 1)
+            self.assertEqual(session.install_count, 1)
             self.assertTrue(
                 all(
                     call.args[3] == 10.0
@@ -735,7 +747,7 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
 
     def test_lane_install_timeout_is_capped_below_measurement_timeout(self) -> None:
         receipts = lane_receipts()
-        receipts["scalar"]["apk_path"] = "build/scalar/sample-app-debug.apk"
+        receipts["scalar"]["apk_path"] = "build/runtime/sample-app-debug.apk"
         with tempfile.TemporaryDirectory() as directory:
             stage = pathlib.Path(directory)
             session = COLLECTOR.DeviceMatrixSession(
@@ -759,7 +771,7 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             install.assert_called_once_with(
                 "adb",
                 "fixture-serial",
-                stage / "build/scalar/sample-app-debug.apk",
+                stage / "build/runtime/sample-app-debug.apk",
                 COLLECTOR.Q3_APK_INSTALL_TIMEOUT_SECONDS,
             )
 
@@ -1365,6 +1377,7 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             prepared_inputs_receipt=pathlib.Path("prepared.json"),
             installed_apk_receipt=pathlib.Path("installed.json"),
             run_identity="1" * 32,
+            lane_name="scalar",
         )
         self.assertEqual(command[1], str(COLLECTOR.BASE_PATH))
         self.assertNotIn("--qualification-q3-capture-final-png", command)
@@ -1392,6 +1405,7 @@ class Q3A065SimdCollectorTests(unittest.TestCase):
             prepared_inputs_receipt=pathlib.Path("prepared.json"),
             installed_apk_receipt=pathlib.Path("installed.json"),
             run_identity="2" * 32,
+            lane_name="neon",
         )
         self.assertIn("--qualification-q3-capture-final-png", control)
 

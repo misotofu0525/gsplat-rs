@@ -176,6 +176,14 @@ until its own producer issues a ticket. Q3 timing instead consumes
 `current-stats/v2`, whose Ready value atomically adds frame-complete and
 validity-gated CPU preprocess/sort timing to the same current-stats ticket,
 identity, and `S/V/C/D` receipt.
+The private Q3 physical-device matrix builds one runtime-selector APK and
+installs it once. Each force-stopped Activity process selects `scalar` or
+`neon` before creating the renderer; Rust locks that selection on first sorter
+use. Every accepted Q3 Ready terminal carries the kernel recorded by the actual
+refreshed radix/value-unpack execution on that same current-stats ticket;
+reused order or terminal failure reports it unavailable and is rejected. The
+scope is deliberately limited to the radix histogram and value-unpack leaves.
+The feature is absent from product builds and adds no public Android or C API.
 `pumpSurfaceReceiptsV1()` reports QueueComplete versus Timeout
 so device logs can separate pump failure/timeout from a queue-complete but
 unconsumed terminal or mismatched ledger.

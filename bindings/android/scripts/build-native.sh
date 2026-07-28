@@ -17,9 +17,12 @@ case "$GSPLAT_ANDROID_Q3_CPU_LANE" in
   neon)
     Q3_CPU_LANE="neon"
     ;;
+  runtime)
+    Q3_CPU_LANE="runtime"
+    ;;
   *)
     echo "Unsupported GSPLAT_ANDROID_Q3_CPU_LANE: $GSPLAT_ANDROID_Q3_CPU_LANE"
-    echo "Expected one of: scalar, neon, or empty for the product default"
+    echo "Expected one of: scalar, neon, runtime, or empty for the product default"
     exit 1
     ;;
 esac

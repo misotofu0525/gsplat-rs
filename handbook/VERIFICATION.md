@@ -161,12 +161,18 @@ device, installed-APK, or prepared-input identity terminates the matrix as
 `Rejected`, while a proven pre-launch environment prerequisite is `Deferred`.
 The trace is pushed and copied once for the matrix, each PLY is pushed and
 copied once per workload, and the one-shot correctness/timing commands reuse
-hash-bound prepared-input and installed-lane receipts without automatic retry.
+hash-bound prepared-input and installed runtime-APK receipts without automatic
+retry.
 
-Each APK lane transition uses one `adb install --no-streaming --no-fastdeploy
--r` transaction with a 60-second install timeout, package-handler drains and a
-five-second vendor replacement settle window before the Activity may launch.
-It has no streamed-install fallback and no automatic install retry. Keep
+Q3 builds one qualification-only runtime-selector APK and installs it exactly
+once with `adb install --no-streaming --no-fastdeploy -r`, a 60-second install
+timeout, package-handler drains and a five-second vendor replacement settle
+window. Every later Scalar/Neon cell reuses the same APK/native hash and selects
+its lane at Activity process launch; every accepted Ready terminal must carry
+the same-ticket kernel recorded by the actual refreshed radix/value-unpack
+execution. Reused order and failure terminals report the kernel unavailable and
+fail Q3 admission. There is no lane-transition reinstall, streamed-install
+fallback or automatic install retry. Keep
 `ANDROID_SDK_ROOT` and `JAVA_HOME` explicit when Homebrew discovery is slow;
 the values printed by a successful `doctor` are supported inputs to the
 unchanged `command` and `run` invocations.

@@ -747,6 +747,39 @@ collector tests plus source architecture pass. Q3 remains **Active**; the next
 device execution, if separately admitted on the new clean SHA, must use a new
 destination and remains a single attempt.
 
+The next clean transaction at `cc44dfe` proved the five-second settle repair:
+physical element parity, Scalar/Neon correctness, and the first matched timing
+pair all completed through 200k with the same A065 identity and thermal status
+zero. On the next APK lane transition, however, the eleventh package
+replacement itself exceeded the finite 60-second install timeout. The matrix
+correctly terminalized **Rejected / matrix_infrastructure_rejected**; its
+partial diagnostic cells are not a SIMD conclusion and are not aggregated.
+Increasing the timeout or retrying would preserve the wrong experiment shape.
+
+The correction removes lane replacement from the matrix. One private
+`qualification-q3-cpu-runtime` APK contains the already verified Scalar and
+Neon radix histogram/value-unpack leaves, is installed and hash-verified once,
+and is force-stopped before every cell. The Activity selects a lane before
+renderer creation; Rust freezes the first selection for that process with a
+`OnceLock`. An accepted Ready terminal carries the kernel recorded by the
+actual refreshed radix/value-unpack execution on that same current-stats
+ticket; a reused order or terminal failure records it unavailable. The outer
+collector requires every retained terminal to match the requested lane. Both
+lanes must therefore share the exact APK/native hash while proving their actual
+Rust execution separately. Product builds do not enable this feature, and the
+claim remains scoped to those two radix leaves rather than the entire CPU
+pipeline.
+
+Host/AArch64/Android verification for this redesign is complete: the one
+runtime APK built through the canonical sample script, JNI smoke and Android
+unit tests passed with the explicit SDK/JDK environment; default host and Wasm
+checks remained unchanged; runtime AArch64 and fixed-Scalar Clippy passed;
+renderer lib tests passed 490/490 with eight existing research ignores; the 120
+collector tests and source-architecture policy passed. Independent review's
+original two P1 findings were addressed by same-ticket execution carriage and
+runtime all-target Clippy. No A065 run has occurred with this mechanism yet;
+device evidence remains pending a clean commit and fixed-SHA review.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8

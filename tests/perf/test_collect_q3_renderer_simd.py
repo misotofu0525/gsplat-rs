@@ -18,7 +18,7 @@ def line(prefix: str, fields: dict[str, object]) -> str:
     return prefix + " ".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in fields.items())
 
 
-def fixture_log() -> str:
+def fixture_log(lane: str = "scalar") -> str:
     begin = {
         "trace_id": "truck-trace",
         "trace_sha256": "a" * 64,
@@ -114,6 +114,7 @@ def fixture_log() -> str:
             "raster_generation": 1,
             "encode_attempt": index + 1,
             "presentation_sequence": index + 1,
+            "qualification_cpu_kernel": lane,
             "count_semantics": "direct_draw_equals_visible",
             "source_count": 100,
             "visible_count": 80,
@@ -141,6 +142,7 @@ def fixture_log() -> str:
         "raster_generation": 1,
         "encode_attempt": 4,
         "presentation_sequence": 4,
+        "qualification_cpu_kernel": "scalar",
         "count_semantics": "direct_draw_equals_visible",
         "source_count": 100,
         "visible_count": 80,
@@ -169,6 +171,7 @@ def fixture_log() -> str:
         "raster_generation": 1,
         "encode_attempt": 4,
         "presentation_sequence": 4,
+        "qualification_cpu_kernel": lane,
         "count_semantics": "direct_draw_equals_visible",
         "source_count": 100,
         "visible_count": 80,
@@ -277,7 +280,7 @@ class Q3RendererSimdCollectorTests(unittest.TestCase):
     def test_missing_current_stats_terminal_is_owner_protocol_incomplete(self):
         stdout = "\n".join(
             line
-            for line in fixture_log().splitlines()
+            for line in fixture_log("neon").splitlines()
             if not (
                 line.startswith("SURFACE_CURRENT_STATS_TERMINAL ") and "ticket=3 " in line
             )

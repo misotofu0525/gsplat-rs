@@ -426,6 +426,7 @@ def validate_run_log(
                 "raster_generation",
                 "encode_attempt",
                 "presentation_sequence",
+                "qualification_cpu_kernel",
                 "count_semantics",
                 "source_count",
                 "visible_count",
@@ -438,6 +439,10 @@ def validate_run_log(
             context,
         )
         integrity_require(terminal["ticket_namespace"] == "current_stats", f"{context} used the wrong ticket namespace")
+        integrity_require(
+            terminal["qualification_cpu_kernel"] == lane,
+            f"{context} attested {terminal['qualification_cpu_kernel']!r}, expected {lane!r}",
+        )
         ticket = parse_uint(terminal["ticket"], f"{context}.ticket", positive=True)
         integrity_require(ticket in issued, f"unknown current-stats terminal ticket {ticket}")
         integrity_require(ticket not in terminal_by_ticket, f"current-stats ticket {ticket} has more than one terminal")

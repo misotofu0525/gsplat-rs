@@ -55,6 +55,15 @@ impl CpuOrderEngine {
         })
     }
 
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    pub(crate) fn qualification_last_kernel_label(&self) -> Option<&'static str> {
+        self.workspace.qualification_last_kernel_label()
+    }
+
     pub(crate) fn order_positions(
         &mut self,
         positions: CpuPositionView<'_>,

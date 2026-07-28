@@ -19,6 +19,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 default = []
 qualification-q3-cpu-scalar = ["gsplat-render-wgpu/qualification-q3-cpu-scalar"]
 qualification-q3-cpu-neon = ["gsplat-render-wgpu/qualification-q3-cpu-neon"]
+qualification-q3-cpu-runtime = ["gsplat-render-wgpu/qualification-q3-cpu-runtime"]
 
 [dependencies]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }

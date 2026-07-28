@@ -216,11 +216,29 @@ fn count_radix_digits(input: &[u64], shift: usize, counts: &mut [usize]) {
     debug_assert_eq!(counts.len(), RADIX_SORT_BUCKETS);
     debug_assert!(shift < 64 && shift.is_multiple_of(RADIX_SORT_BITS));
 
-    #[cfg(all(target_arch = "aarch64", not(feature = "qualification-q3-cpu-scalar")))]
+    #[cfg(all(
+        target_arch = "aarch64",
+        not(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-runtime"
+        ))
+    ))]
     {
         // SAFETY: AArch64 guarantees Neon; slices are length-validated by callers.
         unsafe {
             count_histograms_neon(input, shift, counts);
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "qualification-q3-cpu-scalar"))]
+    count_histograms_scalar(input, shift, counts);
+
+    #[cfg(all(target_arch = "aarch64", feature = "qualification-q3-cpu-runtime"))]
+    match crate::qualification_cpu_kernel() {
+        crate::QualificationCpuKernel::Scalar => count_histograms_scalar(input, shift, counts),
+        crate::QualificationCpuKernel::Neon => {
+            // SAFETY: this branch is compiled only for AArch64, where Neon is guaranteed.
+            unsafe { count_histograms_neon(input, shift, counts) };
         }
     }
 
@@ -236,10 +254,7 @@ fn count_radix_digits(input: &[u64], shift: usize, counts: &mut [usize]) {
         }
     }
 
-    #[cfg(any(
-        all(target_arch = "aarch64", feature = "qualification-q3-cpu-scalar"),
-        not(any(target_arch = "aarch64", target_arch = "x86_64"))
-    ))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         count_histograms_scalar(input, shift, counts);
     }
@@ -367,7 +382,11 @@ pub(crate) fn radix_sort_desc_u64_key_bits_neon_for_test(
 
 #[cfg(all(
     target_arch = "aarch64",
-    any(test, not(feature = "qualification-q3-cpu-scalar"))
+    any(
+        test,
+        not(feature = "qualification-q3-cpu-scalar"),
+        feature = "qualification-q3-cpu-runtime"
+    )
 ))]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]

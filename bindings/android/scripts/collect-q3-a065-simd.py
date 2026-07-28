@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Collect the finite Q3 A065 Scalar/Neon whole-plan matrix.
 
-This qualification-only orchestrator builds two private APK lanes, installs and
-hash-verifies a lane only when the counterbalanced schedule changes it, prepares
-each workload once, and delegates all device capture plus strict current-stats/
-artifact validation to collect-android-sort-benchmarks.py. It never changes the
-product default and never retries a failed command.
+This qualification-only orchestrator builds one private runtime-selection APK,
+installs and hash-verifies it once, prepares each workload once, and delegates
+all device capture plus strict current-stats/artifact validation to
+collect-android-sort-benchmarks.py. It never changes the product default and
+never retries a failed command.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import math
 import os
 import pathlib
 import random
+import re
 import shutil
 import statistics
 import subprocess
@@ -44,6 +45,7 @@ DEFAULT_CORRECTNESS_FRAMES = 2
 DEFAULT_SEED = 0x5133413036355349
 Q3_APK_INSTALL_TIMEOUT_SECONDS = 60.0
 Q3_LANE_ENV = "GSPLAT_ANDROID_Q3_CPU_LANE"
+Q3_RUNTIME_BUILD = "runtime"
 PHASE_SCHEMA = "gsplat-q3-android-protocol-phase/v1"
 PARITY_SCHEMA = "gsplat-q3-a065-element-parity/v1"
 RANGE_REJECTION_SCHEMA = "gsplat-renderer-scene-admission-range-rejection/v1"
@@ -103,12 +105,11 @@ class MatrixInfrastructureError(IntegrityRejectedError):
 @dataclasses.dataclass(frozen=True)
 class Lane:
     name: str
-    cargo_feature: str
 
 
 LANES = (
-    Lane("scalar", "qualification-q3-cpu-scalar"),
-    Lane("neon", "qualification-q3-cpu-neon"),
+    Lane("scalar"),
+    Lane("neon"),
 )
 LANE_BY_NAME = {lane.name: lane for lane in LANES}
 
@@ -133,7 +134,6 @@ class DeviceMatrixSession:
     serial: str
     stage: pathlib.Path
     lane_receipts: dict[str, dict[str, Any]]
-    installed_lane: str | None = None
     installed_receipt_path: pathlib.Path | None = None
     install_count: int = 0
     dataset_push_count: int = 0
@@ -149,10 +149,10 @@ class DeviceMatrixSession:
     def ensure_lane(self, lane_name: str, timeout_seconds: float) -> tuple[pathlib.Path, bool]:
         if lane_name not in LANE_BY_NAME:
             raise IntegrityRejectedError(f"unknown Q3 lane {lane_name!r}")
-        if self.installed_lane == lane_name and self.installed_receipt_path is not None:
+        if self.installed_receipt_path is not None:
             return self.installed_receipt_path, False
-        lane_receipt = self.lane_receipts[lane_name]
-        apk = self.stage / lane_receipt["apk_path"]
+        runtime_receipt = self.lane_receipts["scalar"]
+        apk = self.stage / runtime_receipt["apk_path"]
         BASE.install_apk(
             self.adb,
             self.serial,
@@ -165,16 +165,16 @@ class DeviceMatrixSession:
             "schema": INSTALLED_APK_SCHEMA,
             "serial": self.serial,
             "package": BASE.PACKAGE,
-            "lane": lane_name,
+            "lane": Q3_RUNTIME_BUILD,
             "install_sequence": self.install_count,
             "installed_at_utc": BASE.utc_now(),
-            "local_apk": lane_receipt["apk"],
+            "local_apk": runtime_receipt["apk"],
             "installed_apk": installed,
-            "native_library": lane_receipt["native_library"],
+            "native_library": runtime_receipt["native_library"],
         }
         directory = self.stage / "installations"
         directory.mkdir(exist_ok=True)
-        path = directory / f"{self.install_count:03d}-{lane_name}.json"
+        path = directory / f"{self.install_count:03d}-{Q3_RUNTIME_BUILD}.json"
         write_json(path, event)
         self.installation_events.append(
             {
@@ -182,7 +182,6 @@ class DeviceMatrixSession:
                 "receipt": str(path.relative_to(self.stage)),
             }
         )
-        self.installed_lane = lane_name
         self.installed_receipt_path = path
         return path, True
 
@@ -475,7 +474,7 @@ def android_build_environment(
     environment["ANDROID_RUST_PROFILE"] = "release"
     if lane is None:
         return environment
-    if lane not in LANE_BY_NAME:
+    if lane not in LANE_BY_NAME and lane != Q3_RUNTIME_BUILD:
         raise ValueError(f"unsupported Q3 Android CPU lane: {lane!r}")
     environment[Q3_LANE_ENV] = lane
     return environment
@@ -737,12 +736,12 @@ def validate_lane_build_receipts(receipts: dict[str, dict[str, Any]]) -> None:
         receipt = receipts[lane.name]
         require(receipt.get("lane") == lane.name, f"{lane.name} lane identity drifted")
         require(
-            receipt.get("cargo_feature") == lane.cargo_feature,
-            f"{lane.name} Cargo feature drifted",
+            receipt.get("cargo_feature") == "qualification-q3-cpu-runtime",
+            "Q3 runtime Cargo feature drifted",
         )
         require(
-            receipt.get("selector_environment") == {Q3_LANE_ENV: lane.name},
-            f"{lane.name} build selector drifted",
+            receipt.get("selector_environment") == {Q3_LANE_ENV: Q3_RUNTIME_BUILD},
+            "Q3 runtime build selector drifted",
         )
         for artifact in ("apk", "native_library"):
             identity = receipt.get(artifact)
@@ -755,9 +754,9 @@ def validate_lane_build_receipts(receipts: dict[str, dict[str, Any]]) -> None:
                 f"{lane.name} {artifact} hash is invalid",
             )
     require(
-        receipts["scalar"]["native_library"]["sha256"]
-        != receipts["neon"]["native_library"]["sha256"],
-        "Scalar and Neon APKs contain the same native-library hash",
+        receipts["scalar"]["apk"] == receipts["neon"]["apk"]
+        and receipts["scalar"]["native_library"] == receipts["neon"]["native_library"],
+        "Scalar and Neon lanes must share one APK and native-library identity",
     )
 
 
@@ -984,59 +983,55 @@ def build_lane_apks(
 ) -> dict[str, dict[str, Any]]:
     build_root = stage / "build"
     build_root.mkdir()
-    receipts: dict[str, dict[str, Any]] = {}
-    for lane in LANES:
-        lane_dir = build_root / lane.name
-        lane_dir.mkdir()
-        command = ["bash", str(BASE.BUILD_SCRIPT), str(BASE.APK_BOOTSTRAP_DATASET)]
-        environment = android_build_environment(lane.name)
-        write_json(
-            lane_dir / "command.json",
-            {
-                "argv": command,
-                "environment": {
-                    "ANDROID_RUST_PROFILE": "release",
-                    Q3_LANE_ENV: lane.name,
-                },
+    lane_dir = build_root / Q3_RUNTIME_BUILD
+    lane_dir.mkdir()
+    command = ["bash", str(BASE.BUILD_SCRIPT), str(BASE.APK_BOOTSTRAP_DATASET)]
+    environment = android_build_environment(Q3_RUNTIME_BUILD)
+    write_json(
+        lane_dir / "command.json",
+        {
+            "argv": command,
+            "environment": {
+                "ANDROID_RUST_PROFILE": "release",
+                Q3_LANE_ENV: Q3_RUNTIME_BUILD,
             },
-        )
-        completed = subprocess.run(
-            command,
-            cwd=REPO_ROOT,
-            env=environment,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        (lane_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
-        (lane_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
-        if completed.returncode != 0:
-            error_type = EnvironmentPrerequisiteError if _environment_build_failure(
-                completed.stdout, completed.stderr
-            ) else IntegrityRejectedError
-            raise error_type(f"{lane.name} APK build exited with {completed.returncode}")
-        require(
-            f"qualification_q3_cpu_lane={lane.name}" in completed.stdout,
-            f"{lane.name} build did not attest its controlled Q3 selector",
-        )
-        built = BASE.resolve_apk()
-        retained = lane_dir / "sample-app-debug.apk"
-        shutil.copy2(built, retained)
-        apk_identity = BASE.local_file_identity(retained)
-        native_identity = BASE.sha256_apk_member(retained, BASE.APK_NATIVE_LIBRARY)
-        receipts[lane.name] = {
-            "lane": lane.name,
-            "cargo_feature": lane.cargo_feature,
-            "selector_environment": {Q3_LANE_ENV: lane.name},
-            "apk_path": str(retained.relative_to(stage)),
-            "apk": apk_identity,
-            "native_library": native_identity,
-            "command": str((lane_dir / "command.json").relative_to(stage)),
-            "stdout": str((lane_dir / "stdout.log").relative_to(stage)),
-            "stderr": str((lane_dir / "stderr.log").relative_to(stage)),
-        }
-        require(git_receipt() == expected_git, "git receipt changed during Q3 lane builds")
+        },
+    )
+    completed = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        env=environment,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    (lane_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
+    (lane_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
+    if completed.returncode != 0:
+        error_type = EnvironmentPrerequisiteError if _environment_build_failure(
+            completed.stdout, completed.stderr
+        ) else IntegrityRejectedError
+        raise error_type(f"Q3 runtime APK build exited with {completed.returncode}")
+    require(
+        f"qualification_q3_cpu_lane={Q3_RUNTIME_BUILD}" in completed.stdout,
+        "Q3 runtime build did not attest its controlled selector",
+    )
+    built = BASE.resolve_apk()
+    retained = lane_dir / "sample-app-debug.apk"
+    shutil.copy2(built, retained)
+    common = {
+        "cargo_feature": "qualification-q3-cpu-runtime",
+        "selector_environment": {Q3_LANE_ENV: Q3_RUNTIME_BUILD},
+        "apk_path": str(retained.relative_to(stage)),
+        "apk": BASE.local_file_identity(retained),
+        "native_library": BASE.sha256_apk_member(retained, BASE.APK_NATIVE_LIBRARY),
+        "command": str((lane_dir / "command.json").relative_to(stage)),
+        "stdout": str((lane_dir / "stdout.log").relative_to(stage)),
+        "stderr": str((lane_dir / "stderr.log").relative_to(stage)),
+    }
+    receipts = {lane.name: {"lane": lane.name, **common} for lane in LANES}
+    require(git_receipt() == expected_git, "git receipt changed during Q3 runtime build")
     validate_lane_build_receipts(receipts)
     return receipts
 
@@ -1055,7 +1050,9 @@ def collector_command(
     prepared_inputs_receipt: pathlib.Path,
     installed_apk_receipt: pathlib.Path,
     run_identity: str,
+    lane_name: str,
 ) -> list[str]:
+    require(lane_name in LANE_BY_NAME, "Q3 collector command lane is invalid")
     command = [
         sys.executable,
         str(BASE_PATH),
@@ -1091,6 +1088,8 @@ def collector_command(
         str(prepared_inputs_receipt),
         "--qualification-q3-installed-apk-receipt",
         str(installed_apk_receipt),
+        "--qualification-q3-cpu-kernel",
+        lane_name,
         "--max-thermal-status",
         str(args.max_thermal_status),
         "--thermal-timeout-seconds",
@@ -1274,6 +1273,24 @@ def collected_run_metrics(
     return metrics
 
 
+def validate_terminal_kernel_attestation(log_text: str, lane: str) -> int:
+    require(lane in LANE_BY_NAME, "Q3 terminal attestation lane is invalid")
+    terminal_kernels = re.findall(
+        r"SURFACE_CURRENT_STATS_TERMINAL .*?qualification_cpu_kernel=([^\s]+)(?:\s|$)",
+        log_text,
+    )
+    require(
+        terminal_kernels,
+        "Q3 run lacks ticket-bound Rust CPU-kernel terminal attestation",
+    )
+    require(
+        set(terminal_kernels) == {lane},
+        f"Q3 requested {lane} but ticket-bound Rust terminals attested "
+        f"{sorted(set(terminal_kernels))}",
+    )
+    return len(terminal_kernels)
+
+
 def validate_collected_run(
     output: pathlib.Path,
     lane: str,
@@ -1331,8 +1348,8 @@ def validate_collected_run(
     installed_receipt = experiment.get("installed_apk_receipt")
     require_matrix_identity(
         isinstance(installed_receipt, dict)
-        and installed_receipt.get("lane") == lane,
-        "run installed-lane receipt drifted",
+        and installed_receipt.get("lane") == Q3_RUNTIME_BUILD,
+        "run installed runtime-APK receipt drifted",
     )
     for name, receipt, expected_path in (
         ("prepared-input", prepared_receipt, prepared_workload.path),
@@ -1355,6 +1372,10 @@ def validate_collected_run(
     require(isinstance(configuration, dict), "run configuration is missing")
     require(configuration.get("backends") == ["cpu"], "Q3 run is not forced CPU")
     require(configuration.get("geometry_path") == "packed", "Q3 run is not Packed")
+    require(
+        configuration.get("qualification_q3_cpu_kernel") == lane,
+        "Q3 requested CPU kernel drifted",
+    )
     require(
         configuration.get("qualification_q3_capture_final_png") is capture_png,
         "Q3 run final-PNG mode drifted",
@@ -1385,6 +1406,10 @@ def validate_collected_run(
     manifest = json.loads((artifact / "manifest.json").read_text(encoding="utf-8"))
     summary = json.loads((artifact / "summary.json").read_text(encoding="utf-8"))
     frames = BASE.read_artifact_frames(artifact / "frames.jsonl")
+    log_text = (artifact.parent / "logcat.txt").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    terminal_record_count = validate_terminal_kernel_attestation(log_text, lane)
     BASE.validate_run_artifact(
         manifest,
         summary,
@@ -1465,6 +1490,14 @@ def validate_collected_run(
         "install_sequence": installed_receipt["install_sequence"],
         "benchmark_run_id": benchmark_run_id,
         "collector_run_identity": expected_run_identity,
+        "qualification_cpu_kernel": {
+            "requested": lane,
+            "realized": lane,
+            "owner": "gsplat-sort qualification runtime selector",
+            "scope": "radix_histogram_and_value_unpack",
+            "session_immutable": True,
+            "terminal_records": terminal_record_count,
+        },
         "environment": environment,
         "adapter": manifest.get("environment", {}).get("adapter"),
         "backend": renderer.get("backend"),
@@ -1685,6 +1718,7 @@ def run_collection_once(
         prepared_inputs_receipt=prepared_workload.path,
         installed_apk_receipt=installed_receipt_path,
         run_identity=run_identity,
+        lane_name=lane_name,
     )
     command_path = stage / f"{label}-command.json"
     write_json(
@@ -1848,7 +1882,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
                 "measurements reuse hash-bound private receipts"
             ),
             "apk_installation": (
-                "install and hash-verify only on controlled Scalar/Neon lane changes"
+                "build one runtime-selection APK; install and hash-verify it once"
             ),
             "range_stop_rule": (
                 "only explicit capacity/admission/resource failure rejects larger tiers; "

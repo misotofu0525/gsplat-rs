@@ -137,6 +137,12 @@ impl<'a> PlanFrameInput<'a> {
 pub(crate) struct HostCpuOrderReceipt {
     timings: CpuOrderTimings,
     completed_at: TimerInstant,
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    qualification_cpu_kernel: Option<&'static str>,
 }
 
 impl HostCpuOrderReceipt {
@@ -144,7 +150,35 @@ impl HostCpuOrderReceipt {
         Self {
             timings,
             completed_at,
+            #[cfg(any(
+                feature = "qualification-q3-cpu-scalar",
+                feature = "qualification-q3-cpu-neon",
+                feature = "qualification-q3-cpu-runtime"
+            ))]
+            qualification_cpu_kernel: None,
         }
+    }
+
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    pub(crate) const fn with_qualification_cpu_kernel(
+        mut self,
+        kernel: Option<&'static str>,
+    ) -> Self {
+        self.qualification_cpu_kernel = kernel;
+        self
+    }
+
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    pub(crate) const fn qualification_cpu_kernel(self) -> Option<&'static str> {
+        self.qualification_cpu_kernel
     }
 
     pub(crate) const fn timings(self) -> CpuOrderTimings {

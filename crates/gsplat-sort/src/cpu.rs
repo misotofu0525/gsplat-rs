@@ -10,6 +10,12 @@ pub struct CpuSortBackend {
     scratch: Vec<u64>,
     counts: Vec<usize>,
     parallel_counts: Vec<usize>,
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    qualification_last_kernel: Option<crate::q3_cpu_kernel::QualificationCpuKernel>,
 }
 
 impl CpuSortBackend {
@@ -30,6 +36,14 @@ impl CpuSortBackend {
         keys: &[u32],
         values: &mut [u32],
     ) -> Result<(), SortError> {
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            self.qualification_last_kernel = None;
+        }
         if keys.len() != values.len() {
             return Err(SortError::LengthMismatch);
         }
@@ -49,6 +63,19 @@ impl CpuSortBackend {
             &mut self.counts[..RADIX_SORT_BUCKETS],
             &mut self.parallel_counts[..RADIX_PARALLEL_COUNT_SLOTS],
         );
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            self.qualification_last_kernel = Some(unpack_values_qualification(packed, values));
+        }
+        #[cfg(not(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        )))]
         unpack_values(packed, values);
         Ok(())
     }
@@ -65,6 +92,14 @@ impl CpuSortBackend {
         packed: &mut [u64],
         values: &mut [u32],
     ) -> Result<(), SortError> {
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            self.qualification_last_kernel = None;
+        }
         if packed.len() != values.len() {
             return Err(SortError::LengthMismatch);
         }
@@ -79,8 +114,34 @@ impl CpuSortBackend {
                 &mut self.parallel_counts[..RADIX_PARALLEL_COUNT_SLOTS],
             );
         }
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            if len > 1 {
+                self.qualification_last_kernel = Some(unpack_values_qualification(packed, values));
+            } else {
+                unpack_values_qualification(packed, values);
+            }
+        }
+        #[cfg(not(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        )))]
         unpack_values(packed, values);
         Ok(())
+    }
+
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    pub fn qualification_last_kernel_label(&self) -> Option<&'static str> {
+        self.qualification_last_kernel.map(|kernel| kernel.label())
     }
 
     fn prepare_pair_scratch(&mut self, len: usize) {
@@ -109,6 +170,14 @@ impl SortBackend for CpuSortBackend {
     }
 
     fn sort_pairs(&mut self, keys: &mut [u32], values: &mut [u32]) -> Result<(), SortError> {
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            self.qualification_last_kernel = None;
+        }
         if keys.len() != values.len() {
             return Err(SortError::LengthMismatch);
         }
@@ -191,10 +260,15 @@ fn unpack_pairs(packed: &[u64], keys: &mut [u32], values: &mut [u32]) {
     }
 }
 
+#[cfg(not(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
+)))]
 fn unpack_values(packed: &[u64], values: &mut [u32]) {
     debug_assert_eq!(packed.len(), values.len());
 
-    #[cfg(all(target_arch = "aarch64", not(feature = "qualification-q3-cpu-scalar")))]
+    #[cfg(target_arch = "aarch64")]
     {
         // SAFETY: AArch64 guarantees Neon availability and slices are length-validated above.
         unsafe {
@@ -202,14 +276,43 @@ fn unpack_values(packed: &[u64], values: &mut [u32]) {
         }
     }
 
-    #[cfg(any(not(target_arch = "aarch64"), feature = "qualification-q3-cpu-scalar"))]
+    #[cfg(not(target_arch = "aarch64"))]
     unpack_values_scalar(packed, values);
+}
+
+#[cfg(any(
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
+))]
+fn unpack_values_qualification(
+    packed: &[u64],
+    values: &mut [u32],
+) -> crate::q3_cpu_kernel::QualificationCpuKernel {
+    debug_assert_eq!(packed.len(), values.len());
+    let kernel = crate::q3_cpu_kernel::qualification_cpu_kernel();
+    match kernel {
+        crate::q3_cpu_kernel::QualificationCpuKernel::Scalar => {
+            unpack_values_scalar(packed, values)
+        }
+        crate::q3_cpu_kernel::QualificationCpuKernel::Neon => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                // SAFETY: qualification Neon builds are compile-time restricted to AArch64.
+                unsafe { unpack_values_neon(packed, values) };
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            unreachable!("qualification Neon execution is unavailable off AArch64");
+        }
+    }
+    kernel
 }
 
 #[cfg(any(
     not(target_arch = "aarch64"),
     test,
-    feature = "qualification-q3-cpu-scalar"
+    feature = "qualification-q3-cpu-scalar",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 fn unpack_values_scalar(packed: &[u64], values: &mut [u32]) {
     debug_assert_eq!(packed.len(), values.len());
@@ -324,10 +427,7 @@ unsafe fn unpack_pairs_neon(packed: &[u64], keys: &mut [u32], values: &mut [u32]
     }
 }
 
-#[cfg(all(
-    target_arch = "aarch64",
-    any(test, not(feature = "qualification-q3-cpu-scalar"))
-))]
+#[cfg(target_arch = "aarch64")]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn unpack_values_neon(packed: &[u64], values: &mut [u32]) {
@@ -367,6 +467,35 @@ mod tests {
     fn lcg_next(state: &mut u32) -> u32 {
         *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
         *state
+    }
+
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    #[test]
+    fn qualification_receipt_requires_an_executed_radix_and_value_unpack() {
+        let mut backend = CpuSortBackend::default();
+        let mut singleton = [CpuSortBackend::pack_key_value(7, 0)];
+        let mut singleton_value = [0_u32];
+        backend
+            .sort_prepacked_values(&mut singleton, &mut singleton_value)
+            .expect("singleton");
+        assert_eq!(backend.qualification_last_kernel_label(), None);
+
+        let mut packed = [
+            CpuSortBackend::pack_key_value(7, 0),
+            CpuSortBackend::pack_key_value(9, 1),
+        ];
+        let mut values = [0_u32; 2];
+        backend
+            .sort_prepacked_values(&mut packed, &mut values)
+            .expect("qualification radix");
+        assert_eq!(
+            backend.qualification_last_kernel_label(),
+            Some(crate::qualification_cpu_kernel_label())
+        );
     }
 
     #[test]

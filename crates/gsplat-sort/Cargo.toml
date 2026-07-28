@@ -16,6 +16,7 @@ rust-version.workspace = true
 default = []
 qualification-q3-cpu-scalar = []
 qualification-q3-cpu-neon = []
+qualification-q3-cpu-runtime = []
 
 [dependencies]
 thiserror.workspace = true

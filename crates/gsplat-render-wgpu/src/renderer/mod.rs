@@ -43,7 +43,8 @@ pub(crate) use surface_attempt::SurfaceAttempt;
 
 #[cfg(any(
     feature = "qualification-q3-cpu-scalar",
-    feature = "qualification-q3-cpu-neon"
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 pub(crate) use current_stats::qualification_terminal_record;
 pub(crate) use current_stats::{
@@ -2269,6 +2270,14 @@ fn current_stats_counts_for_work<'a>(
         cpu_sort_ms: work
             .host_cpu_order()
             .map(|receipt| receipt.timings().sort_ms),
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        qualification_cpu_kernel: work
+            .host_cpu_order()
+            .and_then(HostCpuOrderReceipt::qualification_cpu_kernel),
     })
 }
 

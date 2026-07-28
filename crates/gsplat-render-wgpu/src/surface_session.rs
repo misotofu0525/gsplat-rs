@@ -1367,7 +1367,8 @@ impl SurfaceRenderSession {
                 .unwrap_or(crate::renderer::CurrentStatsPoll::Empty);
             #[cfg(any(
                 feature = "qualification-q3-cpu-scalar",
-                feature = "qualification-q3-cpu-neon"
+                feature = "qualification-q3-cpu-neon",
+                feature = "qualification-q3-cpu-runtime"
             ))]
             if let Some(record) = crate::renderer::qualification_terminal_record(renderer_poll) {
                 println!("{record}");

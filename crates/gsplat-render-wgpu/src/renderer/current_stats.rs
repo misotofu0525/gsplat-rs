@@ -200,6 +200,12 @@ pub(crate) struct CurrentStatsReceipt {
     frame_complete_ms_bits: u32,
     cpu_preprocess_ms_bits: Option<u32>,
     cpu_sort_ms_bits: Option<u32>,
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    qualification_cpu_kernel: Option<&'static str>,
 }
 
 impl CurrentStatsReceipt {
@@ -231,6 +237,15 @@ impl CurrentStatsReceipt {
             Some(bits) => Some(f32::from_bits(bits)),
             None => None,
         }
+    }
+
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    pub(crate) const fn qualification_cpu_kernel(self) -> Option<&'static str> {
+        self.qualification_cpu_kernel
     }
 }
 
@@ -273,7 +288,8 @@ impl CurrentStatsTerminal {
 
 #[cfg(any(
     feature = "qualification-q3-cpu-scalar",
-    feature = "qualification-q3-cpu-neon"
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 pub(crate) fn qualification_terminal_record(poll: CurrentStatsPoll) -> Option<String> {
     let CurrentStatsPoll::Terminal(terminal) = poll else {
@@ -300,7 +316,8 @@ pub(crate) fn qualification_terminal_record(poll: CurrentStatsPoll) -> Option<St
         CurrentStatsTerminal::Ready(receipt) => {
             let counts = receipt.counts();
             Some(format!(
-                "SURFACE_CURRENT_STATS_TERMINAL status=ready {identity} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} cpu_preprocess_ms={} cpu_sort_ms={} queue_completion_ms={:.6}",
+                "SURFACE_CURRENT_STATS_TERMINAL status=ready {identity} qualification_cpu_kernel={} count_semantics={} source_count={} visible_count={} contributor_count={} drawn_count={} cpu_preprocess_ms={} cpu_sort_ms={} queue_completion_ms={:.6}",
+                receipt.qualification_cpu_kernel().unwrap_or("unavailable"),
                 qualification_count_semantics_label(receipt.count_semantics()),
                 counts.source(),
                 counts.visible(),
@@ -315,7 +332,7 @@ pub(crate) fn qualification_terminal_record(poll: CurrentStatsPoll) -> Option<St
         | CurrentStatsTerminal::GenerationInvalidated(_)
         | CurrentStatsTerminal::Expired(_)
         | CurrentStatsTerminal::Dropped(_) => Some(format!(
-            "SURFACE_CURRENT_STATS_TERMINAL status={} {identity}",
+            "SURFACE_CURRENT_STATS_TERMINAL status={} {identity} qualification_cpu_kernel=unavailable",
             qualification_failure_label(terminal),
         )),
     }
@@ -323,7 +340,8 @@ pub(crate) fn qualification_terminal_record(poll: CurrentStatsPoll) -> Option<St
 
 #[cfg(any(
     feature = "qualification-q3-cpu-scalar",
-    feature = "qualification-q3-cpu-neon"
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 const fn qualification_plan_label(plan: PlanId) -> &'static str {
     match plan {
@@ -335,7 +353,8 @@ const fn qualification_plan_label(plan: PlanId) -> &'static str {
 
 #[cfg(any(
     feature = "qualification-q3-cpu-scalar",
-    feature = "qualification-q3-cpu-neon"
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 const fn qualification_count_semantics_label(semantics: PlanCountSemantics) -> &'static str {
     match semantics {
@@ -347,7 +366,8 @@ const fn qualification_count_semantics_label(semantics: PlanCountSemantics) -> &
 
 #[cfg(any(
     feature = "qualification-q3-cpu-scalar",
-    feature = "qualification-q3-cpu-neon"
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 const fn qualification_failure_label(terminal: CurrentStatsTerminal) -> &'static str {
     match terminal {
@@ -361,7 +381,8 @@ const fn qualification_failure_label(terminal: CurrentStatsTerminal) -> &'static
 
 #[cfg(any(
     feature = "qualification-q3-cpu-scalar",
-    feature = "qualification-q3-cpu-neon"
+    feature = "qualification-q3-cpu-neon",
+    feature = "qualification-q3-cpu-runtime"
 ))]
 fn qualification_optional_ms(value: Option<f32>) -> String {
     value.map_or_else(|| "none".to_owned(), |value| format!("{value:.6}"))
@@ -384,6 +405,12 @@ pub(super) struct CurrentStatsFrameCounts<'a> {
     pub(super) count_semantics: PlanCountSemantics,
     pub(super) cpu_preprocess_ms: Option<f32>,
     pub(super) cpu_sort_ms: Option<f32>,
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    pub(super) qualification_cpu_kernel: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -396,6 +423,12 @@ struct EncodedDescriptor {
     count_semantics: PlanCountSemantics,
     cpu_preprocess_ms_bits: Option<u32>,
     cpu_sort_ms_bits: Option<u32>,
+    #[cfg(any(
+        feature = "qualification-q3-cpu-scalar",
+        feature = "qualification-q3-cpu-neon",
+        feature = "qualification-q3-cpu-runtime"
+    ))]
+    qualification_cpu_kernel: Option<&'static str>,
 }
 
 struct CurrentStatsSlot {
@@ -683,6 +716,12 @@ impl CurrentStatsLane {
             count_semantics: counts.count_semantics,
             cpu_preprocess_ms_bits: counts.cpu_preprocess_ms.map(f32::to_bits),
             cpu_sort_ms_bits: counts.cpu_sort_ms.map(f32::to_bits),
+            #[cfg(any(
+                feature = "qualification-q3-cpu-scalar",
+                feature = "qualification-q3-cpu-neon",
+                feature = "qualification-q3-cpu-runtime"
+            ))]
+            qualification_cpu_kernel: counts.qualification_cpu_kernel,
         });
         slot.state.store(SLOT_ENCODED, Ordering::Release);
         #[cfg(test)]
@@ -887,6 +926,12 @@ impl CurrentStatsLane {
                             frame_complete_ms_bits: completion_ms_bits,
                             cpu_preprocess_ms_bits: descriptor.cpu_preprocess_ms_bits,
                             cpu_sort_ms_bits: descriptor.cpu_sort_ms_bits,
+                            #[cfg(any(
+                                feature = "qualification-q3-cpu-scalar",
+                                feature = "qualification-q3-cpu-neon",
+                                feature = "qualification-q3-cpu-runtime"
+                            ))]
+                            qualification_cpu_kernel: descriptor.qualification_cpu_kernel,
                         })
                     } else {
                         CurrentStatsTerminal::Dropped(CurrentStatsFailure { submission })

@@ -215,12 +215,23 @@ impl CpuPostSortPlan {
             })
             .transpose()?;
         let requested_guard = CpuOrderGuard::new(frame, source_count, *camera);
-        let timings = if input.force_cpu_order_refresh || self.guard != Some(requested_guard) {
+        let refresh_order = input.force_cpu_order_refresh || self.guard != Some(requested_guard);
+        let timings = if refresh_order {
             self.refresh_order(scene.positions(), camera, requested_guard)?
         } else {
             crate::cpu_order::CpuOrderTimings::default()
         };
         let host_cpu_order = HostCpuOrderReceipt::new(timings, crate::timer_now());
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        let host_cpu_order = host_cpu_order.with_qualification_cpu_kernel(
+            refresh_order
+                .then(|| self.engine.qualification_last_kernel_label())
+                .flatten(),
+        );
 
         let cpu_post_gpu = match (execution, gpu_preparation) {
             (Some(execution), Some(preparation)) => {
@@ -891,14 +902,37 @@ mod tests {
     fn identical_complete_guard_reuses_the_order_generation() {
         let mut scene = runtime(&[1.0, 3.0, 2.0]);
         let mut plan = CpuPostSortPlan::prepare(scene.source_count()).expect("plan");
-        let first_generation =
-            execute_cpu(&mut plan, &mut scene, &camera(0.5, 4.0), identity(1), 3)
-                .expect("first order")
-                .order_generation();
-        let second_generation =
-            execute_cpu(&mut plan, &mut scene, &camera(0.5, 4.0), identity(1), 3)
-                .expect("reused order")
-                .order_generation();
+        let first = execute_cpu(&mut plan, &mut scene, &camera(0.5, 4.0), identity(1), 3)
+            .expect("first order");
+        let first_generation = first.order_generation();
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        assert_eq!(
+            first
+                .host_cpu_order()
+                .and_then(|receipt| receipt.qualification_cpu_kernel()),
+            Some(gsplat_sort::qualification_cpu_kernel_label())
+        );
+        drop(first);
+
+        let second = execute_cpu(&mut plan, &mut scene, &camera(0.5, 4.0), identity(1), 3)
+            .expect("reused order");
+        let second_generation = second.order_generation();
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        assert_eq!(
+            second
+                .host_cpu_order()
+                .and_then(|receipt| receipt.qualification_cpu_kernel()),
+            None,
+            "a reused order must not claim that a SIMD leaf executed"
+        );
 
         assert_eq!(first_generation, second_generation);
     }

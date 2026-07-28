@@ -344,7 +344,7 @@ fn receipt_pump_completes_existing_current_stats_without_issuing_a_ticket() {
         let Some((device, queue)) = request_device().await else {
             return;
         };
-        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0])).await;
+        let mut slot = prepared_slot(&device, &queue, exact_scene(&[1.0, 1.1])).await;
 
         assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
         let first = render(&mut slot, &device, PlanId::CpuPostSort);
@@ -361,6 +361,25 @@ fn receipt_pump_completes_existing_current_stats_without_issuing_a_ticket() {
         assert!(ready.frame_complete_ms() >= 0.0);
         assert!(ready.cpu_preprocess_ms().is_some_and(f32::is_finite));
         assert!(ready.cpu_sort_ms().is_some_and(f32::is_finite));
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            assert_eq!(
+                ready.qualification_cpu_kernel(),
+                Some(gsplat_sort::qualification_cpu_kernel_label())
+            );
+            let record = super::qualification_terminal_record(CurrentStatsPoll::Terminal(
+                CurrentStatsTerminal::Ready(ready),
+            ))
+            .expect("qualification terminal record");
+            assert!(record.contains(&format!(
+                "qualification_cpu_kernel={}",
+                gsplat_sort::qualification_cpu_kernel_label()
+            )));
+        }
 
         assert_eq!(slot.request_current_stats(), CurrentStatsRequest::Requested);
         let second = render(&mut slot, &device, PlanId::CpuPostSort);
@@ -836,6 +855,23 @@ fn stationary_current_stats_request_reuses_cpu_order() {
             baseline_generation,
             "a stationary observer does not turn receipt collection into a sort policy"
         );
+        #[cfg(any(
+            feature = "qualification-q3-cpu-scalar",
+            feature = "qualification-q3-cpu-neon",
+            feature = "qualification-q3-cpu-runtime"
+        ))]
+        {
+            wait(&device, &observed);
+            let CurrentStatsTerminal::Ready(ready) = one_terminal(slot.poll_current_stats()) else {
+                panic!("stationary current-stats receipt did not resolve Ready");
+            };
+            assert_eq!(ready.qualification_cpu_kernel(), None);
+            let record = super::qualification_terminal_record(CurrentStatsPoll::Terminal(
+                CurrentStatsTerminal::Ready(ready),
+            ))
+            .expect("qualification terminal record");
+            assert!(record.contains("qualification_cpu_kernel=unavailable"));
+        }
     });
 }
 

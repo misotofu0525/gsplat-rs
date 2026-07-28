@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.system.Os
 import android.util.Log
 import android.util.Base64
 import android.view.Gravity
@@ -892,6 +893,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         super.onCreate(savedInstanceState)
 
         benchmarkConfig = BenchmarkConfig.fromIntent(intent, filesDir)
+        benchmarkConfig.qualificationQ3CpuKernel?.let { kernel ->
+            // Qualification-only runtime builds snapshot this process variable
+            // on first CPU sorter use. The collector force-stops the process
+            // before every run, so a lane cannot change inside one session.
+            Os.setenv("GSPLAT_Q3_CPU_KERNEL", kernel, true)
+            Log.i(TAG, "qualification_q3_cpu_kernel_requested=$kernel")
+        }
         benchmarkConfig.finalFrameRequest?.prepareForLaunch()
         if (benchmarkConfig.enabled) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -2397,6 +2405,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
         private const val EXTRA_SURFACE_GEOMETRY_PATH = "gsplat_geometry_path"
         private const val EXTRA_SURFACE_ORDER_BACKEND = "gsplat_surface_order_backend"
+        private const val EXTRA_QUALIFICATION_Q3_CPU_KERNEL =
+            "gsplat_qualification_q3_cpu_kernel"
         private const val EXTRA_SURFACE_GPU_PRODUCER = "gsplat_surface_gpu_producer"
         private const val EXTRA_SURFACE_GPU_PRODUCER_MEASUREMENT =
             "gsplat_surface_gpu_producer_measurement"
@@ -2477,6 +2487,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
         // Sample-only A/B knob: "cpu", "gpu", or "adaptive".
         val orderBackend: String = DEFAULT_SURFACE_ORDER_BACKEND,
+        // Private physical-device qualification selector; absent in product runs.
+        val qualificationQ3CpuKernel: String? = null,
         // Complete resident production path by default; Direct and Paged remain explicit A/B knobs.
         val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH,
         // Explicit strict diagnostic only; null keeps PostSort telemetry off.
@@ -2562,6 +2574,29 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     ?.lowercase(Locale.US)
                     ?.takeIf { it == "cpu" || it == "gpu" || it == "adaptive" }
                     ?: DEFAULT_SURFACE_ORDER_BACKEND
+                val qualificationQ3CpuKernel = intent
+                    .getStringExtra(EXTRA_QUALIFICATION_Q3_CPU_KERNEL)
+                    ?.trim()
+                    ?.lowercase(Locale.US)
+                    ?.takeIf(String::isNotEmpty)
+                check(
+                    qualificationQ3CpuKernel == null ||
+                        qualificationQ3CpuKernel == "scalar" ||
+                        qualificationQ3CpuKernel == "neon"
+                ) {
+                    "$EXTRA_QUALIFICATION_Q3_CPU_KERNEL must be scalar or neon"
+                }
+                if (qualificationQ3CpuKernel != null) {
+                    check(benchmarkEnabled && geometryPath == "packed") {
+                        "Q3 CPU kernel selection requires benchmark + packed"
+                    }
+                    check(orderBackend == "cpu" && !asyncSort && sortInterval == 1) {
+                        "Q3 CPU kernel selection requires synchronous CPU ordering"
+                    }
+                    check(cameraTraceSequence) {
+                        "Q3 CPU kernel selection requires trace sequence playback"
+                    }
+                }
                 val gpuProducer = intent.getStringExtra(EXTRA_SURFACE_GPU_PRODUCER)
                     ?.trim()
                     ?.lowercase(Locale.US)
@@ -2617,6 +2652,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     asyncSort = asyncSort,
                     frameLatency = frameLatency,
                     orderBackend = orderBackend,
+                    qualificationQ3CpuKernel = qualificationQ3CpuKernel,
                     geometryPath = geometryPath,
                     gpuProducer = gpuProducer,
                     cameraTracePath = cameraTracePath,

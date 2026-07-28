@@ -467,6 +467,27 @@ class ParsingTests(unittest.TestCase):
         )
         self.assertEqual(args.frames, 80)
 
+    def test_q3_phase_requires_explicit_runtime_kernel_before_device_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            phase = pathlib.Path(directory) / "phase.json"
+            phase.write_text("{}\n", encoding="utf-8")
+            args = COLLECTOR.parser().parse_args(
+                [
+                    "--serial",
+                    "serial",
+                    "--ply",
+                    __file__,
+                    "--camera-trace",
+                    str(TEST_CAMERA_TRACE),
+                    "--qualification-q3-phase-receipt",
+                    str(phase),
+                    "--qualification-q3-run-identity",
+                    "0" * 32,
+                ]
+            )
+            with self.assertRaisesRegex(ValueError, "explicit Q3 CPU kernel"):
+                COLLECTOR.validate_args(args)
+
     def test_thermal_status_variants(self) -> None:
         self.assertEqual(COLLECTOR.parse_thermal_status("Thermal Status: 0\n"), 0)
         self.assertEqual(COLLECTOR.parse_thermal_status("status: 3\n"), 3)

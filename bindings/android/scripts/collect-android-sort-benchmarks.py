@@ -961,6 +961,14 @@ def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
                 f"/data/user/0/{PACKAGE}/{INTERNAL_FINAL_PNG}",
             ]
         )
+    if getattr(args, "qualification_q3_cpu_kernel", None) is not None:
+        result.extend(
+            [
+                "--es",
+                "gsplat_qualification_q3_cpu_kernel",
+                args.qualification_q3_cpu_kernel,
+            ]
+        )
     return result
 
 
@@ -2612,6 +2620,11 @@ def parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     result.add_argument(
+        "--qualification-q3-cpu-kernel",
+        choices=("scalar", "neon"),
+        help=argparse.SUPPRESS,
+    )
+    result.add_argument(
         "--backend",
         action="append",
         choices=BACKENDS,
@@ -2768,6 +2781,18 @@ def validate_args(args: argparse.Namespace) -> list[str]:
             raise ValueError("Q3 phase receipt requires one 32-hex host run identity")
     elif args.qualification_q3_run_identity is not None:
         raise ValueError("Q3 run identity requires the Q3 phase receipt")
+    if (
+        args.qualification_q3_phase_receipt is not None
+        and args.qualification_q3_cpu_kernel is None
+    ):
+        raise ValueError("Q3 phase receipt requires an explicit Q3 CPU kernel")
+    if args.qualification_q3_cpu_kernel is not None:
+        if args.qualification_q3_phase_receipt is None:
+            raise ValueError("Q3 CPU kernel requires the Q3 phase receipt")
+        if args.geometry_path != "packed" or args.async_sort or args.sort_interval != 1:
+            raise ValueError(
+                "Q3 CPU kernel requires packed synchronous sort_interval=1"
+            )
     q3_prepared_paths = (
         args.qualification_q3_prepared_inputs,
         args.qualification_q3_installed_apk_receipt,
@@ -2936,7 +2961,7 @@ def load_q3_installed_apk_receipt(
         raise RuntimeError("Q3 installed-APK device/package identity drifted")
     if type(receipt.get("install_sequence")) is not int or receipt["install_sequence"] < 1:
         raise RuntimeError("Q3 installed-APK sequence is invalid")
-    if receipt.get("lane") not in {"scalar", "neon"}:
+    if receipt.get("lane") not in {"scalar", "neon", "runtime"}:
         raise RuntimeError("Q3 installed-APK lane is invalid")
     for name, expected in (
         ("local_apk", apk_identity),
@@ -3084,6 +3109,9 @@ def collect_scheduled_runs(
                 "frame_latency": args.frame_latency,
                 "geometry_path": args.geometry_path,
                 "gpu_producer": args.gpu_producer,
+                "qualification_q3_cpu_kernel": getattr(
+                    args, "qualification_q3_cpu_kernel", None
+                ),
             },
             "log": str(log_path.relative_to(output)),
             "artifact": str(artifact_dir.relative_to(output)),
@@ -3540,6 +3568,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "formal_artifact": args.formal_artifact,
             "qualification_q3_capture_final_png": (
                 args.qualification_q3_capture_final_png
+            ),
+            "qualification_q3_cpu_kernel": getattr(
+                args, "qualification_q3_cpu_kernel", None
             ),
             "cooldown_seconds": args.cooldown_seconds,
             "max_thermal_status": args.max_thermal_status,
