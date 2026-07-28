@@ -707,6 +707,27 @@ offline replay of the retained 50k artifact pass with the real
 `adapter = null` / Vulkan device receipt. The attempt remains immutable and
 Rejected; Q3 remains **Active** pending a separately admitted exact-SHA run.
 
+The following clean-SHA transaction at `5cd83cb` progressed through physical
+Scalar/NEON parity, both correctness lanes and matched timing cells through at
+least the 200k tier. It was manually interrupted once, without retry, when an
+`adb install -r` lane transition remained blocked for more than four minutes
+while the device stayed online and thermal status remained `0`. The Q3 caller
+had incorrectly passed its 1,800-second whole-run timeout into the package
+installation helper, so waiting for its eventual timeout would have spent up
+to 30 minutes without producing renderer evidence. The incomplete staging
+directory is retained at
+`target/qualification/.q3-a065-simd-5cd83cb3-attempt-5.staging-ce40b3d077ed49b388fb4cae9578053f`
+as infrastructure diagnosis only; none of its cells are published or compared.
+
+Commit `ca69a3e` gives APK replacement its own finite transaction. It invokes
+ADB exactly once with `--no-streaming --no-fastdeploy -r`, caps the Q3 install
+at 60 seconds independently of the measurement timeout, and retains the
+existing package-handler drains and hash verification. There is no fallback
+install mode and no automatic retry. Unit tests lock both the exact command and
+the timeout separation; the shared collector suite, Q3 suite, Android artifact
+extraction suite and source-architecture policy pass. Q3 remains **Active**
+pending one newly admitted clean-SHA device transaction.
+
 ## K1d Web same-present capture checkpoint (2026-07-27)
 
 The Web depth-precision image gate now has a renderer-owned, take-once RGBA8
