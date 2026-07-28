@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import pathlib
 import struct
 import sys
@@ -37,6 +38,21 @@ def rgba_png(rgba: bytes) -> bytes:
         for y in range(HEIGHT)
     )
     header = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 6, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + b"".join(
+        (
+            png_chunk(b"IHDR", header),
+            png_chunk(b"IDAT", zlib.compress(rows, 1)),
+            png_chunk(b"IEND", b""),
+        )
+    )
+
+
+def rgb_png(rgb: bytes) -> bytes:
+    rows = b"".join(
+        b"\x00" + rgb[y * WIDTH * 3 : (y + 1) * WIDTH * 3]
+        for y in range(HEIGHT)
+    )
+    header = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + b"".join(
         (
             png_chunk(b"IHDR", header),
@@ -84,6 +100,14 @@ def resolution(*, presented: bool) -> dict[str, object]:
     return result
 
 
+def presentation_dimensions() -> dict[str, int]:
+    return {
+        f"{stage}_{axis}": value
+        for stage in ("requested", "surface", "internal_render", "presented")
+        for axis, value in (("width", WIDTH), ("height", HEIGHT))
+    }
+
+
 def formal() -> dict[str, object]:
     intrinsics = {
         "vertical_fov_radians": 0.881621552836618,
@@ -100,9 +124,28 @@ def formal() -> dict[str, object]:
             0.9444035574363557,
         ],
     }
-    projection = [0.0] * 16
-    projection[0] = 1.188814234062581
-    projection[5] = 2.119670769914365
+    q = pose["rotation_xyzw"]
+    right = SMOKE._rotate_vector(q, [1.0, 0.0, 0.0])
+    up = SMOKE._rotate_vector(q, [0.0, 1.0, 0.0])
+    forward = SMOKE._rotate_vector(q, [0.0, 0.0, 1.0])
+    position = pose["position"]
+    view = [
+        *right, -sum(a * b for a, b in zip(right, position)),
+        *up, -sum(a * b for a, b in zip(up, position)),
+        *forward, -sum(a * b for a, b in zip(forward, position)),
+        0.0, 0.0, 0.0, 1.0,
+    ]
+    focal = 1.0 / math.tan(intrinsics["vertical_fov_radians"] * 0.5)
+    depth = intrinsics["far_plane"] / (
+        intrinsics["far_plane"] - intrinsics["near_plane"]
+    )
+    projection = [
+        focal * intrinsics["focal_length_x_over_y"] / (WIDTH / HEIGHT),
+        0.0, 0.0, 0.0,
+        0.0, focal, 0.0, 0.0,
+        0.0, 0.0, depth, -intrinsics["near_plane"] * depth,
+        0.0, 0.0, 1.0, 0.0,
+    ]
     return {
         "trace": {
             "trace_id": SMOKE.TRACE_AUTHORITY.TRACE_ID,
@@ -112,6 +155,7 @@ def formal() -> dict[str, object]:
                     "frame_index": 0,
                     "pose": pose,
                     "intrinsics": intrinsics,
+                    "view_matrix": view,
                     "projection_matrix": projection,
                 }
             ],
@@ -168,6 +212,18 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
         "capture_depth_precision": capture,
     }
     manifest = common_manifest(formal_value)
+    formal_frame = formal_value["trace"]["frames"][0]
+    runtime_camera = {
+        "position": formal_frame["pose"]["position"],
+        "rotationXyzw": formal_frame["pose"]["rotation_xyzw"],
+        "intrinsics": {
+            "verticalFovRadians": formal_frame["intrinsics"]["vertical_fov_radians"],
+            "nearPlane": formal_frame["intrinsics"]["near_plane"],
+            "farPlane": formal_frame["intrinsics"]["far_plane"],
+            "focalLengthXOverY": formal_frame["intrinsics"]["focal_length_x_over_y"],
+        },
+    }
+    manifest["camera_receipt"] = runtime_camera
     manifest["q1_comparison"] = {
         "artifact_role": "control",
         "performance_evidence": False,
@@ -179,6 +235,7 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
                 "trace_frame_index": 0,
                 "pose_intrinsics_sha256": formal_value["pose_intrinsics_sha256"],
                 "camera_revision": 9,
+                "runtime_camera_receipt_sha256": SMOKE.canonical_sha256(runtime_camera),
             },
             "terminal_identity": {
                 "frame_index": 0,
@@ -188,7 +245,7 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
             "successful_present": True,
             "queue_terminal_complete": True,
             "captured_after_terminal": True,
-            "dimensions": resolution(presented=True),
+            "dimensions": presentation_dimensions(),
         },
     }
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -198,14 +255,15 @@ def write_native(root: pathlib.Path, rgba: bytes, formal_value: dict[str, object
 
 def playcanvas_camera(formal_value: dict[str, object]) -> dict[str, object]:
     frame = formal_value["trace"]["frames"][0]
-    projection = frame["projection_matrix"]
-    configured = [0.0] * 16
-    configured[0] = projection[0]
-    configured[5] = projection[5]
+    oracle = SMOKE._playcanvas_camera_oracle(formal_value)
     return {
         "schema": SMOKE.PLAYCANVAS_CAMERA_SCHEMA,
         "trace_frame_index": 0,
         "phase": "presentation_frame_2",
+        "runtime_source": "live PlayCanvas Entity and Camera matrices after trace application",
+        "position": oracle["position"],
+        "forward": oracle["forward"],
+        "up": oracle["up"],
         "vertical_fov_radians": frame["intrinsics"]["vertical_fov_radians"],
         "near_plane": frame["intrinsics"]["near_plane"],
         "far_plane": frame["intrinsics"]["far_plane"],
@@ -217,9 +275,40 @@ def playcanvas_camera(formal_value: dict[str, object]) -> dict[str, object]:
         "custom_projection": {
             "active": True,
             "hook": "CameraComponent.calculateProjection",
-            "configured_projection_matrix_opengl_column_major": configured,
+            "configured_projection_matrix_opengl_column_major": oracle[
+                "projection_matrix_opengl_column_major"
+            ],
         },
-        "validation": {"passed": True},
+        "view_matrix_column_major": oracle["view_matrix_column_major"],
+        "projection_matrix_opengl_column_major": oracle[
+            "projection_matrix_opengl_column_major"
+        ],
+        "view_projection_matrix_opengl_column_major": oracle[
+            "view_projection_matrix_opengl_column_major"
+        ],
+        "shader_projection_matrix_webgpu_column_major": oracle[
+            "shader_projection_matrix_webgpu_column_major"
+        ],
+        "shader_view_projection_matrix_webgpu_column_major": oracle[
+            "shader_view_projection_matrix_webgpu_column_major"
+        ],
+        "conversion": {
+            "world": "canonical RUF +Z-forward to PlayCanvas RUB -Z-forward by diag(1,1,-1)",
+            "projection": (
+                "centered f*x/y/aspect canonical row-major +Z/[0,1] -> PlayCanvas "
+                "column-major -Z/OpenGL[-1,1] -> WebGPU shader [0,1]"
+            ),
+            "shader_flip_y": False,
+        },
+        "validation": {
+            "oracle": (
+                "pose/intrinsics-recomputed canonical trace oracle; trace matrices "
+                "verified independently"
+            ),
+            "absolute_tolerance": 0.0002,
+            "relative_tolerance": 0.00002,
+            "passed": True,
+        },
     }
 
 
@@ -276,6 +365,42 @@ def write_playcanvas(root: pathlib.Path, rgba: bytes, formal_value: dict[str, ob
     }
     png = rgba_png(rgba)
     manifest = common_manifest(formal_value)
+    presentation_frames = []
+    for index in range(3):
+        frame_camera = copy.deepcopy(camera)
+        frame_camera["phase"] = f"presentation_frame_{index}"
+        frame = {
+            "trace_frame_index": 0,
+            "camera_receipt": frame_camera,
+            "submit_version_before": 6 + index,
+            "submit_version_after": 7 + index,
+            "queue_submit_call_count": 1,
+        }
+        if index == 2:
+            frame["renderer_capture_copy"] = {"submit_version_after": 10}
+        presentation_frames.append(frame)
+    terminal_camera = copy.deepcopy(camera)
+    terminal_camera["phase"] = "external_capture_terminal"
+    manifest["camera_receipt"] = terminal_camera
+    manifest["presentation_capture"] = {
+        "schema": SMOKE.PLAYCANVAS_PRESENTATION_SCHEMA,
+        "ready_for_external_capture": True,
+        "excluded_from_performance": True,
+        "capture_trace_frame_index": 0,
+        "minimum_stable_frame_count": 3,
+        "stable_frame_count": 3,
+        "measurement_terminal_submit_version": 6,
+        "frames": presentation_frames,
+        "terminal_camera_receipt": terminal_camera,
+        "renderer_capture": capture,
+        "queue_drain": {
+            "phase": "post_capture_presentation",
+            "frameLoopStopped": True,
+            "submitVersionBefore": 10,
+            "submitVersionAfter": 10,
+            "submitVersionStable": True,
+        },
+    }
     manifest["renderer_capture"] = capture
     manifest["renderer_capture_materialization"] = {
         "schema": SMOKE.PLAYCANVAS_MATERIALIZATION_SCHEMA,
@@ -351,6 +476,27 @@ class ProductQualitySmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(SMOKE.OneViewQualityError, "alpha"):
             self.evaluate(playcanvas=bytes(malformed))
 
+    def test_ground_truth_decoder_admits_only_opaque_rgb8(self) -> None:
+        source = self.root / "source.png"
+        source.write_bytes(rgb_png(self.source_rgb))
+        decoded = SMOKE._decode_png(
+            source,
+            "source",
+            allowed_color_types=frozenset({2}),
+        )
+        self.assertEqual(decoded, self.good_rgba)
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "RGBA8"):
+            SMOKE._decode_png(source, "endpoint")
+
+        endpoint = self.root / "endpoint.png"
+        endpoint.write_bytes(rgba_png(self.good_rgba))
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "RGB8"):
+            SMOKE._decode_png(
+                endpoint,
+                "source",
+                allowed_color_types=frozenset({2}),
+            )
+
     def test_native_camera_hash_drift_fails_closed(self) -> None:
         native = self.root / "native"
         write_native(native, self.good_rgba, self.formal)
@@ -361,6 +507,20 @@ class ProductQualitySmokeTests(unittest.TestCase):
         ] = "0" * 64
         manifest_path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(SMOKE.OneViewQualityError, "pose_intrinsics"):
+            SMOKE._native_capture(native, self.formal)
+
+    def test_native_actual_camera_ratio_drift_fails_even_with_rehashed_owner(self) -> None:
+        native = self.root / "native"
+        write_native(native, self.good_rgba, self.formal)
+        manifest_path = native / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        receipt = manifest["camera_receipt"]
+        receipt["intrinsics"]["focalLengthXOverY"] = 1.0
+        manifest["q1_comparison"]["presentation_identity"]["camera"][
+            "runtime_camera_receipt_sha256"
+        ] = SMOKE.canonical_sha256(receipt)
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "focalLengthXOverY"):
             SMOKE._native_capture(native, self.formal)
 
     def test_native_png_must_match_same_present_capture_hash(self) -> None:
@@ -379,7 +539,7 @@ class ProductQualitySmokeTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text())
         manifest["renderer_capture"]["producer"] = "canvas_to_data_url"
         manifest_path.write_text(json.dumps(manifest))
-        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "terminal identity"):
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "owner location"):
             SMOKE._playcanvas_capture(playcanvas, self.formal)
 
     def test_playcanvas_calibrated_ratio_is_bound_by_camera_json_hash(self) -> None:
@@ -394,23 +554,92 @@ class ProductQualitySmokeTests(unittest.TestCase):
         manifest["renderer_capture"]["camera_receipt_sha256"] = hashlib.sha256(
             camera_json.encode()
         ).hexdigest()
+        manifest["presentation_capture"]["renderer_capture"] = copy.deepcopy(
+            manifest["renderer_capture"]
+        )
         manifest_path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(SMOKE.OneViewQualityError, "focal_length_x_over_y"):
             SMOKE._playcanvas_capture(playcanvas, self.formal)
 
+    def test_playcanvas_full_runtime_camera_oracle_rejects_rehashed_matrix_drift(self) -> None:
+        camera = playcanvas_camera(self.formal)
+        camera["shader_view_projection_matrix_webgpu_column_major"][7] += 0.25
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "shader_view_projection"):
+            SMOKE._playcanvas_camera(camera, self.formal, "camera")
+
+    def test_playcanvas_capture_requires_same_presentation_owner(self) -> None:
+        playcanvas = self.root / "playcanvas"
+        write_playcanvas(playcanvas, self.good_rgba, self.formal)
+        manifest_path = playcanvas / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["presentation_capture"]["renderer_capture"] = copy.deepcopy(
+            manifest["renderer_capture"]
+        )
+        manifest["presentation_capture"]["renderer_capture"]["renderer_frame_sequence"] += 1
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "owner location"):
+            SMOKE._playcanvas_capture(playcanvas, self.formal)
+
+    def test_playcanvas_capture_requires_final_frame_copy_and_outer_drain(self) -> None:
+        playcanvas = self.root / "playcanvas"
+        write_playcanvas(playcanvas, self.good_rgba, self.formal)
+        manifest_path = playcanvas / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["presentation_capture"]["frames"][-1]["renderer_capture_copy"][
+            "submit_version_after"
+        ] = 11
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "same-frame"):
+            SMOKE._playcanvas_capture(playcanvas, self.formal)
+
+        manifest = json.loads(manifest_path.read_text())
+        manifest["presentation_capture"]["frames"][-1]["renderer_capture_copy"][
+            "submit_version_after"
+        ] = 10
+        manifest["presentation_capture"]["queue_drain"]["frameLoopStopped"] = False
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "queue drain"):
+            SMOKE._playcanvas_capture(playcanvas, self.formal)
+
+    def test_playcanvas_blocker_fails_closed(self) -> None:
+        playcanvas = self.root / "playcanvas"
+        write_playcanvas(playcanvas, self.good_rgba, self.formal)
+        (playcanvas / "blocker.json").write_text("{}")
+        with self.assertRaisesRegex(SMOKE.OneViewQualityError, "blocker.json"):
+            SMOKE._playcanvas_capture(playcanvas, self.formal)
+
     def test_publication_is_fresh_atomic_and_rejects_performance_fields(self) -> None:
         result = self.evaluate()
+        input_root = self.root / "immutable-input"
+        input_root.mkdir()
         output = self.root / "published"
-        SMOKE.publish_one_view(result, output)
+        SMOKE.publish_one_view(result, output, input_roots=(input_root,))
         self.assertEqual(
             json.loads((output / "result.json").read_text())["status"], "Accepted"
         )
         with self.assertRaisesRegex(SMOKE.OneViewQualityError, "already exists"):
-            SMOKE.publish_one_view(result, output)
+            SMOKE.publish_one_view(result, output, input_roots=(input_root,))
         mutated = copy.deepcopy(result)
         mutated["timing"] = {"frame_ms": 1.0}
         with self.assertRaisesRegex(SMOKE.OneViewQualityError, "forbidden"):
             SMOKE.validate_result(mutated)
+
+    def test_publication_rejects_every_overlapping_input_tree_before_staging(self) -> None:
+        result = self.evaluate()
+        for index in range(4):
+            input_root = self.root / f"input-{index}"
+            input_root.mkdir()
+            output = input_root / "forbidden-output"
+            roots = tuple(
+                input_root if item == index else self.root / f"peer-{index}-{item}"
+                for item in range(4)
+            )
+            for root in roots:
+                root.mkdir(exist_ok=True)
+            with self.assertRaisesRegex(SMOKE.OneViewQualityError, "overlaps"):
+                SMOKE.publish_one_view(result, output, input_roots=roots)
+            self.assertFalse(output.exists())
+            self.assertFalse(any(input_root.glob(".forbidden-output.staging-*")))
 
 
 if __name__ == "__main__":

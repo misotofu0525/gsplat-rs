@@ -29,7 +29,16 @@ def main() -> int:
             gsplat_capture=args.gsplat_capture,
             playcanvas_capture=args.playcanvas_capture,
         )
-        publish_one_view(result, args.output)
+        publish_one_view(
+            result,
+            args.output,
+            input_roots=(
+                args.formal_trace_authority,
+                args.evaluation_authority,
+                args.gsplat_capture,
+                args.playcanvas_capture,
+            ),
+        )
     except OneViewQualityError as error:
         parser.error(str(error))
     print(

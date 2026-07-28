@@ -1657,10 +1657,18 @@ fails closed before publication. Successful structural evaluation publishes a
 fresh atomic `result.json` with separate endpoint decisions and no timing,
 throughput, pairing, speed ratio, FPS or winner fields.
 
-Eight focused synthetic tests pass, including dual acceptance, finite quality
-rejection, nonopaque input, camera/hash drift, producer drift, same-present PNG
-binding, and immutable publication. The real retained formal trace/evaluation
-authority pair also revalidates. No endpoint was launched and no one-view image
-result exists yet; Product Quality remains `Deferred` and
-`performance_eligible=false` until the second formal view is independently
-qualified.
+The first fixed-SHA review rejected the gate with five P1 evidence gaps. An
+additive repair now decodes the official RGB8 truth, accepts the producer's
+dimension-only native presentation receipt, binds the renderer-returned native
+camera, joins PlayCanvas capture to its stable presentation/copy/drain chain,
+and independently recomputes all PlayCanvas camera matrices from the formal
+trace. Publication also rejects every overlap with an immutable input tree.
+
+Fifteen focused synthetic tests now pass. The real retained RGB8 ground truth
+decodes to 1,603,602 RGB bytes with SHA-256
+`14b5487d242a35aa33727e59e4a3774c53551261e320ebc502fbd42440a010c1`;
+the Python camera oracle matches the reviewed JavaScript oracle across 94
+values with zero observed difference. The repair still requires a fresh
+fixed-SHA review. No endpoint was launched and no one-view image result exists;
+Product Quality remains `Deferred` and `performance_eligible=false` until both
+formal views independently qualify.

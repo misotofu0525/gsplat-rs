@@ -19,13 +19,18 @@ The command requires four already materialized roots:
 
 The gsplat-rs adapter requires the existing same-present chain:
 `q1_comparison.presentation_identity` selects formal trace index zero, binds
-the canonical pose/intrinsics hash and terminal frame hash, and that terminal
-contains the exact frozen `capture_depth_precision` receipt whose RGBA digest
-matches the decoded PNG.
+the canonical pose/intrinsics hash, the renderer-returned eleven-value camera
+receipt, its camera revision and terminal frame hash. That terminal contains
+the exact frozen `capture_depth_precision` receipt whose RGBA digest matches
+the decoded PNG.
 
 The PlayCanvas adapter requires the existing
-`gsplat-playcanvas-webgpu-renderer-capture/v1` producer, terminal queue drain,
-camera JSON digest and exact centered-pinhole custom-projection receipt. Its
+`gsplat-playcanvas-webgpu-renderer-capture/v1` producer, the complete
+`presentation_capture` submit chain, same-frame copy, both terminal queue
+drains, camera JSON digest and exact centered-pinhole custom-projection receipt.
+The offline gate independently recomputes pose, view, OpenGL/WebGPU projection
+and both view-projection matrices from the formal trace; a self-consistent but
+incorrect producer declaration is rejected. Its
 `gsplat-playcanvas-renderer-capture-materialization/v1` receipt must bind the
 raw RGBA file byte-for-byte. A canvas screenshot is not accepted.
 
@@ -52,7 +57,8 @@ Product Quality remains `Deferred` because view `000009` is still required.
 
 The result deliberately contains no timing, frame-wall, FPS, throughput,
 pairing, speed ratio, or winner fields. Publication is one fresh directory
-containing only `result.json`, installed atomically without replacement.
+containing only `result.json`, installed atomically without replacement. The
+output must be disjoint from every immutable authority and capture input tree.
 
 ```bash
 python3 tests/perf/validate-q1-product-quality-smoke.py \

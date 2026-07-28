@@ -18,8 +18,10 @@ import math
 import os
 import pathlib
 import shutil
+import struct
 import sys
 import tempfile
+import zlib
 from dataclasses import asdict
 from typing import Any
 
@@ -70,10 +72,41 @@ TRUCK_SH_DEGREE = 3
 NATIVE_ARTIFACT_SCHEMA = "gsplat-benchmark/v1"
 PLAYCANVAS_CAPTURE_SCHEMA = "gsplat-playcanvas-webgpu-renderer-capture/v1"
 PLAYCANVAS_CAPTURE_PRODUCER = "playcanvas_webgpu_copy_texture_to_buffer"
+PLAYCANVAS_PRESENTATION_SCHEMA = "gsplat-playcanvas-presentation-capture/v1"
 PLAYCANVAS_MATERIALIZATION_SCHEMA = (
     "gsplat-playcanvas-renderer-capture-materialization/v1"
 )
 PLAYCANVAS_CAMERA_SCHEMA = "gsplat-playcanvas-runtime-camera-receipt/v1"
+PLAYCANVAS_CAPTURE_FIELDS = frozenset(
+    {
+        "schema",
+        "producer",
+        "status",
+        "renderer_frame_sequence",
+        "renderer_submit_version",
+        "copy_submit_version_before",
+        "copy_submit_version_after",
+        "texture_format",
+        "render_view_format",
+        "canvas_color_space",
+        "canvas_alpha_mode",
+        "pixel_format",
+        "row_origin",
+        "width",
+        "height",
+        "row_bytes",
+        "byte_length",
+        "rgba8_sha256",
+        "camera_receipt_sha256",
+        "camera_receipt_json",
+        "camera_receipt",
+        "resolution",
+        "source",
+        "copy_map_complete",
+        "queue_terminal_complete",
+        "terminal_queue_drain",
+    }
+)
 MAX_JSON_BYTES = 4 * 1024 * 1024
 MAX_JSONL_BYTES = 64 * 1024 * 1024
 SHA256_LENGTH = 64
@@ -225,14 +258,98 @@ def _load_png_decoder() -> Any:
 PNG = _load_png_decoder()
 
 
-def _decode_png(path: pathlib.Path, context: str) -> bytes:
+def _decode_png(
+    path: pathlib.Path,
+    context: str,
+    *,
+    allowed_color_types: frozenset[int] = frozenset({6}),
+) -> bytes:
+    """Decode bounded non-interlaced RGB8/RGBA8 without color conversion.
+
+    Endpoint captures must remain RGBA8.  The separately authored Evaluation
+    Images authority is RGB8, so its caller explicitly admits color type 2 and
+    receives opaque RGBA bytes.  CRC, chunk ordering, filters, decompressed
+    length, trailing data, and color-management chunks all fail closed.
+    """
+
     try:
-        decoded = PNG.decode_rgba8_png(
-            path.read_bytes(), context, (FORMAL_WIDTH, FORMAL_HEIGHT)
+        data = path.read_bytes()
+        chunks = list(PNG.png_chunks(data))
+        chunk_types = [kind for kind, _ in chunks]
+        if (
+            not chunk_types
+            or chunk_types[0] != b"IHDR"
+            or chunk_types[-1] != b"IEND"
+            or chunk_types.count(b"IHDR") != 1
+            or chunk_types.count(b"IEND") != 1
+        ):
+            fail(f"{context} has an invalid PNG chunk sequence")
+        unsupported_critical = [
+            kind
+            for kind in chunk_types
+            if kind[:1].isupper() and kind not in {b"IHDR", b"IDAT", b"IEND"}
+        ]
+        if unsupported_critical:
+            fail(f"{context} uses unsupported critical PNG chunks")
+        if any(
+            kind in {b"cHRM", b"gAMA", b"iCCP", b"sRGB"}
+            for kind in chunk_types
+        ):
+            fail(f"{context} uses color-management chunks outside the raw byte contract")
+        ihdr = next((payload for kind, payload in chunks if kind == b"IHDR"), None)
+        idat = b"".join(payload for kind, payload in chunks if kind == b"IDAT")
+        if ihdr is None or len(ihdr) != 13 or not idat:
+            fail(f"{context} is missing required PNG chunks")
+        width, height, bit_depth, color_type, compression, filter_method, interlace = (
+            struct.unpack(">IIBBBBB", ihdr)
         )
-    except (OSError, PNG.ValidationError) as error:
+        if (width, height) != (FORMAL_WIDTH, FORMAL_HEIGHT):
+            fail(f"{context} PNG dimensions must equal 979x546")
+        if (
+            bit_depth != 8
+            or color_type not in allowed_color_types
+            or compression != 0
+            or filter_method != 0
+            or interlace != 0
+        ):
+            allowed = "/".join(
+                "RGB8" if value == 2 else "RGBA8"
+                for value in sorted(allowed_color_types)
+            )
+            fail(f"{context} must be non-interlaced {allowed} PNG")
+
+        channels = 3 if color_type == 2 else 4
+        row_bytes = width * channels
+        expected_bytes = height * (row_bytes + 1)
+        decompressor = zlib.decompressobj()
+        filtered = decompressor.decompress(idat, expected_bytes + 1)
+        if (
+            len(filtered) != expected_bytes
+            or not decompressor.eof
+            or decompressor.unused_data
+            or decompressor.unconsumed_tail
+        ):
+            fail(f"{context} decompressed byte length is invalid")
+        rows: list[bytes] = []
+        previous = b""
+        offset = 0
+        for _ in range(height):
+            filter_type = filtered[offset]
+            source = filtered[offset + 1 : offset + 1 + row_bytes]
+            row = PNG.unfilter_scanline(filter_type, source, previous)
+            rows.append(row)
+            previous = row
+            offset += row_bytes + 1
+        pixels = b"".join(rows)
+        if color_type == 6:
+            return pixels
+        return bytes(
+            channel
+            for offset in range(0, len(pixels), 3)
+            for channel in (*pixels[offset : offset + 3], 255)
+        )
+    except (OSError, zlib.error, PNG.ValidationError) as error:
         fail(f"{context} is not a formal raw RGB8/RGBA8 PNG: {error}")
-    return decoded.rgba
 
 
 def _formal_trace(trace_root: pathlib.Path, evaluation_root: pathlib.Path) -> dict[str, Any]:
@@ -337,7 +454,13 @@ def _require_truck(manifest: dict[str, Any], context: str) -> None:
         fail(f"{context}.exactness does not preserve the complete source")
 
 
-def _require_resolution(value: dict[str, Any], context: str, *, presented: bool) -> None:
+def _require_resolution(
+    value: dict[str, Any],
+    context: str,
+    *,
+    presented: bool,
+    require_policies: bool = True,
+) -> None:
     stages = ["requested", "surface", "internal_render"]
     if presented:
         stages.append("presented")
@@ -347,14 +470,51 @@ def _require_resolution(value: dict[str, Any], context: str, *, presented: bool)
             value.get(f"{stage}_height"),
         ) != (FORMAL_WIDTH, FORMAL_HEIGHT):
             fail(f"{context}.{stage} must equal 979x546")
-    if (
-        value.get("dynamic_resolution") != "disabled"
-        or value.get("upscaling") != "disabled"
+    if require_policies:
+        if (
+            value.get("dynamic_resolution") != "disabled"
+            or value.get("upscaling") != "disabled"
+        ):
+            fail(f"{context} must disable dynamic resolution and upscaling")
+        full_key = "full_resolution" if presented else "internal_full_resolution"
+        if value.get(full_key) is not True:
+            fail(f"{context}.{full_key} must be true")
+
+
+def _native_runtime_camera(
+    receipt: dict[str, Any], formal: dict[str, Any], context: str
+) -> str:
+    """Bind the renderer-returned eleven-value camera to the formal frame."""
+
+    if set(receipt) != {"position", "rotationXyzw", "intrinsics"}:
+        fail(f"{context} fields do not match the native camera receipt")
+    frame = formal["trace"]["frames"][TRACE_FRAME_INDEX]
+    for field, expected in (
+        ("position", frame["pose"]["position"]),
+        ("rotationXyzw", frame["pose"]["rotation_xyzw"]),
     ):
-        fail(f"{context} must disable dynamic resolution and upscaling")
-    full_key = "full_resolution" if presented else "internal_full_resolution"
-    if value.get(full_key) is not True:
-        fail(f"{context}.{full_key} must be true")
+        actual = receipt.get(field)
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            fail(f"{context}.{field} has an invalid shape")
+        for index, expected_value in enumerate(expected):
+            _finite_close(actual[index], expected_value, f"{context}.{field}[{index}]")
+    intrinsics = _object(receipt, "intrinsics", context)
+    if set(intrinsics) != {
+        "verticalFovRadians",
+        "nearPlane",
+        "farPlane",
+        "focalLengthXOverY",
+    }:
+        fail(f"{context}.intrinsics does not contain the eleven-value camera receipt")
+    expected_intrinsics = frame["intrinsics"]
+    for field, expected in (
+        ("verticalFovRadians", expected_intrinsics["vertical_fov_radians"]),
+        ("nearPlane", expected_intrinsics["near_plane"]),
+        ("farPlane", expected_intrinsics["far_plane"]),
+        ("focalLengthXOverY", formal["focal_length_x_over_y"]),
+    ):
+        _finite_close(intrinsics.get(field), expected, f"{context}.intrinsics.{field}")
+    return canonical_sha256(receipt)
 
 
 def _native_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
@@ -383,11 +543,16 @@ def _native_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, 
     if presentation.get("trace_frame_index") != TRACE_FRAME_INDEX:
         fail("gsplat-rs presentation does not select view 000001")
     camera = _object(presentation, "camera", "gsplat-rs presentation")
+    runtime_camera = _object(manifest, "camera_receipt", "gsplat-rs manifest")
+    runtime_camera_sha = _native_runtime_camera(
+        runtime_camera, formal, "gsplat-rs runtime camera receipt"
+    )
     expected_camera = {
         "trace_id": formal["trace"]["trace_id"],
         "trace_content_sha256": formal["trace"]["content_sha256"],
         "trace_frame_index": TRACE_FRAME_INDEX,
         "pose_intrinsics_sha256": formal["pose_intrinsics_sha256"],
+        "runtime_camera_receipt_sha256": runtime_camera_sha,
     }
     for field, expected in expected_camera.items():
         if camera.get(field) != expected:
@@ -458,6 +623,7 @@ def _native_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, 
         _object(presentation, "dimensions", "gsplat-rs presentation"),
         "gsplat-rs presentation dimensions",
         presented=True,
+        require_policies=False,
     )
     rgba = _decode_png(png_path, "gsplat-rs final-frame.png")
     if hashlib.sha256(rgba).hexdigest() != rgba_sha:
@@ -466,6 +632,7 @@ def _native_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, 
         "artifact_schema": NATIVE_ARTIFACT_SCHEMA,
         "producer": "DiagnosticSurfaceCaptureReceipt",
         "manifest_sha256": file_sha256(manifest_path),
+        "runtime_camera_receipt_sha256": runtime_camera_sha,
         "rgba8_sha256": rgba_sha,
         "pixel_format": "rgba8unorm",
         "row_origin": "top_left",
@@ -474,45 +641,178 @@ def _native_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, 
     }
 
 
-def _playcanvas_camera(receipt: dict[str, Any], formal: dict[str, Any], context: str) -> None:
+def _matrix_multiply(left: list[float], right: list[float]) -> list[float]:
+    return [
+        sum(left[row * 4 + k] * right[k * 4 + column] for k in range(4))
+        for row in range(4)
+        for column in range(4)
+    ]
+
+
+def _column_major(matrix: list[float]) -> list[float]:
+    return [matrix[row * 4 + column] for column in range(4) for row in range(4)]
+
+
+def _rotate_vector(quaternion: list[float], vector: list[float]) -> list[float]:
+    x, y, z, w = quaternion
+    vx, vy, vz = vector
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
+
+
+def _playcanvas_camera_oracle(formal: dict[str, Any]) -> dict[str, Any]:
     frame = formal["trace"]["frames"][TRACE_FRAME_INDEX]
+    canonical_view = frame["view_matrix"]
+    canonical_projection = frame["projection_matrix"]
+    reflect = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, -1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+    depth_to_opengl = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 2.0, -1.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+    playcanvas_view = _matrix_multiply(
+        reflect, _matrix_multiply(canonical_view, reflect)
+    )
+    projection_opengl = _matrix_multiply(
+        depth_to_opengl, _matrix_multiply(canonical_projection, reflect)
+    )
+    projection_webgpu = _matrix_multiply(canonical_projection, reflect)
+    quaternion = frame["pose"]["rotation_xyzw"]
+    norm = math.sqrt(sum(component * component for component in quaternion))
+    normalized = [component / norm for component in quaternion]
+    position = frame["pose"]["position"]
+    forward = _rotate_vector(normalized, [0.0, 0.0, 1.0])
+    up = _rotate_vector(normalized, [0.0, 1.0, 0.0])
+    return {
+        "position": [position[0], position[1], -position[2]],
+        "forward": [forward[0], forward[1], -forward[2]],
+        "up": [up[0], up[1], -up[2]],
+        "vertical_fov_radians": frame["intrinsics"]["vertical_fov_radians"],
+        "near_plane": frame["intrinsics"]["near_plane"],
+        "far_plane": frame["intrinsics"]["far_plane"],
+        "aspect": FORMAL_WIDTH / FORMAL_HEIGHT,
+        "focal_length_x_over_y": formal["focal_length_x_over_y"],
+        "view_matrix_column_major": _column_major(playcanvas_view),
+        "projection_matrix_opengl_column_major": _column_major(projection_opengl),
+        "view_projection_matrix_opengl_column_major": _column_major(
+            _matrix_multiply(projection_opengl, playcanvas_view)
+        ),
+        "shader_projection_matrix_webgpu_column_major": _column_major(
+            projection_webgpu
+        ),
+        "shader_view_projection_matrix_webgpu_column_major": _column_major(
+            _matrix_multiply(projection_webgpu, playcanvas_view)
+        ),
+    }
+
+
+def _playcanvas_camera(receipt: dict[str, Any], formal: dict[str, Any], context: str) -> None:
+    expected_fields = {
+        "schema", "trace_frame_index", "phase", "runtime_source", "position",
+        "forward", "up", "vertical_fov_radians", "near_plane", "far_plane",
+        "aspect", "focal_length_x_over_y", "horizontal_fov",
+        "render_target_flip_y", "webgpu_depth_range_applied", "custom_projection",
+        "view_matrix_column_major", "projection_matrix_opengl_column_major",
+        "view_projection_matrix_opengl_column_major",
+        "shader_projection_matrix_webgpu_column_major",
+        "shader_view_projection_matrix_webgpu_column_major", "conversion", "validation",
+    }
+    if set(receipt) != expected_fields:
+        fail(f"{context} fields do not match the exact PlayCanvas camera receipt")
     if (
         receipt.get("schema") != PLAYCANVAS_CAMERA_SCHEMA
         or receipt.get("trace_frame_index") != TRACE_FRAME_INDEX
+        or not isinstance(receipt.get("phase"), str)
+        or not receipt.get("phase")
+        or receipt.get("runtime_source")
+        != "live PlayCanvas Entity and Camera matrices after trace application"
         or receipt.get("horizontal_fov") is not False
         or receipt.get("render_target_flip_y") is not False
         or receipt.get("webgpu_depth_range_applied") is not True
-        or receipt.get("validation", {}).get("passed") is not True
-        or receipt.get("custom_projection", {}).get("active") is not True
-        or receipt.get("custom_projection", {}).get("hook")
-        != "CameraComponent.calculateProjection"
     ):
         fail(f"{context} does not prove the exact PlayCanvas camera path")
-    for field, expected in (
-        ("vertical_fov_radians", frame["intrinsics"]["vertical_fov_radians"]),
-        ("near_plane", frame["intrinsics"]["near_plane"]),
-        ("far_plane", frame["intrinsics"]["far_plane"]),
-        ("aspect", FORMAL_WIDTH / FORMAL_HEIGHT),
-        ("focal_length_x_over_y", formal["focal_length_x_over_y"]),
+    custom = _object(receipt, "custom_projection", context)
+    if set(custom) != {
+        "active", "hook", "configured_projection_matrix_opengl_column_major"
+    } or custom.get("active") is not True or custom.get("hook") != (
+        "CameraComponent.calculateProjection"
     ):
-        _finite_close(receipt.get(field), expected, f"{context}.{field}")
-    expected_projection = frame["projection_matrix"]
-    configured = receipt.get("custom_projection", {}).get(
-        "configured_projection_matrix_opengl_column_major"
-    )
-    if not isinstance(configured, list) or len(configured) != 16:
-        fail(f"{context} custom projection matrix is unavailable")
-    # Exact-pinhole proof: the x and y scales must correspond to the canonical
-    # projection. Remaining matrix elements are already producer-oracle checked
-    # and bound below by the camera JSON SHA.
-    _finite_close(configured[0], expected_projection[0], f"{context} projection x scale")
-    _finite_close(configured[5], expected_projection[5], f"{context} projection y scale")
+        fail(f"{context} does not prove the exact PlayCanvas projection owner")
+    if receipt.get("conversion") != {
+        "world": "canonical RUF +Z-forward to PlayCanvas RUB -Z-forward by diag(1,1,-1)",
+        "projection": (
+            "centered f*x/y/aspect canonical row-major +Z/[0,1] -> PlayCanvas "
+            "column-major -Z/OpenGL[-1,1] -> WebGPU shader [0,1]"
+        ),
+        "shader_flip_y": False,
+    } or receipt.get("validation") != {
+        "oracle": (
+            "pose/intrinsics-recomputed canonical trace oracle; trace matrices "
+            "verified independently"
+        ),
+        "absolute_tolerance": 0.0002,
+        "relative_tolerance": 0.00002,
+        "passed": True,
+    }:
+        fail(f"{context} conversion/validation declaration drifted")
+    oracle = _playcanvas_camera_oracle(formal)
+    for field in (
+        "vertical_fov_radians", "near_plane", "far_plane", "aspect",
+        "focal_length_x_over_y",
+    ):
+        _finite_close(receipt.get(field), oracle[field], f"{context}.{field}")
+    vectors = {
+        "position": oracle["position"],
+        "forward": oracle["forward"],
+        "up": oracle["up"],
+        "view_matrix_column_major": oracle["view_matrix_column_major"],
+        "projection_matrix_opengl_column_major": oracle[
+            "projection_matrix_opengl_column_major"
+        ],
+        "view_projection_matrix_opengl_column_major": oracle[
+            "view_projection_matrix_opengl_column_major"
+        ],
+        "shader_projection_matrix_webgpu_column_major": oracle[
+            "shader_projection_matrix_webgpu_column_major"
+        ],
+        "shader_view_projection_matrix_webgpu_column_major": oracle[
+            "shader_view_projection_matrix_webgpu_column_major"
+        ],
+        "configured_projection_matrix_opengl_column_major": oracle[
+            "projection_matrix_opengl_column_major"
+        ],
+    }
+    for field, expected in vectors.items():
+        actual = (
+            custom.get(field)
+            if field == "configured_projection_matrix_opengl_column_major"
+            else receipt.get(field)
+        )
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            fail(f"{context}.{field} has an invalid shape")
+        for index, expected_value in enumerate(expected):
+            _finite_close(actual[index], expected_value, f"{context}.{field}[{index}]")
 
 
 def _playcanvas_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     manifest_path = _regular_child(root, "manifest.json", "PlayCanvas capture")
     rgba_path = _regular_child(root, "final-frame.rgba8", "PlayCanvas capture")
     png_path = _regular_child(root, "final-frame.png", "PlayCanvas capture")
+    for blocker in ("blocker.json", "cleanup-blocker.json"):
+        if (root / blocker).exists() or (root / blocker).is_symlink():
+            fail(f"PlayCanvas capture contains {blocker}")
     manifest = _load_json(manifest_path, "PlayCanvas manifest")
     if manifest.get("schema") != NATIVE_ARTIFACT_SCHEMA:
         fail("PlayCanvas manifest schema mismatch")
@@ -529,7 +829,59 @@ def _playcanvas_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[byt
         or trace.get("capture_frame_index") != TRACE_FRAME_INDEX
     ):
         fail("PlayCanvas manifest does not bind formal view 000001")
-    capture = _object(manifest, "renderer_capture", "PlayCanvas manifest")
+    presentation = _object(manifest, "presentation_capture", "PlayCanvas manifest")
+    if (
+        presentation.get("schema") != PLAYCANVAS_PRESENTATION_SCHEMA
+        or presentation.get("ready_for_external_capture") is not True
+        or presentation.get("excluded_from_performance") is not True
+        or presentation.get("capture_trace_frame_index") != TRACE_FRAME_INDEX
+        or presentation.get("minimum_stable_frame_count") != 3
+    ):
+        fail("PlayCanvas presentation capture is not a frozen untimed terminal")
+    stable_count = _positive_integer(
+        presentation.get("stable_frame_count"), "PlayCanvas stable frame count"
+    )
+    frames = presentation.get("frames")
+    if not isinstance(frames, list) or stable_count < 3 or len(frames) != stable_count:
+        fail("PlayCanvas presentation capture lacks stable renderer frames")
+    prior_submit = _positive_integer(
+        presentation.get("measurement_terminal_submit_version"),
+        "PlayCanvas measurement terminal submit version",
+    )
+    for index, frame in enumerate(frames):
+        if not isinstance(frame, dict) or frame.get("trace_frame_index") != TRACE_FRAME_INDEX:
+            fail(f"PlayCanvas presentation frame {index} trace mismatch")
+        _playcanvas_camera(
+            _object(frame, "camera_receipt", f"PlayCanvas presentation frame {index}"),
+            formal,
+            f"PlayCanvas presentation frame {index} camera",
+        )
+        before = frame.get("submit_version_before")
+        after = frame.get("submit_version_after")
+        calls = frame.get("queue_submit_call_count")
+        if (
+            not isinstance(before, int)
+            or isinstance(before, bool)
+            or not isinstance(after, int)
+            or isinstance(after, bool)
+            or not isinstance(calls, int)
+            or isinstance(calls, bool)
+            or before != prior_submit
+            or after <= before
+            or calls != after - before
+        ):
+            fail(f"PlayCanvas presentation frame {index} submit chain mismatch")
+        prior_submit = after
+    final_frame = frames[-1]
+    terminal_camera = _object(
+        presentation, "terminal_camera_receipt", "PlayCanvas presentation capture"
+    )
+    _playcanvas_camera(terminal_camera, formal, "PlayCanvas terminal camera")
+    if terminal_camera != manifest.get("camera_receipt"):
+        fail("PlayCanvas presentation terminal camera owner mismatch")
+    capture = _object(presentation, "renderer_capture", "PlayCanvas presentation capture")
+    if manifest.get("renderer_capture") != capture or set(capture) != PLAYCANVAS_CAPTURE_FIELDS:
+        fail("PlayCanvas renderer capture fields/owner location are not frozen")
     if (
         capture.get("schema") != PLAYCANVAS_CAPTURE_SCHEMA
         or capture.get("producer") != PLAYCANVAS_CAPTURE_PRODUCER
@@ -542,6 +894,9 @@ def _playcanvas_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[byt
         or capture.get("height") != FORMAL_HEIGHT
         or capture.get("row_bytes") != FORMAL_WIDTH * 4
         or capture.get("byte_length") != FORMAL_WIDTH * FORMAL_HEIGHT * 4
+        or capture.get("renderer_submit_version") != prior_submit
+        or capture.get("copy_submit_version_before") != prior_submit
+        or capture.get("copy_submit_version_after") != prior_submit + 1
     ):
         fail("PlayCanvas renderer capture terminal identity mismatch")
     camera_json = capture.get("camera_receipt_json")
@@ -562,6 +917,11 @@ def _playcanvas_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[byt
     if parsed_camera != camera:
         fail("PlayCanvas camera JSON does not match its receipt")
     _playcanvas_camera(camera, formal, "PlayCanvas camera")
+    if camera != final_frame.get("camera_receipt"):
+        fail("PlayCanvas renderer capture camera does not bind the final presentation frame")
+    copy = _object(final_frame, "renderer_capture_copy", "PlayCanvas final presentation frame")
+    if copy.get("submit_version_after") != capture["copy_submit_version_after"]:
+        fail("PlayCanvas renderer capture copy is not same-frame")
     source = _object(capture, "source", "PlayCanvas capture")
     if (
         source.get("dataset_id") != TRUCK_ID
@@ -594,6 +954,17 @@ def _playcanvas_capture(root: pathlib.Path, formal: dict[str, Any]) -> tuple[byt
         "submit_version_stable": True,
     }:
         fail("PlayCanvas capture terminal queue drain mismatch")
+    outer_drain = _object(
+        presentation, "queue_drain", "PlayCanvas presentation capture"
+    )
+    if outer_drain != {
+        "phase": "post_capture_presentation",
+        "frameLoopStopped": True,
+        "submitVersionBefore": copy_after,
+        "submitVersionAfter": copy_after,
+        "submitVersionStable": True,
+    }:
+        fail("PlayCanvas presentation capture queue drain mismatch")
     materialization = _object(
         manifest, "renderer_capture_materialization", "PlayCanvas manifest"
     )
@@ -665,7 +1036,11 @@ def _ground_truth(evaluation_root: pathlib.Path, formal: dict[str, Any]) -> tupl
         fail("Evaluation Images ground truth is unavailable")
     if path.stat().st_size != entry.get("bytes") or file_sha256(path) != entry.get("sha256"):
         fail("Evaluation Images ground-truth byte identity drifted")
-    rgba = _decode_png(path, "Evaluation Images gt/000001.png")
+    rgba = _decode_png(
+        path,
+        "Evaluation Images gt/000001.png",
+        allowed_color_types=frozenset({2}),
+    )
     if any(rgba[offset + 3] != 255 for offset in range(0, len(rgba), 4)):
         fail("Evaluation Images ground truth must be opaque")
     rgb = bytes(
@@ -847,9 +1222,30 @@ def _publish_directory_noreplace(staging: pathlib.Path, output: pathlib.Path) ->
     raise OSError(error, os.strerror(error), output)
 
 
-def publish_one_view(result: dict[str, Any], output: pathlib.Path) -> None:
+def _require_disjoint_output(
+    output: pathlib.Path, input_roots: tuple[pathlib.Path, ...]
+) -> pathlib.Path:
+    output = pathlib.Path(os.path.abspath(output)).resolve(strict=False)
+    for root in input_roots:
+        try:
+            resolved = pathlib.Path(root).resolve(strict=True)
+        except OSError as error:
+            fail(f"cannot resolve immutable input root {root}: {error}")
+        if output == resolved or output in resolved.parents or resolved in output.parents:
+            fail(f"output overlaps immutable input root: {root}")
+    return output
+
+
+def publish_one_view(
+    result: dict[str, Any],
+    output: pathlib.Path,
+    *,
+    input_roots: tuple[pathlib.Path, ...],
+) -> None:
     validate_result(result)
-    output = pathlib.Path(os.path.abspath(output))
+    if not input_roots:
+        fail("publication requires immutable input roots")
+    output = _require_disjoint_output(output, input_roots)
     if output.exists() or output.is_symlink():
         fail(f"output already exists: {output}")
     if output.parent.is_symlink() or not output.parent.is_dir():
