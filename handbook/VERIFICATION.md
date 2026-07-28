@@ -278,6 +278,11 @@ Quality `Deferred` until view 000009 qualifies and always records
 `performance_authorized=false`. A child nonzero exit also retains its argv,
 stdout, and stderr under `failed-command/<step>/`, without copying environment
 variables, so the failure can be diagnosed without rerunning an endpoint.
+If the native desktop host itself exits nonzero, the native producer also
+publishes an immutable nested `native-view000001.failed-q1-native-*` tree with
+its host command/stdout/stderr and build diagnostics. It removes the private
+Cargo target and any unpublished candidate artifact before publication, so
+failure evidence stays small and cannot masquerade as formal quality output.
 
 ### Q1 WebGPU Truck 1080p prerequisite
 

@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import struct
 import sys
 import tempfile
+import types
 import unittest
 import zlib
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("collect-q1-product-quality-native.py")
@@ -284,6 +287,138 @@ class NativeQualityProducerTests(unittest.TestCase):
         frame_path.write_text(json.dumps(frame) + "\n", encoding="utf-8")
         with self.assertRaisesRegex(NATIVE.Q1.OneViewQualityError, "terminal frame hash"):
             NATIVE.Q1._native_capture(artifact, NATIVE.trace_for_gate(self.trace))
+
+    def test_host_failure_retains_logs_without_formal_artifact_or_private_target(self) -> None:
+        stage = self.root / ".native-stage"
+        host = stage / "host"
+        build = stage / "build"
+        private_target = stage / "cargo-target/release"
+        unpublished_artifact = stage / "artifact"
+        for directory in (host, build, private_target, unpublished_artifact):
+            directory.mkdir(parents=True)
+        (host / "command.json").write_text(
+            '{"argv":["desktop-example"],"cwd":"host"}\n', encoding="utf-8"
+        )
+        (host / "stdout.log").write_text("renderer stdout\n", encoding="utf-8")
+        (host / "stderr.log").write_text("renderer rejected the frame\n", encoding="utf-8")
+        (build / "stderr.log").write_text("build diagnostic\n", encoding="utf-8")
+        (private_target / "desktop-example").write_bytes(b"rebuildable")
+        (unpublished_artifact / "manifest.json").write_text(
+            '{"looks_complete":true}\n', encoding="utf-8"
+        )
+        NATIVE.make_tree_immutable(unpublished_artifact)
+
+        output = self.root / "native-view000001"
+        failure = NATIVE.publish_failure(
+            stage,
+            output,
+            "a" * 40,
+            NATIVE.ValidationError("native quality host exited with 1"),
+        )
+
+        self.assertFalse(output.exists())
+        self.assertFalse(stage.exists())
+        self.assertTrue(failure.is_dir())
+        self.assertFalse((failure / "cargo-target").exists())
+        self.assertFalse((failure / "artifact").exists())
+        self.assertEqual(
+            (failure / "host/stdout.log").read_text(encoding="utf-8"),
+            "renderer stdout\n",
+        )
+        self.assertEqual(
+            (failure / "host/stderr.log").read_text(encoding="utf-8"),
+            "renderer rejected the frame\n",
+        )
+        blocker = json.loads((failure / "blocker.json").read_text(encoding="utf-8"))
+        self.assertEqual(blocker["status"], "failed_attempt")
+        self.assertFalse(blocker["automatic_retry"])
+        self.assertFalse(blocker["formal_output_published"])
+        self.assertEqual(blocker["product_quality"], "Deferred")
+        self.assertFalse(blocker["performance_authorized"])
+        self.assertNotIn("environment", (failure / "host/command.json").read_text())
+        for path in failure.rglob("*"):
+            self.assertFalse(os.access(path, os.W_OK), path)
+
+    def test_collect_host_failure_publishes_diagnostics_once_and_keeps_output_absent(self) -> None:
+        output = self.root / "native-view000001"
+        dataset = self.root / "truck.ply"
+        dataset.write_bytes(b"truck")
+        trace_root = self.root / "trace"
+        trace_root.mkdir()
+        trace_path = trace_root / "camera-trace.json"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        commit = "a" * 40
+        args = types.SimpleNamespace(
+            output=output,
+            expected_commit=commit,
+            formal_trace_authority=trace_root,
+            dataset=dataset,
+        )
+        trace = {"root": trace_root, "path": trace_path}
+        invocations = []
+
+        def fake_build(repo, stage, expected_git, *, feature, build_jobs):
+            binary = stage / "cargo-target/release/desktop-example"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"binary")
+            build = stage / "build"
+            build.mkdir()
+            (build / "stderr.log").write_text("build ok\n", encoding="utf-8")
+            return {"path": binary, "sha256": "b" * 64}
+
+        def invoke(command, cwd):
+            invocations.append((tuple(command), cwd))
+            return NATIVE.subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="native stdout before failure\n",
+                stderr="fatal renderer detail\n",
+            )
+
+        with (
+            mock.patch.object(NATIVE, "validate_ignored_output"),
+            mock.patch.object(
+                NATIVE,
+                "git_receipt",
+                return_value={"dirty": False, "commit": commit},
+            ),
+            mock.patch.object(NATIVE, "load_formal_trace", return_value=trace),
+            mock.patch.object(NATIVE, "load_truck", return_value=dataset),
+            mock.patch.object(NATIVE, "require_disjoint_output"),
+            mock.patch.object(
+                NATIVE.SHARED,
+                "build_locked_desktop_binary",
+                side_effect=fake_build,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                NATIVE.ValidationError, "retained native failure"
+            ):
+                NATIVE.collect(args, repo=self.root, invoke=invoke)
+
+        self.assertEqual(len(invocations), 1)
+        self.assertFalse(output.exists())
+        failures = list(self.root.glob("native-view000001.failed-q1-native-*"))
+        self.assertEqual(len(failures), 1)
+        failure = failures[0]
+        self.assertEqual(
+            (failure / "host/stdout.log").read_text(encoding="utf-8"),
+            "native stdout before failure\n",
+        )
+        self.assertEqual(
+            (failure / "host/stderr.log").read_text(encoding="utf-8"),
+            "fatal renderer detail\n",
+        )
+        self.assertFalse((failure / "cargo-target").exists())
+        blocker = json.loads((failure / "blocker.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            blocker["retained_host_logs"],
+            {
+                "command": "host/command.json",
+                "stderr": "host/stderr.log",
+                "stdout": "host/stdout.log",
+            },
+        )
 
 
 if __name__ == "__main__":

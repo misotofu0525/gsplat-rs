@@ -19,9 +19,11 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from typing import Any, Callable, Sequence
 
 
@@ -606,6 +608,64 @@ def default_host_invoker(
     )
 
 
+def discard_tree(path: pathlib.Path) -> None:
+    """Remove an unpublished tree even when a child was already frozen."""
+
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+        return
+    directories = [path]
+    directories.extend(
+        child for child in path.rglob("*") if child.is_dir() and not child.is_symlink()
+    )
+    for directory in directories:
+        os.chmod(directory, directory.stat().st_mode | stat.S_IWUSR | stat.S_IXUSR)
+    shutil.rmtree(path)
+
+
+def publish_failure(
+    stage: pathlib.Path,
+    output: pathlib.Path,
+    commit: str,
+    error: Exception,
+) -> pathlib.Path:
+    """Retain diagnostic logs without publishing an incomplete quality artifact."""
+
+    # The private target is rebuildable and can be several GiB. The artifact,
+    # if present, did not cross the final no-replace publication boundary and
+    # must not look like formal evidence inside a failure tree.
+    discard_tree(stage / "cargo-target")
+    discard_tree(stage / "artifact")
+    destination = output.with_name(
+        f"{output.name}.failed-q1-native-{commit[:12]}-{uuid.uuid4().hex[:12]}"
+    )
+    retained_host_logs = {}
+    for name in ("command", "stdout", "stderr"):
+        path = stage / "host" / f"{name}.{'json' if name == 'command' else 'log'}"
+        if path.is_file() and not path.is_symlink():
+            retained_host_logs[name] = path.relative_to(stage).as_posix()
+    write_json(
+        stage / "blocker.json",
+        {
+            "schema": "gsplat-q1-native-quality-failure/v1",
+            "status": "failed_attempt",
+            "reason": str(error),
+            "git_commit": commit,
+            "automatic_retry": False,
+            "formal_output_published": False,
+            "product_quality": "Deferred",
+            "performance_authorized": False,
+            "retained_host_logs": retained_host_logs,
+        },
+    )
+    fsync_tree(stage)
+    make_tree_immutable(stage)
+    Q1._publish_directory_noreplace(stage, destination)
+    return destination
+
+
 def collect(
     args: argparse.Namespace,
     *,
@@ -669,9 +729,24 @@ def collect(
         make_tree_immutable(artifact)
         Q1._publish_directory_noreplace(artifact, output)
         return output
+    except Exception as error:
+        if stage.exists():
+            try:
+                failure = publish_failure(
+                    stage, output, initial_git["commit"], error
+                )
+            except Exception as publication_error:
+                raise ValidationError(
+                    f"{error}; native failure staging could not be published: "
+                    f"{publication_error}"
+                ) from error
+            raise ValidationError(
+                f"{error}; retained native failure: {failure}"
+            ) from error
+        raise
     finally:
         if stage.exists():
-            shutil.rmtree(stage, ignore_errors=True)
+            discard_tree(stage)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

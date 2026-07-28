@@ -81,6 +81,11 @@ is retained in an immutable sibling failure directory; it cannot masquerade as
 a one-view result. A child nonzero exit retains its exact argv, stdout, and
 stderr under `failed-command/<step>/` without serializing environment
 variables, so diagnosis does not require another endpoint run.
+The native producer applies the same rule one level deeper: a desktop-host
+failure retains an immutable `native-view000001.failed-q1-native-*` child with
+the host command/stdout/stderr and build diagnostics, while deleting its
+rebuildable private Cargo target and unpublished candidate artifact. That tree
+is diagnostic only and never substitutes for the requested native capture.
 
 ```bash
 python3 tests/perf/collect-q1-product-quality-view000001.py \

@@ -1698,3 +1698,21 @@ identity, commit/platform/tool/authority probes, and the single coordinator
 command. This slice did not launch Chrome, a native window, a device, or either
 endpoint and produced no formal artifact. Product Quality remains `Deferred`;
 performance stays unauthorized.
+
+The first two authorized one-shot executions stopped in the Native child
+before PlayCanvas or the offline gate ran. The first exposed that the default
+worktree Truck path was a symlink; commit `7442c6b` moved that real-file check
+into the read-only doctor. The next run at `3aa1a6e` proved the outer
+coordinator's `failed-command/native_quality_only` retention, but its stderr
+contained only `native quality host exited with 1`: the Native producer had
+unconditionally deleted its own private stage, including the desktop host's
+stdout/stderr. Neither attempt published a formal output or authorized any
+performance statement, and neither was automatically retried.
+
+The current diagnostic repair retains a Native-host failure as an immutable
+nested `native-view000001.failed-q1-native-*` tree. It preserves the exact host
+command, stdout/stderr and build diagnostics, removes the rebuildable private
+Cargo target and any unpublished candidate artifact, and keeps the requested
+native output absent. Focused tests exercise the real `collect` failure path
+with exactly one host invocation. A new endpoint execution remains deferred
+until this repair is committed and independently reviewed at a fixed SHA.
