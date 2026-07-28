@@ -1,5 +1,7 @@
 const SCHEMA = "gsplat-camera-trace/v1";
 const MATRIX_TOLERANCE = 1e-12;
+const MIN_FOCAL_LENGTH_X_OVER_Y = 2 ** -16;
+const MAX_FOCAL_LENGTH_X_OVER_Y = 2 ** 16;
 
 function fail(message) {
   throw new TypeError(`invalid ${SCHEMA}: ${message}`);
@@ -22,6 +24,12 @@ function closeMatrix(actual, expected, field) {
   });
 }
 
+function focalLengthXOverY(intrinsics) {
+  return intrinsics && Object.hasOwn(intrinsics, "focal_length_x_over_y")
+    ? intrinsics.focal_length_x_over_y
+    : 1;
+}
+
 function viewMatrix(position, rotation) {
   let [x, y, z, w] = rotation;
   x = -x;
@@ -42,9 +50,10 @@ function viewMatrix(position, rotation) {
 
 function projectionMatrix(intrinsics, aspect) {
   const f = 1 / Math.tan(intrinsics.vertical_fov_radians * 0.5);
+  const focalRatio = focalLengthXOverY(intrinsics);
   const depth = intrinsics.far_plane / (intrinsics.far_plane - intrinsics.near_plane);
   return [
-    f / aspect, 0, 0, 0,
+    f * focalRatio / aspect, 0, 0, 0,
     0, f, 0, 0,
     0, 0, depth, -intrinsics.near_plane * depth,
     0, 0, 1, 0,
@@ -93,10 +102,14 @@ export function validateCameraTraceV1(trace) {
     const norm2 = rotation.reduce((sum, value) => sum + value * value, 0);
     if (Math.abs(norm2 - 1) > MATRIX_TOLERANCE) fail(`frames[${index}] quaternion must be normalized`);
     const intrinsics = frame.intrinsics;
+    const focalRatio = focalLengthXOverY(intrinsics);
     if (!intrinsics || !Number.isFinite(intrinsics.vertical_fov_radians)
         || !Number.isFinite(intrinsics.near_plane) || !Number.isFinite(intrinsics.far_plane)
+        || !Number.isFinite(focalRatio)
         || intrinsics.vertical_fov_radians <= 0 || intrinsics.vertical_fov_radians >= Math.PI
-        || intrinsics.near_plane <= 0 || intrinsics.far_plane <= intrinsics.near_plane) {
+        || intrinsics.near_plane <= 0 || intrinsics.far_plane <= intrinsics.near_plane
+        || focalRatio < MIN_FOCAL_LENGTH_X_OVER_Y
+        || focalRatio > MAX_FOCAL_LENGTH_X_OVER_Y) {
       fail(`frames[${index}].intrinsics are invalid`);
     }
     const view = viewMatrix(position, rotation);
@@ -122,6 +135,7 @@ export function cameraTraceFrame(trace, index = 0) {
       verticalFovRadians: frame.intrinsics.vertical_fov_radians,
       nearPlane: frame.intrinsics.near_plane,
       farPlane: frame.intrinsics.far_plane,
+      focalLengthXOverY: focalLengthXOverY(frame.intrinsics),
     },
   };
 }

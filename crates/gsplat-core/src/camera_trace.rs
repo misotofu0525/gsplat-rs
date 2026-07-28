@@ -70,6 +70,12 @@ pub struct CameraTraceIntrinsics {
     pub vertical_fov_radians: f64,
     pub near_plane: f64,
     pub far_plane: f64,
+    #[serde(default = "default_focal_length_x_over_y")]
+    pub focal_length_x_over_y: f64,
+}
+
+const fn default_focal_length_x_over_y() -> f64 {
+    1.0
 }
 
 /// Deterministic playback phases used by cross-platform camera-trace benchmarks.
@@ -378,7 +384,7 @@ impl CameraTraceFrame {
                 vertical_fov_radians: self.intrinsics.vertical_fov_radians as f32,
                 near_plane: self.intrinsics.near_plane as f32,
                 far_plane: self.intrinsics.far_plane as f32,
-                focal_length_x_over_y: 1.0,
+                focal_length_x_over_y: self.intrinsics.focal_length_x_over_y as f32,
             },
         };
         camera
@@ -397,6 +403,7 @@ impl CameraTraceFrame {
                 &self.intrinsics.vertical_fov_radians,
                 &self.intrinsics.near_plane,
                 &self.intrinsics.far_plane,
+                &self.intrinsics.focal_length_x_over_y,
             ])
             .chain(self.view_matrix.iter())
             .chain(self.projection_matrix.iter())
@@ -423,6 +430,10 @@ impl CameraTraceFrame {
             || intrinsics.vertical_fov_radians >= std::f64::consts::PI
             || intrinsics.near_plane <= 0.0
             || intrinsics.far_plane <= intrinsics.near_plane
+            || intrinsics.focal_length_x_over_y
+                < f64::from(CameraIntrinsics::MIN_FOCAL_LENGTH_X_OVER_Y)
+            || intrinsics.focal_length_x_over_y
+                > f64::from(CameraIntrinsics::MAX_FOCAL_LENGTH_X_OVER_Y)
         {
             return Err(CameraTraceError::new(format!(
                 "frames[{index}].intrinsics are invalid"
@@ -510,7 +521,7 @@ fn projection_matrix(intrinsics: CameraTraceIntrinsics, aspect: f64) -> [f64; 16
     let f = 1.0 / (intrinsics.vertical_fov_radians * 0.5).tan();
     let depth = intrinsics.far_plane / (intrinsics.far_plane - intrinsics.near_plane);
     [
-        f / aspect,
+        f * intrinsics.focal_length_x_over_y / aspect,
         0.0,
         0.0,
         0.0,
@@ -539,7 +550,10 @@ fn mat4_multiply(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
 
 #[cfg(test)]
 mod tests {
-    use super::{CameraTrace, CameraTraceSequencePhase};
+    use super::{
+        CameraTrace, CameraTraceIntrinsics, CameraTraceSequencePhase, mat4_multiply,
+        projection_matrix,
+    };
 
     const FIXTURE: &[u8] =
         include_bytes!("../../../tests/perf/trace/fixtures/camera-trace-v1.json");
@@ -554,6 +568,8 @@ mod tests {
         assert_eq!((trace.display.width, trace.display.height), (640, 360));
         assert_eq!(camera.pose.position, crate::Vec3f::new(0.5, 0.125, -3.0));
         assert_eq!(camera.pose.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(camera.intrinsics.focal_length_x_over_y, 1.0);
+        assert_eq!(frame.intrinsics.focal_length_x_over_y, 1.0);
     }
 
     #[test]
@@ -647,5 +663,69 @@ mod tests {
         assert!(trace.sequence(vec![0], 0, 1, 1).is_err());
         assert!(trace.sequence(vec![0, 3], 0, 1, 1).is_err());
         assert!(trace.sequence(vec![1, 1], 0, 1, 1).is_err());
+    }
+
+    fn fixture_with_focal_ratio(ratio: f64) -> Vec<u8> {
+        let mut trace: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
+        let display = trace["display"].as_object().unwrap();
+        let aspect = display["width"].as_f64().unwrap() / display["height"].as_f64().unwrap();
+        for frame in trace["frames"].as_array_mut().unwrap() {
+            frame["intrinsics"]["focal_length_x_over_y"] = serde_json::json!(ratio);
+            let intrinsics = CameraTraceIntrinsics {
+                vertical_fov_radians: frame["intrinsics"]["vertical_fov_radians"]
+                    .as_f64()
+                    .unwrap(),
+                near_plane: frame["intrinsics"]["near_plane"].as_f64().unwrap(),
+                far_plane: frame["intrinsics"]["far_plane"].as_f64().unwrap(),
+                focal_length_x_over_y: ratio,
+            };
+            let projection = projection_matrix(intrinsics, aspect);
+            let view: [f64; 16] = serde_json::from_value(frame["view_matrix"].clone()).unwrap();
+            frame["projection_matrix"] = serde_json::json!(projection);
+            frame["view_projection_matrix"] = serde_json::json!(mat4_multiply(projection, view));
+        }
+        serde_json::to_vec(&trace).unwrap()
+    }
+
+    #[test]
+    fn exact_centered_focal_ratio_drives_projection_and_camera() {
+        let ratio = 581.924_567_573_633_3 / 578.670_120_186_621_6;
+        let bytes = fixture_with_focal_ratio(ratio);
+        let trace = CameraTrace::from_json_slice(&bytes).unwrap();
+        let frame = trace.frame(0).unwrap();
+        let camera = frame.camera().unwrap();
+
+        assert_eq!(frame.intrinsics.focal_length_x_over_y, ratio);
+        assert_eq!(camera.intrinsics.focal_length_x_over_y, ratio as f32);
+        let legacy = CameraTrace::from_json_slice(FIXTURE).unwrap();
+        assert_eq!(
+            frame.projection_matrix[0],
+            legacy.frame(0).unwrap().projection_matrix[0] * ratio
+        );
+    }
+
+    #[test]
+    fn focal_ratio_matrix_mutation_fails_closed() {
+        let mut trace: serde_json::Value =
+            serde_json::from_slice(&fixture_with_focal_ratio(1.125)).unwrap();
+        trace["frames"][0]["projection_matrix"][0] = serde_json::json!(
+            trace["frames"][0]["projection_matrix"][0].as_f64().unwrap() + 1.0e-6
+        );
+        let error = CameraTrace::from_json_slice(&serde_json::to_vec(&trace).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("projection_matrix[0] mismatch"));
+    }
+
+    #[test]
+    fn focal_ratio_bounds_are_inclusive_and_outside_values_fail_closed() {
+        for ratio in [
+            f64::from(crate::CameraIntrinsics::MIN_FOCAL_LENGTH_X_OVER_Y),
+            f64::from(crate::CameraIntrinsics::MAX_FOCAL_LENGTH_X_OVER_Y),
+        ] {
+            CameraTrace::from_json_slice(&fixture_with_focal_ratio(ratio)).unwrap();
+        }
+        for ratio in [0.0, -1.0, 2.0_f64.powi(-17), 2.0_f64.powi(17)] {
+            let error = CameraTrace::from_json_slice(&fixture_with_focal_ratio(ratio)).unwrap_err();
+            assert!(error.to_string().contains("intrinsics are invalid"));
+        }
     }
 }

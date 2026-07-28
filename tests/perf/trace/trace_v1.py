@@ -11,6 +11,8 @@ from typing import Any
 
 SCHEMA = "gsplat-camera-trace/v1"
 MATRIX_TOLERANCE = 1e-12
+MIN_FOCAL_LENGTH_X_OVER_Y = 2.0**-16
+MAX_FOCAL_LENGTH_X_OVER_Y = 2.0**16
 
 
 def mat4_multiply(a: list[float], b: list[float]) -> list[float]:
@@ -54,11 +56,17 @@ def view_matrix(position: list[float], rotation_xyzw: list[float]) -> list[float
     ]
 
 
-def projection_matrix(vertical_fov_radians: float, near: float, far: float, aspect: float) -> list[float]:
+def projection_matrix(
+    vertical_fov_radians: float,
+    near: float,
+    far: float,
+    aspect: float,
+    focal_length_x_over_y: float = 1.0,
+) -> list[float]:
     f = 1.0 / math.tan(vertical_fov_radians * 0.5)
     depth = far / (far - near)
     return [
-        f / aspect, 0.0, 0.0, 0.0,
+        f * focal_length_x_over_y / aspect, 0.0, 0.0, 0.0,
         0.0, f, 0.0, 0.0,
         0.0, 0.0, depth, -near * depth,
         0.0, 0.0, 1.0, 0.0,

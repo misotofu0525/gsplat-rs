@@ -10,7 +10,16 @@ import pathlib
 import sys
 from typing import Any
 
-from trace_v1 import MATRIX_TOLERANCE, SCHEMA, content_sha256, mat4_multiply, projection_matrix, view_matrix
+from trace_v1 import (
+    MATRIX_TOLERANCE,
+    MAX_FOCAL_LENGTH_X_OVER_Y,
+    MIN_FOCAL_LENGTH_X_OVER_Y,
+    SCHEMA,
+    content_sha256,
+    mat4_multiply,
+    projection_matrix,
+    view_matrix,
+)
 
 
 class ValidationError(ValueError):
@@ -114,7 +123,17 @@ def validate(trace: dict[str, Any]) -> None:
         fov = number(intrinsics.get("vertical_fov_radians"), "vertical_fov_radians")
         near = number(intrinsics.get("near_plane"), "near_plane")
         far = number(intrinsics.get("far_plane"), "far_plane")
-        if not 0.0 < fov < math.pi or near <= 0.0 or far <= near:
+        focal_length_x_over_y = number(
+            intrinsics.get("focal_length_x_over_y", 1.0),
+            "focal_length_x_over_y",
+        )
+        if (
+            not 0.0 < fov < math.pi
+            or near <= 0.0
+            or far <= near
+            or focal_length_x_over_y < MIN_FOCAL_LENGTH_X_OVER_Y
+            or focal_length_x_over_y > MAX_FOCAL_LENGTH_X_OVER_Y
+        ):
             fail(f"frames[{expected_index}].intrinsics are invalid")
 
         actual_view = vector(frame.get("view_matrix"), 16, f"frames[{expected_index}].view_matrix")
@@ -123,7 +142,13 @@ def validate(trace: dict[str, Any]) -> None:
             frame.get("view_projection_matrix"), 16, f"frames[{expected_index}].view_projection_matrix"
         )
         expected_view = view_matrix(position, rotation)
-        expected_projection = projection_matrix(fov, near, far, width / height)
+        expected_projection = projection_matrix(
+            fov,
+            near,
+            far,
+            width / height,
+            focal_length_x_over_y,
+        )
         close_vector(actual_view, expected_view, f"frames[{expected_index}].view_matrix")
         close_vector(actual_projection, expected_projection, f"frames[{expected_index}].projection_matrix")
         close_vector(

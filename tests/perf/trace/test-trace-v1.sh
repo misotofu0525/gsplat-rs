@@ -10,6 +10,8 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 python3 "$TRACE_DIR/validate_trace_v1.py" "$FIXTURE"
+python3 "$TRACE_DIR/test_trace_v1.py"
+node --test "$TRACE_DIR/camera-trace-v1.test.mjs"
 for quality_fixture in "$TRACE_DIR"/fixtures/quality/*.json; do
   python3 "$TRACE_DIR/validate_trace_v1.py" "$quality_fixture"
 done
