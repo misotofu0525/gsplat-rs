@@ -1018,6 +1018,47 @@ class VerificationBootstrapTests(unittest.TestCase):
                 f"fresh-output:{BOOTSTRAP.Q1_QUALITY_OUTPUT_ENV}", failed
             )
 
+    def test_q1_product_quality_profile_rejects_symlinked_truck_before_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            real_truck = root / "real-truck.ply"
+            real_truck.write_bytes(b"ply")
+            truck_alias = root / "truck-alias.ply"
+            truck_alias.symlink_to(real_truck)
+            discovery = BOOTSTRAP.Discovery(
+                env={BOOTSTRAP.Q1_QUALITY_TRUCK_ENV: str(truck_alias)},
+                home=root,
+                which=FakeHost(root).which,
+                capture=FakeHost(root).capture,
+                host_system="Darwin",
+                host_machine="arm64",
+            )
+            with (
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "web_environment",
+                    return_value=([BOOTSTRAP.Probe("web", True, "ready")], {}),
+                ),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "q1_product_quality_platform_probes",
+                    return_value=[BOOTSTRAP.Probe("platform", True, "ready")],
+                ),
+                mock.patch.object(
+                    BOOTSTRAP,
+                    "q1_pinned_puppeteer_probe",
+                    return_value=BOOTSTRAP.Probe("puppeteer", True, "ready"),
+                ),
+            ):
+                result = BOOTSTRAP.profile_result(
+                    "q1-product-quality-view000001", discovery
+                )
+            probe = next(
+                probe for probe in result.probes if probe.key == "q1-complete-truck"
+            )
+            self.assertFalse(probe.ok)
+            self.assertIn("symlinked", probe.remedy or "")
+
     def test_command_display_shell_quotes_environment_and_arguments(self) -> None:
         command = BOOTSTRAP.Command(
             ("tool", "path with spaces"), {"CHROME_PATH": "/Applications/Google Chrome"}

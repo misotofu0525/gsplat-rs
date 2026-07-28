@@ -271,6 +271,14 @@ def file_probe(key: str, path: pathlib.Path, remedy: str) -> Probe:
     )
 
 
+def real_file_probe(key: str, path: pathlib.Path, remedy: str) -> Probe:
+    """Require the caller-visible path itself to be a regular non-symlink file."""
+
+    ok = not path.is_symlink() and path.is_file()
+    detail = f"{path} ({'real file' if ok else 'missing or symlinked'})"
+    return Probe(key=key, ok=ok, detail=detail, remedy=None if ok else remedy)
+
+
 def directory_probe(key: str, path: pathlib.Path, remedy: str) -> Probe:
     return Probe(
         key=key,
@@ -991,10 +999,10 @@ def profile_result(name: str, discovery: Discovery) -> ProfileResult:
                     evaluation / "source/gt/000001.png",
                     "restore the official Truck 000001 ground-truth PNG",
                 ),
-                file_probe(
+                real_file_probe(
                     "q1-complete-truck",
                     truck,
-                    f"set {Q1_QUALITY_TRUCK_ENV} to the complete pinned Truck PLY",
+                    f"set {Q1_QUALITY_TRUCK_ENV} to the real, non-symlinked complete pinned Truck PLY",
                 ),
             )
         )

@@ -261,6 +261,10 @@ GSPLAT_Q1_PRODUCT_QUALITY_OUTPUT=/absolute/fresh/q1-view000001-attempt-1 \
 python3 tests/verification_bootstrap.py run q1-product-quality-view000001
 ```
 
+`GSPLAT_Q1_TRUCK_DATASET` must name the real Truck file, not a worktree
+symlink. The quality producers intentionally reject symlinked immutable inputs;
+the bootstrap doctor applies the same rule before any build or endpoint starts.
+
 The coordinator first fully validates the immutable authorities and complete
 Truck identity. It then invokes the native quality-only producer once, the
 PlayCanvas `quality:truck-view000001` headful 979x546 command once, and the
