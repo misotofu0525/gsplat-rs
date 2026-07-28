@@ -24,6 +24,7 @@ from q1_pair_admission.artifacts import (
     REFERENCE_RUST_TOOLCHAIN_SHA256,
     REFERENCE_SOURCE_PATHS,
     REFERENCE_TRACE_FILE_SHA256,
+    _webgpu_environment_receipt,
     reference_authority,
 )
 from q1_pair_admission.common import ValidationError, canonical_sha256, file_sha256
@@ -86,6 +87,17 @@ PLAYCANVAS_CAMERA_RECEIPTS = json.loads(
     PLAYCANVAS_CAMERA_AUTHORITY_FIXTURE.read_text(encoding="utf-8")
 )["receipts"]
 REPO = pathlib.Path(__file__).parents[2]
+
+
+def node_json(source: str) -> object:
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", source],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
 
 
 def webgpu_limits(offset: int = 0, *, extra: bool = False) -> dict[str, int]:
@@ -691,13 +703,28 @@ def manifest(
         q1["capture_trace_frame_index"] = capture_trace
         if endpoint == "playcanvas":
             q1["renderer_rgba_unavailable_reason"] = PLAYCANVAS_RGBA_UNAVAILABLE
+    dataset = (
+        TRUCK
+        if endpoint == "playcanvas"
+        else {
+            "id": "truck.ply",
+            "logical_id": "truck",
+            "source_path": (
+                "/tests/datasets/external/inria_3dgs/truck/point_cloud.ply"
+            ),
+            "sha256": TRUCK["sha256"],
+            "bytes": TRUCK["bytes"],
+            "splat_count": TRUCK["splat_count"],
+            "sh_degree": TRUCK["sh_degree"],
+        }
+    )
     return {
         "schema": "gsplat-benchmark/v1",
         "record_type": "manifest",
         "run_id": run_id,
         "identity": {"series_id": series_id, "started_at_utc": started_at, "ended_at_utc": ended_at, "measurement_started_at_utc": started_at, "measurement_ended_at_utc": ended_at},
         "build": build,
-        "dataset": TRUCK,
+        "dataset": dataset,
         "trace": {**TRACE, "camera_mode": "trace_sequence"},
         "renderer": renderer,
         "display": {"width": WIDTH, "height": HEIGHT, "dpr": 1, "refresh_hz": 60, "frame_budget_ms": 16.666666666666668, "refresh_hz_source": "configured", "frame_budget_source": "configured"},
@@ -1112,6 +1139,85 @@ class ScheduleAndAdmissionTests(unittest.TestCase):
             result["reference_authority"]["receipt_path"],
             "reference-authority/reference.json",
         )
+
+    def test_gsplat_control_uses_the_real_web_producer_dataset_identity(self) -> None:
+        manifest_path = self.root / (
+            "pairs/pair-01/gsplat_rs/control-trace-0/manifest.json"
+        )
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+        producer_dataset = node_json(
+            "import { canonicalFormalDatasetIdentity } from "
+            "'./examples/web/src/dataset-identity.mjs';"
+            "console.log(JSON.stringify(canonicalFormalDatasetIdentity('truck')));"
+        )
+        self.assertEqual(value["dataset"], producer_dataset)
+        self.assertEqual(evaluate(self.schedule)["state"], "Deferred")
+
+    def test_gsplat_webgpu_environment_owner_crosses_python_admission(self) -> None:
+        fields = node_json(
+            "import { Q1_CANONICAL_WEBGPU_SUPPORTED_LIMITS as names, "
+            "gsplatQ1WebGpuEnvironmentFields as fields } from "
+            "'./tests/perf/q1-webgpu-environment.mjs';"
+            "const limits=Object.fromEntries(names.map((name,index)=>[name,index+1]));"
+            "limits.maxComputeWorkgroupsPerDimension=65535;"
+            "limits.maxComputeWorkgroupStorageSize=32768;"
+            "limits.endpointOnlyLimit=999;"
+            "const receipt={schema:'gsplat-renderer-surface-device/v1',"
+            "provenance:'renderer_owned_surface_session',"
+            "adapterSelectionClass:'high_performance',"
+            "adapter:{identityStatus:'unavailable_wgpu28_web_backend',"
+            "backend:'browser_webgpu',name:'',vendorId:0,deviceId:0,"
+            "deviceType:'other',driver:'',driverInfo:''},"
+            "supportedAdapterLimits:limits,effectiveDeviceLimits:limits};"
+            "console.log(JSON.stringify(fields(receipt)));"
+        )
+        source = {
+            "canonical_adapter_supported_limits_sha256": fields[
+                "canonical_adapter_supported_limits_sha256"
+            ],
+            "adapter_supported_limits_sha256": fields[
+                "adapter_supported_limits_sha256"
+            ],
+            "device_effective_limits_sha256": fields[
+                "device_effective_limits_sha256"
+            ],
+            "webgpu_device_environment_receipt": fields[
+                "webgpu_device_environment_receipt"
+            ],
+        }
+        admitted = _webgpu_environment_receipt(
+            source, "gsplat_rs", "cross_language_gsplat_control.environment"
+        )
+        self.assertEqual(
+            admitted["adapter_supported_limits_sha256"],
+            fields["adapter_supported_limits_sha256"],
+        )
+
+    def test_gsplat_control_file_dataset_id_drift_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["dataset"].__setitem__("id", "truck-full"),
+        )
+        with self.assertRaisesRegex(ValidationError, "dataset identity mismatch"):
+            evaluate(self.schedule)
+
+    def test_gsplat_control_logical_dataset_id_drift_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["dataset"].__setitem__("logical_id", "truck-full"),
+        )
+        with self.assertRaisesRegex(ValidationError, "dataset identity mismatch"):
+            evaluate(self.schedule)
+
+    def test_gsplat_control_source_path_drift_is_rejected(self) -> None:
+        self.mutate_manifest(
+            "pairs/pair-01/gsplat_rs/control-trace-0",
+            lambda value: value["dataset"].__setitem__(
+                "source_path", "/tests/datasets/external/inria_3dgs/truck/other.ply"
+            ),
+        )
+        with self.assertRaisesRegex(ValidationError, "dataset identity mismatch"):
+            evaluate(self.schedule)
 
     def test_arbitrary_self_consistent_png_is_not_a_reference_authority(self) -> None:
         arbitrary = self.root / "arbitrary.png"

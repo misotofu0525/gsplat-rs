@@ -23,6 +23,7 @@ from .contract import (
     CANONICAL_SUPPORTED_LIMIT_NAMES,
     CANONICAL_SUPPORTED_LIMITS_SCHEMA,
     COMMON_ENVIRONMENT_FIELDS,
+    GSPLAT_TRUCK_ARTIFACT_DATASET,
     HEIGHT,
     IMAGE_SCHEMA,
     MEASURED,
@@ -31,6 +32,7 @@ from .contract import (
     TRACE,
     TRACE_FRAME_POSE_INTRINSICS_SHA256,
     TRUCK,
+    TRUCK_REFERENCE_AUTHORITY_DATASET_ID,
     WARMUP,
     WIDTH,
     WEBGPU_ENVIRONMENT_SCHEMA,
@@ -668,10 +670,15 @@ def _renderer(manifest: dict[str, Any], endpoint: str, context: str) -> None:
             fail(f"{context}.renderer.{key} must equal {value!r}")
 
 
-def _common(manifest: dict[str, Any], context: str) -> None:
-    for key, value in TRUCK.items():
-        if obj(manifest, "dataset", context).get(key) != value:
-            fail(f"{context}.dataset.{key} mismatch")
+def _common(manifest: dict[str, Any], endpoint: str, context: str) -> None:
+    # The schedule uses the source-manifest id, while each producer retains its
+    # canonical artifact namespace. Both forms remain strictly bound to the
+    # same immutable Truck bytes, count, and SH degree.
+    expected_dataset = (
+        TRUCK if endpoint == "playcanvas" else GSPLAT_TRUCK_ARTIFACT_DATASET
+    )
+    if obj(manifest, "dataset", context) != expected_dataset:
+        fail(f"{context}.dataset identity mismatch for {endpoint}")
     trace = obj(manifest, "trace", context)
     for key, value in TRACE.items():
         if trace.get(key) != value:
@@ -1036,7 +1043,7 @@ def artifact(
         fail(f"{context} started before schedule declaration")
     if ended <= started:
         fail(f"{context} ended before it started")
-    _common(manifest, context)
+    _common(manifest, endpoint, context)
     _renderer(manifest, endpoint, context)
     commit, build_artifacts = _build(root, manifest, endpoint, context)
     environment = _environment(manifest, endpoint, context)
@@ -1289,7 +1296,7 @@ def _reference_authority(
         "path": "tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
         "bytes": TRUCK["bytes"],
         "sha256": TRUCK["sha256"],
-        "id": "truck-full",
+        "id": TRUCK_REFERENCE_AUTHORITY_DATASET_ID,
         "splat_count": TRUCK["splat_count"],
         "sh_degree": TRUCK["sh_degree"],
     }

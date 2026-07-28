@@ -1154,3 +1154,34 @@ contributor remains rejected. This is a producer artifact repair only. It does
 not modify the validator, competitor engine, rendering, timing, camera, or
 quality policy; it ran no browser or formal experiment and authorizes no
 automatic retry.
+
+### Q1 formal attempt 3 terminal and cross-language identity repair (2026-07-28)
+
+The separately declared attempt 3 at reviewed root SHA
+`7693a07c1ee471f62df0df4e7ebef240bef2a5eb` completed both gsplat-rs control
+views and stopped before its first throughput invocation. PlayCanvas did not
+run, no timed endpoint pair exists, and the immutable attempt supports no
+quality or performance comparison. The retained blocker records that offline
+admission expected the schedule/source-manifest dataset id while the real
+gsplat-rs Web producer emitted its canonical file/logical identity.
+
+The repair makes the artifact admission namespace explicit. The schedule and
+PlayCanvas remain bound to `inria-3dgs-truck-iteration-30000`; gsplat-rs must
+instead emit exactly `truck.ply`, logical id `truck`, and the frozen Web source
+path. Both forms still require identical source hash, bytes, splat count and SH
+degree. The Direct-f32 reference authority keeps its separate `truck-full`
+suite id. Drift in any gsplat-rs identity component fails closed.
+
+Replaying the two real attempt-3 controls after that fix exposed one additional
+cross-language mismatch before a fourth browser attempt: JavaScript used
+locale-sensitive key ordering for the selected adapter/device limit hashes,
+while Python admission used code-point ordering. The producer now uses explicit
+code-point ordering. Node tests bind those hashes, and Python invokes the real
+JavaScript dataset/environment owners before exercising offline admission.
+With only the two known old locale-sensitive hashes normalized in memory for
+diagnosis, both retained attempt-3 controls cross the complete artifact
+admission path; no other field drift remains. The retained files themselves
+were not changed. A new formal attempt still requires a new reviewed SHA,
+regenerated same-SHA authority and Wasm artifacts, a fresh series root, two
+identical dry runs and a separate go/no-go decision. Automatic retry remains
+disabled.

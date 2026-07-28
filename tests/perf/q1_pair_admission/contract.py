@@ -117,6 +117,19 @@ TRUCK = {
     "splat_count": 2_541_226,
     "sh_degree": 3,
 }
+# Endpoint manifests keep the identity namespace of their producer.  The Q1
+# schedule above uses the source-manifest id, while gsplat-rs records the Web
+# request identity that is owned by dataset-identity.mjs.
+GSPLAT_TRUCK_ARTIFACT_DATASET = {
+    "id": "truck.ply",
+    "logical_id": "truck",
+    "source_path": "/tests/datasets/external/inria_3dgs/truck/point_cloud.ply",
+    "sha256": TRUCK["sha256"],
+    "bytes": TRUCK["bytes"],
+    "splat_count": TRUCK["splat_count"],
+    "sh_degree": TRUCK["sh_degree"],
+}
+TRUCK_REFERENCE_AUTHORITY_DATASET_ID = "truck-full"
 TRACE = {
     "id": "candidate-truck-quality-2view-1920x1080-v1",
     "sha256": "34d47dbddf73d915bfd55431b33da9430882767a40d9d74c636c508f7d7a5ab3",

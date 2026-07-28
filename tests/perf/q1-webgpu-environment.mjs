@@ -54,7 +54,12 @@ function normalizedLimits(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError(`Q1 ${label} must be an object`);
   }
-  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  // Use the language-independent JSON member order also used by the Python
+  // admission contract. localeCompare is locale-sensitive and orders prefix
+  // pairs such as Workgroups/WorkgroupStorage differently from code-point
+  // order, producing a hash that the consumer cannot reproduce.
+  const entries = Object.entries(value).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0);
   if (entries.length === 0 || entries.some(([name, limit]) =>
     !/^[a-z][A-Za-z0-9]*$/.test(name)
       || !Number.isSafeInteger(limit) || limit < 0)) {

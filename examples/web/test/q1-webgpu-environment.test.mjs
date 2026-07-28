@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -28,6 +29,14 @@ function surfaceReceipt(adapterLimits = supportedLimits, deviceLimits = supporte
     supportedAdapterLimits: adapterLimits,
     effectiveDeviceLimits: deviceLimits,
   };
+}
+
+function canonicalSha256(value) {
+  const canonical = Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0),
+  );
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 test("Q1 gsplat receipt uses the accepted selected adapter/device schema", () => {
@@ -77,6 +86,32 @@ test("Q1 canonical adapter identity fails closed on selected-adapter drift", () 
     ...supportedLimits,
     maxBufferSize: undefined,
   })), /invalid limit/);
+});
+
+test("Q1 selected limit hashes use cross-language code-point ordering", () => {
+  const adapterLimits = {
+    ...supportedLimits,
+    maxComputeWorkgroupsPerDimension: 65535,
+    maxComputeWorkgroupStorageSize: 32768,
+    endpointOnlyLimit: 999,
+  };
+  const deviceLimits = {
+    ...supportedLimits,
+    maxComputeWorkgroupsPerDimension: 32768,
+    maxComputeWorkgroupStorageSize: 16384,
+    endpointDeviceLimit: 123,
+  };
+  const fields = gsplatQ1WebGpuEnvironmentFields(
+    surfaceReceipt(adapterLimits, deviceLimits),
+  );
+  assert.equal(
+    fields.adapter_supported_limits_sha256,
+    canonicalSha256(adapterLimits),
+  );
+  assert.equal(
+    fields.device_effective_limits_sha256,
+    canonicalSha256(deviceLimits),
+  );
 });
 
 test("Q1 gsplat receipt rejects a separately selected or named adapter", () => {
