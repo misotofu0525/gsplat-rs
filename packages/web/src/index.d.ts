@@ -133,6 +133,29 @@ export interface GsplatSurfaceSize {
   height: number;
 }
 
+export interface GsplatCameraIntrinsics {
+  verticalFovRadians: number;
+  nearPlane: number;
+  farPlane: number;
+  /** Optional centered-pinhole calibration. Omission preserves the legacy value 1. */
+  focalLengthXOverY?: number;
+}
+
+export interface GsplatCamera {
+  position: [number, number, number];
+  rotationXyzw: [number, number, number, number];
+  intrinsics: GsplatCameraIntrinsics;
+}
+
+export interface GsplatCameraReceipt {
+  position: number[];
+  rotationXyzw: number[];
+  intrinsics: Omit<GsplatCameraIntrinsics, "focalLengthXOverY"> & {
+    /** Actual published value, including 1 for a legacy ten-value native receipt. */
+    focalLengthXOverY: number;
+  };
+}
+
 export interface GsplatFailureResource {
   kind: string;
   required_bytes: number;
@@ -498,6 +521,10 @@ export class GsplatWebRenderer {
   /** Transactionally resize and resolve only after native publication. */
   resize(width: number, height: number): Promise<void>;
   resetCamera(): void;
+  /** Publish one validated camera; calibrated centered pinholes may include fx/fy. */
+  setCamera(camera: GsplatCamera): void;
+  /** Return the actual camera currently published by the native Surface session. */
+  cameraReceipt(): GsplatCameraReceipt;
   orbit(deltaYawRadians: number, deltaPitchRadians: number): void;
   zoom(distanceScale: number): void;
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
