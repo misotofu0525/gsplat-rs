@@ -118,6 +118,10 @@
   Surface queue submission remains unpublished until the matching primitive
   presentation succeeds; abort, resize, stale or duplicate completion cannot
   publish frame state or policy evidence
+  Surface configuration uses portable non-sRGB `Bgra8Unorm`/`Rgba8Unorm`
+  attachments because PLY/SH evaluation produces training-image-domain RGB;
+  selecting an sRGB attachment would apply a second display transfer before
+  presentation and is rejected rather than treated as full quality
   native offscreen Packed and product Packed Surface both consume this runtime;
   the C, Web and mobile wrappers remain adapters around the shared session
 

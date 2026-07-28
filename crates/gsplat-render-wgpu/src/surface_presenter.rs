@@ -19,7 +19,7 @@ use crate::surface::shadow::{
 };
 use crate::surface::{
     CpuCompletionSampleRequest, StandaloneSessionRuntime, SurfaceConfigurationOwner,
-    SurfaceLifecycle, create_surface_instance, select_present_mode,
+    SurfaceLifecycle, create_surface_instance, select_present_mode, select_splat_surface_format,
 };
 use crate::{
     DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
@@ -345,7 +345,7 @@ impl SurfacePresenterHost {
             })?;
 
         let caps = surface.get_capabilities(&adapter);
-        let Some(format) = caps.formats.first().copied() else {
+        let Some(format) = select_splat_surface_format(&caps.formats) else {
             return Err(SurfacePresenterError::NoSurfaceFormat);
         };
         let present_mode = select_present_mode(&caps);

@@ -15,7 +15,7 @@ mod standalone_session_runtime;
 
 pub(crate) use capture::SurfaceCapture;
 pub use capture::SurfaceFrameCapture;
-pub(crate) use configuration::SurfaceConfigurationOwner;
+pub(crate) use configuration::{SurfaceConfigurationOwner, select_splat_surface_format};
 pub use current_stats::{
     SurfaceCurrentStatsCountSemantics, SurfaceCurrentStatsCounts, SurfaceCurrentStatsFailure,
     SurfaceCurrentStatsFrameIdentity, SurfaceCurrentStatsJoinIdentity, SurfaceCurrentStatsPlan,

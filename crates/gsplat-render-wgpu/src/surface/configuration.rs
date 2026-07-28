@@ -1,5 +1,23 @@
 use crate::SurfacePresenterError;
 
+/// Select an attachment that preserves the trained image-domain splat colors.
+///
+/// Resident/Direct SH evaluation produces the same display-encoded RGB values
+/// as the source training images and the reference raster. An sRGB attachment
+/// would encode those values a second time before presentation. Keep adapter
+/// order within the portable 8-bit non-sRGB formats, and fail closed instead
+/// of silently changing the release-gated image contract.
+pub(crate) fn select_splat_surface_format(
+    formats: &[wgpu::TextureFormat],
+) -> Option<wgpu::TextureFormat> {
+    formats.iter().copied().find(|format| {
+        matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+        )
+    })
+}
+
 /// Published Surface descriptor and its fail-closed reconfiguration state.
 pub(crate) struct SurfaceConfigurationOwner {
     config: wgpu::SurfaceConfiguration,
@@ -338,6 +356,39 @@ fn classify_surface_configure_scope_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splat_surface_format_uses_non_srgb_image_domain_attachment() {
+        assert_eq!(
+            select_splat_surface_format(&[
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Rgba16Float,
+            ]),
+            Some(wgpu::TextureFormat::Bgra8Unorm)
+        );
+        assert_eq!(
+            select_splat_surface_format(&[
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Bgra8Unorm,
+            ]),
+            Some(wgpu::TextureFormat::Rgba8Unorm),
+            "adapter order remains authoritative within exact formats"
+        );
+    }
+
+    #[test]
+    fn splat_surface_format_rejects_double_encoding_and_hdr_substitution() {
+        assert_eq!(
+            select_splat_surface_format(&[
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                wgpu::TextureFormat::Rgba16Float,
+            ]),
+            None
+        );
+        assert_eq!(select_splat_surface_format(&[]), None);
+    }
 
     fn owner(valid: bool) -> SurfaceConfigurationOwner {
         SurfaceConfigurationOwner {

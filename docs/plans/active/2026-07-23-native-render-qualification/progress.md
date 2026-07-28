@@ -1894,3 +1894,56 @@ paired-series camera-authority import remains independently Deferred and was
 not regenerated. No browser, device or endpoint was run by this correction;
 Product Quality remains Deferred pending a committed fixed-SHA review and one
 new explicitly authorized one-shot transaction.
+
+Fixed-SHA review accepted `bb72e3f` with no P0/P1/P2. Doctor and command were
+READY for the clean exact SHA, real complete Truck file, frozen formal trace,
+upstream Evaluation Images authority and a fresh output. The one authorized
+transaction completed Native Metal, PlayCanvas Chrome/WebGPU and the offline
+gate exactly once, with no automatic retry or blocker. It atomically published
+`target/qualification/q1-product-quality-view000001-bb72e3f-attempt1/` and kept
+performance unauthorized.
+
+The result is a finite one-view **Rejected**, not an infrastructure failure.
+Both endpoints prove all 2,541,226 source/decoded/encoded/resident/addressable
+SH3 splats, the same formal camera, exact 979x546 internal and presented
+dimensions, disabled LOD/sampling/dynamic resolution/upscaling, and terminal
+renderer-owned capture. Against the upstream `000001` evaluation image and the
+frozen thresholds (`SSIM >= 0.9`, normalized RGB MAE `<= 0.05`, severe-error
+fraction `<= 0.1`):
+
+- gsplat-rs: SSIM `0.773723`, RGB MAE `0.214800`, severe-error fraction
+  `0.941828`; state `Rejected`.
+- PlayCanvas: SSIM `0.839865`, RGB MAE `0.045764`, severe-error fraction
+  `0.093857`; state `Rejected` because SSIM misses the threshold.
+
+The native image is visibly washed out relative to both PlayCanvas and the
+upstream reference. PlayCanvas is substantially closer and passes the two
+absolute RGB error limits, but this formal result does not grant it a quality
+pass. Product Quality remains `Deferred` because the protocol also requires a
+second formal view; that second view and all performance work remain frozen
+while view `000001` is already Rejected. The next work is mechanism diagnosis
+and a separately reviewed minimal quality correction, not another endpoint
+retry or threshold relaxation.
+
+The native failure is now attributed to a single cross-endpoint transfer-
+function mismatch. Exact SH evaluation produces the display-encoded RGB values
+fitted to the training images. Native `SurfacePresenter` selected the first
+wgpu capability format; wgpu-core sorts sRGB formats first, so Metal used
+`Bgra8UnormSrgb` and hardware encoded those already encoded values a second
+time. Chrome/WebGPU and PlayCanvas use non-sRGB unorm attachments, while the
+accepted native offscreen oracle uses `Rgba8Unorm`. Capture itself only copies
+and BGRA/RGBA-swizzles bytes and did not create the transfer.
+
+The mechanism is quantitatively falsifiable: applying one standard diagnostic
+sRGB decode to the retained native PNG changes its frozen metrics to SSIM
+`0.909817`, normalized RGB MAE `0.026991` and severe-error fraction `0.034875`,
+which all pass without changing geometry, SH, alpha, sorting, raster or
+thresholds. The minimal correction makes Surface configuration select only
+adapter-supported `Bgra8Unorm`/`Rgba8Unorm` in adapter order and fail closed
+instead of substituting sRGB or HDR formats. Two pure format tests cover Metal
+sRGB-first capabilities, Web ordering and unsupported fallback. Renderer lib
+tests pass `489/489` with eight existing research ignores; host production
+Clippy, wasm32 check, formatting and source architecture pass. All-target
+Clippy remains independently Deferred on two pre-existing unread test-owner
+limit fields. No endpoint has run after this correction; a new one-shot remains
+unauthorized until the change is committed and fixed-SHA reviewed.
