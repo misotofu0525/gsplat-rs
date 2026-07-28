@@ -582,7 +582,9 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
                 "manifest_sha256": str(trace + 1) * 64,
                 "configuration": plan["configuration_sha256"],
                 "environment": {
-                    "collection_session_id": self.args.collection_session_id,
+                    "identity": {
+                        "collection_session_id": self.args.collection_session_id,
+                    },
                 },
             })
         with mock.patch.object(
@@ -1047,7 +1049,11 @@ class Q1TruckPairedSeriesTests(unittest.TestCase):
             "commit": self.args.reviewed_sha,
             "manifest_sha256": "1" * 64,
             "configuration": "2" * 64,
-            "environment": {"collection_session_id": self.args.collection_session_id},
+            "environment": {
+                "identity": {
+                    "collection_session_id": self.args.collection_session_id,
+                },
+            },
         }
         with mock.patch.object(COLLECTOR, "admit_artifact", return_value=bad):
             with self.assertRaisesRegex(COLLECTOR.OrchestrationError, "configuration"):

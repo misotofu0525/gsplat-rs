@@ -1185,3 +1185,24 @@ were not changed. A new formal attempt still requires a new reviewed SHA,
 regenerated same-SHA authority and Wasm artifacts, a fresh series root, two
 identical dry runs and a separate go/no-go decision. Automatic retry remains
 disabled.
+
+### Q1 formal attempt 4 terminal and admitted-environment join repair (2026-07-28)
+
+The separately declared attempt 4 at reviewed root SHA
+`a9a85e48291ffcf191b1c94959f4a4e493608ba9` completed the two PlayCanvas
+control views and stopped before PlayCanvas throughput. No gsplat-rs endpoint
+or timed endpoint pair ran, so this immutable attempt supports no quality or
+performance comparison. Its blocker keeps automatic retry disabled.
+
+Both controls contained the exact declared `collection_session_id`; the
+orchestrator read the wrong level of its own admitted DTO. Artifact admission
+returns environment evidence as `{identity, cross_identity, thermal}`, but the
+throughput resolver looked for `collection_session_id` beside those owners
+instead of inside `identity`. The repair reads the already-validated endpoint
+identity without changing either producer, the environment contract, or any
+render/timing behavior. Focused orchestration fixtures now use the real nested
+admission shape so this owner boundary cannot be hidden by a flat mock.
+
+A later formal attempt still requires a new reviewed SHA, regenerated same-SHA
+authority and Wasm assets, a fresh root, identical dry runs and a separate
+go/no-go. Attempt 4 is retained unchanged and is never reused.

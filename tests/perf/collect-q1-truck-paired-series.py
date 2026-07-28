@@ -2090,7 +2090,7 @@ def resolve_throughput(invocation: dict[str, Any], root: pathlib.Path) -> None:
             f"control trace {trace} build commit differs from the reviewed command",
         )
         require(
-            control["environment"].get("collection_session_id")
+            control["environment"]["identity"].get("collection_session_id")
             == expected["collection_session_id"],
             f"control trace {trace} collection session differs from the declared command",
         )
