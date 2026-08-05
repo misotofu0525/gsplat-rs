@@ -1,13 +1,20 @@
 # Native Render Core Refactor
 
-> Status: active design and execution plan
+> Status: frozen research archive; not a whole-branch integration candidate
 > Created: 2026-07-23
+> Research disposition: [research-branch-summary.md](research-branch-summary.md)
 > Planning baseline: `codex/full-quality-native-rendering` at `5db2520`
 > Integration baseline: to be frozen by A0 before implementation starts
 > Route owner: this file
 > Architecture contract: [architecture.md](architecture.md)
 > Verification contract: [benchmark_protocol.md](benchmark_protocol.md)
 > Current-task ledger: [progress.md](progress.md)
+
+The plan records useful architecture and experiment work, but its execution
+expanded far beyond a reviewable product refactor. The branch is retained as a
+research source. It must not be merged or presented as a completed replacement
+for `main`; later product work may carry forward only narrow, independently
+reviewed slices identified in the research disposition.
 
 ## 1. Why this plan exists
 

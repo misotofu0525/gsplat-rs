@@ -1,5 +1,9 @@
 # Package A Final Report
 
+> Historical package report only. The aggregate branch was subsequently
+> frozen as a research archive and is not a whole-branch integration
+> candidate. See [research-branch-summary.md](research-branch-summary.md).
+
 ## Outcome
 
 Package A is accepted at `ad0cc484a9764bcf0d2fd861af1bffc454050c24`
