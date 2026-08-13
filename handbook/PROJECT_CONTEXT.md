@@ -35,7 +35,7 @@
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-io-spz`: experimental bounded SPZ v4 parsing and scene buffer construction
-- `crates/gsplat-sort`: CPU sort backend and ordering utilities
+- `crates/gsplat-sort`: CPU radix sort backend and ordering utilities
 - `crates/gsplat-render-wgpu`: resident scene resources, preprocessing, ordering policy, and shared Surface/offscreen rendering
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
@@ -69,8 +69,10 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
-- Move the resident path toward GPU-visible compaction, portable radix sorting,
-  and indirect drawing.
+- Follow the roadmap execution sequence: quantized resident storage plus
+  per-splat compute preprocessing next, then GPU-visible compaction, portable
+  radix sorting, and indirect drawing. The Phase 0 crate split and vestige
+  deletion has landed.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.

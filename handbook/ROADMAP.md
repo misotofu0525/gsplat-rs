@@ -9,6 +9,12 @@ transient research belong under `docs/plans/`.
 
 - `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust +
   `wgpu`.
+- The product thesis is an embeddable, mobile-first splat renderer: one small
+  Rust/`wgpu` core behind a stable C ABI, packaged as local AAR, XCFramework,
+  and npm slices, judged on bytes, frame time, and sustained power on phones.
+- On Web the target is renderer-versus-renderer parity with PlayCanvas on
+  matched scenes through `tests/competitive/playcanvas`, not engine or editor
+  breadth.
 - The project remains on the `0.1.x` line and keeps a deliberately small release
   surface while the core render path is validated across real scenes and devices.
 - `SortedAlpha` is the only quality-guaranteed render mode.
@@ -58,6 +64,10 @@ transient research belong under `docs/plans/`.
 - Scene attributes stay GPU-resident. CPU refreshes upload compact
   sorted source IDs; projection, covariance use, SH evaluation, and rasterization
   remain on the GPU.
+- Projection and SH evaluation currently run in the vertex stage for each of
+  the six quad vertices per splat, and attributes are stored full-f32
+  (~244 bytes per degree-3 splat). Both facts drive the data-plane items in
+  the execution sequence below.
 - Mobile keeps the default CPU sort interval of 2. Identical redraws reuse the
   existing order, and native CPU ordering can use the bounded `AsyncLatest`
   schedule.
@@ -74,6 +84,13 @@ transient research belong under `docs/plans/`.
   slower than CPU in every paired ladder comparison. CPU therefore remains the
   default. See
   [`2026-07-22-adaptive-sort-experiment/report.md`](../docs/plans/completed/2026-07-22-adaptive-sort-experiment/report.md).
+- That result is scoped to the tested baseline, which sorts the full
+  uncompacted scene and serializes its global prefix scan in a single
+  workgroup. External device evidence (PlayCanvas engine PR #8620) shows a
+  multi-pass 4-bit radix design with a hierarchical scan and no subgroup
+  dependency performing well on Apple and Android SoCs, so portable GPU
+  ordering remains open pending the corrected, compacted candidate sequenced
+  below.
 
 ### Scene-aware Surface limits
 
@@ -91,71 +108,115 @@ transient research belong under `docs/plans/`.
 
 ## Strategic Execution Sequence
 
-### 1. GPU-visible compaction and indirect drawing
+The 2026-08-13 strategy diagnosis reordered this sequence around mobile
+memory-bandwidth reality: fix structure, then the data plane, then visibility
+and ordering, then streaming. Research evidence and per-idea accept/reject
+reasoning live in
+[`2026-08-13-sdk-strategy-diagnosis/findings.md`](../docs/plans/completed/2026-08-13-sdk-strategy-diagnosis/findings.md).
 
-Build a resident-scene experimental preprocess stage that:
+### 1. Structural debt paydown and internal render-stage decomposition
 
-- performs GPU frustum/footprint visibility evaluation;
-- compacts visible source IDs and depth keys without CPU readback;
-- writes sort-dispatch and draw-indirect arguments from the compacted count;
-- records into the caller-owned frame encoder and shares the existing resident
-  scene buffers and shader contract;
-- preserves CPU ordering as the default and deterministic fallback.
+The crate split and vestige deletion landed on 2026-08-13. Evidence:
+[`2026-08-13-phase-0-structural-debt`](../docs/plans/completed/2026-08-13-phase-0-structural-debt/).
 
-Promotion evidence must cover empty scenes, dispatch tails, near/far and
-screen-edge cases, degenerate covariance, duplicate-depth tie behavior,
-swapchain timeout/retry behavior, CPU image parity, and Web/WASM portability.
+Keep behavior identical while making the render crate safe to iterate on.
+The remaining rule for new GPU work:
 
-### 2. Portable production-candidate GPU ordering
-
-Evaluate a compacted-input GPU sorter separately from the current baseline:
-
-- compare a four-pass 8-bit radix or another portable parallel-prefix design
-  against the existing eight-pass 4-bit implementation;
-- retain deterministic back-to-front order with ascending source-ID tie order;
-- sort only the compacted visible count and consume the result in the resident draw;
-- keep pipeline creation outside measured frames and preserve same-frame CPU
-  fallback on execution errors;
-- feed the candidate through existing Adaptive telemetry rather than adding a
-  repository-wide point-count threshold.
-
-No GPU backend becomes the default from a kernel microbenchmark alone. Promotion
-requires end-to-end paired results and image gates on representative Android,
-Apple, desktop, and browser adapters.
-
-### 3. Compressed resident storage profiles
-
-Prototype explicit, capability-gated resident profiles:
-
-- retain the current full-f32 profile as the quality reference;
-- evaluate f16 and normalized-i8 SH storage with GPU-side SH evaluation;
-- evaluate covariance representation only as a separate measured choice;
-- keep profile selection explicit and out of the stable C ABI initially;
-- report source, CPU, and GPU bytes separately and validate requested binding
-  sizes before allocation.
-
-Each profile needs real-scene SSIM/error analysis, capacity measurements,
-first-frame cost, sustained frame behavior, and cross-backend shader coverage.
-Compressed resident storage may extend capacity, but it is not streaming
-and must not be described as such.
-
-### 4. Internal render-stage decomposition
-
-Implement new GPU work through narrow internal stages rather than growing
-another platform-specific state machine:
-
-- a preprocess stage owns visibility, compaction, keys, and indirect arguments;
-- an ordering stage owns CPU/GPU backend encoding and deterministic fallback;
-- a draw stage owns resident render-pass encoding;
-- `SurfaceRenderSession` continues to own scheduling, dirtiness, camera
-  revisions, presentation policy, and telemetry.
+- implement new GPU work through narrow internal stages rather than another
+  platform-specific state machine: a preprocess stage owns visibility,
+  compaction, keys, and indirect arguments; an ordering stage owns CPU/GPU
+  backend encoding and deterministic fallback; a draw stage owns resident
+  render-pass encoding; `SurfaceRenderSession` continues to own scheduling,
+  dirtiness, camera revisions, presentation policy, and telemetry.
 
 Stages may accept internal `wgpu` resources and a caller-owned encoder, but raw
 `wgpu` types do not enter the stable C, JNI, Swift, or Web package contracts.
 Do not create a new crate until the existing `gsplat-render-wgpu` boundaries are
 proven insufficient.
 
-### 5. Evidence before policy or API promotion
+### 2. Quantized resident storage and per-splat compute preprocessing
+
+Change the data plane before optimizing ordering. On bandwidth-limited mobile
+GPUs this is the highest-leverage step: it cuts per-frame attribute traffic
+and raises the capacity ceiling at the same time.
+
+- Prototype an explicit, capability-gated quantized resident profile aligned
+  with SPZ field semantics: f16/fixed-point positions, smallest-three
+  rotations, log-encoded `u8` scales, and `u8`-quantized SH split into
+  per-degree sidecar bindings, decoded in-shader. Target a hot record at or
+  below 32 bytes per splat so degree-3 scenes of one million splats fit
+  within the retained 128 MiB binding evidence.
+- Retain the current full-f32 profile as the quality reference. Keep profile
+  selection explicit and out of the stable C ABI initially. Report source,
+  CPU, and GPU bytes separately and validate requested binding sizes before
+  allocation.
+- Move projection, covariance, and SH evaluation into a per-splat compute
+  preprocess pass that writes compact projected records once per refresh; the
+  vertex/fragment stages consume those records instead of re-evaluating them
+  for every quad vertex. CPU ordering stays unchanged and composes with this
+  step.
+
+Each profile needs real-scene SSIM/error analysis, capacity measurements,
+first-frame cost, sustained frame behavior, and cross-backend shader coverage.
+Compressed resident storage may extend capacity, but it is not streaming
+and must not be described as such.
+
+### 3. GPU-visible compaction, portable GPU ordering, and indirect drawing
+
+Build on the compute preprocess stage from item 2:
+
+- perform GPU frustum/footprint visibility evaluation, then compact visible
+  source IDs and depth keys without CPU readback;
+- write sort-dispatch and draw-indirect arguments from the compacted count;
+- record into the caller-owned frame encoder and share the existing resident
+  scene buffers and shader contract;
+- replace the serial single-workgroup global prefix scan in the retired
+  baseline with a hierarchical or wait-free scan; keep the multi-pass 4-bit
+  radix digit width as the portable primary (no subgroup or forward-progress
+  dependency); treat subgroup-accelerated variants as capability-gated
+  experiments only;
+- retain deterministic back-to-front order with ascending source-ID tie
+  order; sort only the compacted visible count and consume the result in the
+  resident draw;
+- keep pipeline creation outside measured frames and preserve same-frame CPU
+  fallback on execution errors; feed the candidate through existing Adaptive
+  telemetry rather than adding a repository-wide point-count threshold;
+- re-run the retained Adreno ladder after items 1-2 land so the GPU-vs-CPU
+  default decision reflects the corrected candidate, not the retired
+  baseline.
+
+Promotion evidence must cover empty scenes, dispatch tails, near/far and
+screen-edge cases, degenerate covariance, duplicate-depth tie behavior,
+swapchain timeout/retry behavior, CPU image parity, and Web/WASM portability.
+No GPU backend becomes the default from a kernel microbenchmark alone.
+Promotion requires end-to-end paired results and image gates on representative
+Android, Apple, desktop, and browser adapters.
+
+### 4. Ecosystem-aligned streaming and level of detail
+
+- Promote the bounded SPZ v4 loader into the product surface: select and
+  verify concrete desktop, C ABI scene-from-memory, mobile, and Web
+  consumers.
+- Add read support for PlayCanvas Streamed SOG (spatial-tree metadata plus
+  chunked payloads) so assets produced by the open `splat-transform`
+  toolchain stream directly.
+- Design streaming metadata-first with bounded compressed/decoded caches,
+  asynchronous decode, spatial hierarchy/LOD, and independently measured
+  source/CPU/GPU budgets, honoring the retired Packed/Paged lessons: no
+  hidden fallback, no fixed-slot revival.
+- Do not invent a proprietary scene format. Track the Khronos
+  `KHR_gaussian_splatting` glTF extension and its planned SPZ streaming
+  extension as they ratify.
+
+### 5. Mobile-only differentiators
+
+- Add a thermal/power-aware quality governor driven by platform thermal APIs
+  and frame telemetry: resolution scale, SH degree clamp, and sort cadence
+  under sustained load, with explicit policy controls.
+- Extend the benchmark artifact contract with battery and thermal endurance
+  runs so sustained-quality claims stay evidence-backed.
+
+### 6. Evidence before policy or API promotion
 
 - Reuse the deterministic dataset ladder and paired benchmark artifact contract.
 - Separate performance subsets from full-scene quality anchors.
@@ -191,6 +252,25 @@ Do not copy these policies into the release contract:
 - per-model sorting plus caller draw order represented as global transparent
   ordering;
 - performance conclusions without gsplat-rs paired device artifacts.
+
+The 2026-08-13 strategy diagnosis added competitive and research anchors; full
+links and reasoning live in
+[`2026-08-13-sdk-strategy-diagnosis/findings.md`](../docs/plans/completed/2026-08-13-sdk-strategy-diagnosis/findings.md):
+
+- PlayCanvas engine 2.19 ships a compute WebGPU splat renderer (GPU culling,
+  stream compaction, GPU radix sort, indirect draw) and is the Web parity
+  target renderer.
+- PlayCanvas engine PR #8620 provides cross-device sort portability evidence:
+  multi-pass 4-bit radix with a hierarchical scan is the portable winner;
+  OneSweep-style decoupled-lookback designs are not portable to mobile GPUs.
+- SPZ v4 is the cross-vendor interchange format; Streamed SOG is the Web
+  streaming/LOD reference; `KHR_gaussian_splatting` is the pending glTF
+  extension.
+- 2025-2026 mobile research consensus: per-splat compute preprocessing,
+  quantized GPU residency, hierarchical/wait-free scans, and hardware-raster
+  splatting on bandwidth-limited devices. Sort-free and stochastic approaches
+  change image semantics or require retrained assets; they stay out of the
+  default path.
 
 ## Retired Packed/Paged Evidence
 
@@ -253,7 +333,9 @@ stability gates are documented in `handbook/VERIFICATION.md` and promoted here.
 - Reintroducing the retired Packed/Paged modes
 - Metadata-first or remote streaming before the resident GPU pipeline and
   real-dataset evidence matrix are established
-- Additional experimental blending/rendering backends
+- Additional experimental blending/rendering backends, including sort-free or
+  stochastic approximations that change image semantics or require retrained
+  assets
 - A public raw-`wgpu` C, JNI, Swift, or Web API
 - New top-level apps, crates, or docs-only placeholders without an explicit
   release-boundary reason

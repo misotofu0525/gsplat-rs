@@ -394,7 +394,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::GpuSurfaceSourceElem;
+    use crate::resident::GpuSurfaceSourceElem;
 
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         pollster::block_on(async {

@@ -90,7 +90,7 @@ and fall back to the shared Flowers fixture when Kitsune is unavailable.
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-io-spz`: experimental bounded Niantic SPZ v4 parsing and
   scene buffer construction
-- `crates/gsplat-sort`: CPU and GPU sort backends
+- `crates/gsplat-sort`: CPU radix sort backend
 - `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter,
   and GPU helper APIs
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile

@@ -17,8 +17,11 @@ Main entry points:
 - `SurfaceRenderSession` / `SurfacePresenter`: shared CPU-sort, compact-order
   upload, and realtime presentation onto Android `Surface`, iOS
   `CAMetalLayer`, desktop windows, or an HTML canvas
-- `GpuInstance` CPU projection helpers: reference/conformance oracle only; they
-  are not a selectable production renderer
+
+Internal layout (not a public API split): `math.rs`, `preprocess.rs`,
+`resident.rs`, `offscreen.rs`, `surface.rs`, plus isolated Adaptive/async
+modules. CPU-projected `GpuInstance` helpers exist only as a `#[cfg(test)]`
+conformance oracle.
 
 Shader sources live in [`shaders/`](shaders/) and are documented in
 [`shaders/README.md`](shaders/README.md).

@@ -18,6 +18,14 @@
   never disguise a full-`SceneBuffers` adapter as streaming.
 - Keep frame scheduling and resource dirtiness in the shared render layer;
   platform wrappers adapt handles and controls, not rendering state machines.
+- On mobile targets, budget memory bandwidth and bytes-per-splat before ALU
+  micro-optimization. Data-representation changes come before kernel tuning.
+- Experiments attach at internal stage interfaces (preprocess, ordering, draw).
+  They must not add parallel geometry paths, public selectors, or
+  default-path state.
+- Define kill criteria and an evidence budget before an experiment starts.
+  Demotion means deleting the code in the same change; the evidence stays
+  under `docs/plans/completed/`.
 - Make verification executable. Use repo-local scripts and commands instead of prose-only confidence.
 
 ## Smells To Resist
@@ -26,6 +34,8 @@
 - Internal asset/cache formats without a measured runtime need and a real consumer.
 - Divergence between `crates/gsplat-ffi-c/include/gsplat.h` and `crates/gsplat-ffi-c/src/lib.rs`.
 - Mobile example changes that hide shared-library or ABI issues behind platform-specific workaround code.
+- Experimental policy state, knobs, or telemetry accumulating on the default frame path.
+- Retired-path no-op entry points lingering in the C ABI.
 - Ad-hoc command sequences that bypass `VERIFICATION.md`.
 - Runtime assumptions that skip the documented PLY quaternion and coordinate-space normalization rules.
 

@@ -111,14 +111,12 @@ impl Camera {
 pub enum RenderMode {
     #[default]
     SortedAlpha = 0,
-    SortFree = 1,
 }
 
 impl RenderMode {
     pub const fn from_u32(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::SortedAlpha),
-            1 => Some(Self::SortFree),
             _ => None,
         }
     }
@@ -295,7 +293,7 @@ mod tests {
     #[test]
     fn render_mode_from_u32() {
         assert_eq!(RenderMode::from_u32(0), Some(RenderMode::SortedAlpha));
-        assert_eq!(RenderMode::from_u32(1), Some(RenderMode::SortFree));
+        assert_eq!(RenderMode::from_u32(1), None);
         assert_eq!(RenderMode::from_u32(2), None);
     }
 

@@ -711,7 +711,6 @@ dependencies = [
  "gsplat-core",
  "gsplat-io-ply",
  "gsplat-render-wgpu",
- "gsplat-sort",
  "wgpu",
 ]
 
@@ -754,10 +753,7 @@ dependencies = [
 name = "gsplat-sort"
 version = "0.1.3"
 dependencies = [
- "bytemuck",
- "pollster",
  "thiserror 2.0.18",
- "wgpu",
 ]
 
 [[package]]

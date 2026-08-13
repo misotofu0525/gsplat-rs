@@ -949,67 +949,6 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
     })
 }
 
-/// Compatibility no-op retained for the v0.1 ABI.
-///
-/// CPU-sorted-index rendering is always used.
-///
-/// # Safety
-///
-/// `renderer` must be null or a live handle returned by a Surface renderer
-/// create function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject(
-    renderer: *mut GsplatSurfaceRenderer,
-    enabled: u32,
-) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_set_gpu_preproject", || {
-        let renderer = match unsafe { renderer.as_mut() } {
-            Some(renderer) => renderer,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_set_gpu_preproject: renderer is null",
-                );
-            }
-        };
-
-        let _ = enabled;
-        renderer.render_error_logged = false;
-        ffi_ok()
-    })
-}
-
-/// Compatibility no-op retained for the v0.1 ABI.
-///
-/// # Safety
-///
-/// `renderer` must be null or a live handle returned by a Surface renderer
-/// create function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_set_gpu_preproject_double_buffer(
-    renderer: *mut GsplatSurfaceRenderer,
-    enabled: u32,
-) -> i32 {
-    ffi_catch_i32(
-        "gsplat_surface_renderer_set_gpu_preproject_double_buffer",
-        || {
-            let renderer = match unsafe { renderer.as_mut() } {
-                Some(renderer) => renderer,
-                None => {
-                    return ffi_error(
-                        ErrorCode::InvalidArgument,
-                        "gsplat_surface_renderer_set_gpu_preproject_double_buffer: renderer is null",
-                    );
-                }
-            };
-
-            let _ = enabled;
-            renderer.render_error_logged = false;
-            ffi_ok()
-        },
-    )
-}
-
 /// Enable or disable experimental async sorting.
 ///
 /// # Safety
@@ -1076,69 +1015,6 @@ pub unsafe extern "C" fn gsplat_android_benchmark_set_order_backend(
                 err,
             );
         }
-        renderer.render_error_logged = false;
-        ffi_ok()
-    })
-}
-
-/// Compatibility no-op retained for the v0.1 ABI.
-///
-/// # Safety
-///
-/// `renderer` must be null or a live handle returned by a Surface renderer
-/// create function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_set_async_geometry(
-    renderer: *mut GsplatSurfaceRenderer,
-    enabled: u32,
-) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_set_async_geometry", || {
-        let renderer = match unsafe { renderer.as_mut() } {
-            Some(renderer) => renderer,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_set_async_geometry: renderer is null",
-                );
-            }
-        };
-
-        let _ = enabled;
-        renderer.render_error_logged = false;
-        ffi_ok()
-    })
-}
-
-/// Compatibility no-op retained for the v0.1 ABI.
-///
-/// # Safety
-///
-/// `renderer` must be null or a live handle returned by a Surface renderer
-/// create function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_set_instance_buffer_count(
-    renderer: *mut GsplatSurfaceRenderer,
-    count: u32,
-) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_set_instance_buffer_count", || {
-        let renderer = match unsafe { renderer.as_mut() } {
-            Some(renderer) => renderer,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_set_instance_buffer_count: renderer is null",
-                );
-            }
-        };
-
-        if count == 0 {
-            return ffi_error(
-                ErrorCode::InvalidArgument,
-                "gsplat_surface_renderer_set_instance_buffer_count: count must be positive",
-            );
-        }
-
-        let _ = count;
         renderer.render_error_logged = false;
         ffi_ok()
     })
@@ -1653,13 +1529,9 @@ mod tests {
         gsplat_last_error_message, gsplat_surface_renderer_get_stats,
         gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
         gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
-        gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
-        gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
-        gsplat_surface_renderer_set_gpu_preproject,
-        gsplat_surface_renderer_set_gpu_preproject_double_buffer,
-        gsplat_surface_renderer_set_instance_buffer_count,
-        gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_zoom,
-        surface_camera_from_control,
+        gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_sort,
+        gsplat_surface_renderer_set_frame_latency, gsplat_surface_renderer_set_sort_interval,
+        gsplat_surface_renderer_zoom, surface_camera_from_control,
     };
     use gsplat_core::ErrorCode;
 
@@ -1859,23 +1731,7 @@ mod tests {
             expected
         );
         assert_eq!(
-            unsafe { gsplat_surface_renderer_set_gpu_preproject(ptr::null_mut(), 1) },
-            expected
-        );
-        assert_eq!(
-            unsafe { gsplat_surface_renderer_set_gpu_preproject_double_buffer(ptr::null_mut(), 1) },
-            expected
-        );
-        assert_eq!(
             unsafe { gsplat_surface_renderer_set_async_sort(ptr::null_mut(), 1) },
-            expected
-        );
-        assert_eq!(
-            unsafe { gsplat_surface_renderer_set_async_geometry(ptr::null_mut(), 1) },
-            expected
-        );
-        assert_eq!(
-            unsafe { gsplat_surface_renderer_set_instance_buffer_count(ptr::null_mut(), 2) },
             expected
         );
         assert_eq!(

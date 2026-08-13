@@ -18,9 +18,16 @@
   experimental SPZ v4 loader lives in `crates/gsplat-io-spz`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
-  `lib.rs` owns renderer/public entrypoints, `surface_presenter.rs` owns Surface
-  resources, `surface_session.rs` owns shared frame scheduling, and
+  `lib.rs` owns `Renderer` and public re-exports. Focused internal modules
+  own projection/covariance math (`math.rs`), CPU visibility preprocess
+  (`preprocess.rs`), resident GPU buffers (`resident.rs`), offscreen
+  rasterization (`offscreen.rs`), Surface helpers (`surface.rs`), Adaptive
+  order policy (`surface_adaptive.rs`), and native async CPU sorting
+  (`surface_async.rs`). `surface_presenter.rs` owns Surface resources,
+  `surface_session.rs` owns shared frame scheduling, and
   `resident_gpu_order.rs` owns the experimental GPU ordering backend.
+  CPU-projected `GpuInstance` expansion lives in `cpu_geometry.rs` as a
+  test-only conformance oracle.
 - Native embedding goes through `crates/gsplat-ffi-c`.
 - Browser WebAssembly embedding goes through `crates/gsplat-web`.
 - Runtime validation entrypoints are `examples/desktop`, `examples/android`,
@@ -182,8 +189,15 @@
 
 ## Hotspots
 
-- `crates/gsplat-render-wgpu/src/lib.rs`: resident-scene resources, presenter/offscreen rendering, CPU reference projection, and perf-sensitive GPU logic
-- `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle, CPU sort policy, order-upload state, native async sorting, and phase timings
+- `crates/gsplat-render-wgpu/src/lib.rs`: renderer public API and offscreen
+  frame orchestration
+- `crates/gsplat-render-wgpu/src/resident.rs`: resident-scene buffers, preflight,
+  and bind-group/pipeline setup
+- `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
+  CPU sort cadence, compact order-upload state, and frame telemetry
+- `crates/gsplat-render-wgpu/src/surface_adaptive.rs`: experimental Adaptive
+  CPU/GPU order policy
+- `crates/gsplat-render-wgpu/src/surface_async.rs`: native async CPU sort worker
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
@@ -198,6 +212,8 @@
 ## Useful Entry Points
 
 - Read first for renderer changes: `crates/gsplat-render-wgpu/src/lib.rs`
+  (orchestration) and `resident.rs` / `preprocess.rs` / `math.rs` for the
+  matching internal stage
 - Read first for import changes: `crates/gsplat-io-ply/src/lib.rs` or
   `crates/gsplat-io-spz/src/lib.rs`, depending on the format
 - Read first for native integration changes: `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`

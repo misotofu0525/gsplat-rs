@@ -21,6 +21,11 @@ and this project adheres to
 - Replaced the ambiguous Direct/Packed/Paged geometry selector with one
   resident-scene, sorted-index render path across Rust, C, Android, Apple, and
   Web APIs; retired Packed/Paged runtime code and benchmark controls.
+- Split `gsplat-render-wgpu` into focused internal modules (math, preprocess,
+  resident, offscreen, Adaptive policy, async CPU sort). Removed
+  `GpuOddEvenSortBackend`, `RenderMode::SortFree`, and the retired Surface
+  no-op C ABI knobs (`set_gpu_preproject*`, `set_async_geometry`,
+  `set_instance_buffer_count`). CPU `GpuInstance` expansion is test-only.
 
 ## [0.1.3] - 2026-07-10
 

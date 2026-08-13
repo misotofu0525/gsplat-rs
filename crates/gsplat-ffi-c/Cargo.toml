@@ -19,5 +19,4 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }
 gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.3" }
 gsplat-render-wgpu = { path = "../gsplat-render-wgpu", version = "0.1.3" }
-gsplat-sort = { path = "../gsplat-sort", version = "0.1.3" }
 wgpu.workspace = true
