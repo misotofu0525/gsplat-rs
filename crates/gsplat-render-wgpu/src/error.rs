@@ -53,7 +53,8 @@ impl RendererError {
             | Self::GpuDeviceCreation
             | Self::GpuDimensionsUnsupported { .. }
             | Self::ResidentScene(ResidentSceneError::ResourceLimitExceeded(_))
-            | Self::ResidentScene(ResidentSceneError::ResourceSizeOverflow) => {
+            | Self::ResidentScene(ResidentSceneError::ResourceSizeOverflow)
+            | Self::ResidentScene(ResidentSceneError::StorageBuffersPerStage { .. }) => {
                 ErrorCode::Unsupported
             }
             Self::GpuReadback | Self::GpuWait | Self::SurfaceWorker => ErrorCode::Internal,
@@ -104,7 +105,8 @@ impl SurfacePresenterError {
             | Self::SurfaceAcquire(_)
             | Self::SurfaceOutOfMemory => ErrorCode::Internal,
             Self::ResidentScene(ResidentSceneError::ResourceLimitExceeded(_))
-            | Self::ResidentScene(ResidentSceneError::ResourceSizeOverflow) => {
+            | Self::ResidentScene(ResidentSceneError::ResourceSizeOverflow)
+            | Self::ResidentScene(ResidentSceneError::StorageBuffersPerStage { .. }) => {
                 ErrorCode::Unsupported
             }
             Self::ResidentScene(ResidentSceneError::SortedIndexCapacityExceeded)

@@ -76,6 +76,7 @@ impl ResidentGpuOrder {
         render_params_buffer: &wgpu::Buffer,
         capacity: u32,
         count: u32,
+        profile: crate::ResidentStorageProfile,
     ) -> Result<Self, ResidentSceneError> {
         debug_assert!(count <= capacity);
         let allocation_count = capacity.max(1);
@@ -126,12 +127,21 @@ impl ResidentGpuOrder {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let radix_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: wgpu_label("gsplat-resident-gpu-order-shader"),
             source: wgpu::ShaderSource::Wgsl(
                 include_str!("../shaders/resident_gpu_order.wgsl").into(),
             ),
         });
+        let quantized_keygen = (profile == crate::ResidentStorageProfile::Quantized).then(|| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: wgpu_label("gsplat-resident-gpu-order-quantized-keygen"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../shaders/resident_gpu_order_keygen_quantized.wgsl").into(),
+                ),
+            })
+        });
+        let keygen_shader = quantized_keygen.as_ref().unwrap_or(&radix_shader);
         let keygen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: wgpu_label("gsplat-resident-gpu-order-keygen-bgl"),
             entries: &[
@@ -172,28 +182,28 @@ impl ResidentGpuOrder {
             });
         let keygen_pipeline = compute_pipeline(
             device,
-            &shader,
+            keygen_shader,
             &keygen_pipeline_layout,
             "generate_pairs",
             "gsplat-resident-gpu-order-keygen-pipeline",
         );
         let histogram_pipeline = compute_pipeline(
             device,
-            &shader,
+            &radix_shader,
             &radix_pipeline_layout,
             "histogram",
             "gsplat-resident-gpu-order-histogram-pipeline",
         );
         let prefix_pipeline = compute_pipeline(
             device,
-            &shader,
+            &radix_shader,
             &radix_pipeline_layout,
             "prefix",
             "gsplat-resident-gpu-order-prefix-pipeline",
         );
         let scatter_pipeline = compute_pipeline(
             device,
-            &shader,
+            &radix_shader,
             &radix_pipeline_layout,
             "scatter",
             "gsplat-resident-gpu-order-scatter-pipeline",
@@ -448,8 +458,15 @@ mod tests {
     ) -> Vec<GpuSortPair> {
         let (source, params) = dummy_inputs(device);
         let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let order = ResidentGpuOrder::new(device, &source, &params, capacity, pairs.len() as u32)
-            .expect("test GPU sort capacity must fit the adapter dispatch limit");
+        let order = ResidentGpuOrder::new(
+            device,
+            &source,
+            &params,
+            capacity,
+            pairs.len() as u32,
+            crate::ResidentStorageProfile::FullF32,
+        )
+        .expect("test GPU sort capacity must fit the adapter dispatch limit");
         let validation_error = pollster::block_on(error_scope.pop());
         assert!(
             validation_error.is_none(),
@@ -620,8 +637,66 @@ mod tests {
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let order = ResidentGpuOrder::new(&device, &source_buffer, &params_buffer, count, count)
-            .expect("257-source key-generation test must fit the adapter dispatch limit");
+        let order = ResidentGpuOrder::new(
+            &device,
+            &source_buffer,
+            &params_buffer,
+            count,
+            count,
+            crate::ResidentStorageProfile::FullF32,
+        )
+        .expect("257-source key-generation test must fit the adapter dispatch limit");
+        let actual = readback_pairs(&device, &queue, &order);
+        let mut expected = (0..count)
+            .map(|id| GpuSortPair {
+                key: (1.0 + (id % 31) as f32).to_bits(),
+                id,
+            })
+            .collect::<Vec<_>>();
+        expected.sort_by(|left, right| right.key.cmp(&left.key));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn quantized_key_generation_reads_packed_positions() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("skipping quantized GPU key-generation test; adapter unavailable");
+            return;
+        };
+        let count = 257_u32;
+        let sources = (0..count)
+            .map(|id| {
+                let mut source = crate::quantized::GpuQuantizedSource::zeroed();
+                let z = 1.0 + (id % 31) as f32;
+                source.pos_xy = crate::quantized::pack2x16float(0.0, 0.0);
+                source.pos_z_alpha = crate::quantized::pack2x16float(z, 0.0);
+                source
+            })
+            .collect::<Vec<_>>();
+        let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("resident-gpu-order-quantized-keygen-source"),
+            contents: bytemuck::cast_slice(&sources),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let mut params = GpuSurfaceRenderParams::zeroed();
+        params.view_rot_row2 = [0.0, 0.0, 1.0, 0.0];
+        params.near_plane = 0.1;
+        params.far_plane = 100.0;
+        params.len = count;
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("resident-gpu-order-quantized-keygen-params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let order = ResidentGpuOrder::new(
+            &device,
+            &source_buffer,
+            &params_buffer,
+            count,
+            count,
+            crate::ResidentStorageProfile::Quantized,
+        )
+        .expect("quantized key-generation test must fit the adapter dispatch limit");
         let actual = readback_pairs(&device, &queue, &order);
         let mut expected = (0..count)
             .map(|id| GpuSortPair {

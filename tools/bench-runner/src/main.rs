@@ -11,7 +11,7 @@ use artifact::{
 };
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::Renderer;
+use gsplat_render_wgpu::{Renderer, ResidentStorageProfile};
 
 fn main() {
     if let Err(err) = run() {
@@ -46,9 +46,14 @@ fn run() -> Result<(), String> {
     let splat_count = loaded.scene.len();
     let sh_degree = loaded.scene.sh_degree;
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
+    renderer.set_storage_profile(config.storage_profile);
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
+    println!(
+        "resident_storage_profile={}",
+        config.storage_profile.as_str()
+    );
     print_gpu_metadata(&renderer);
     print_resident_scene_preflight(&renderer)?;
     println!("offscreen_geometry_pipeline=resident_sorted_indices");
@@ -690,6 +695,7 @@ struct BenchConfig {
     stability_seconds: Option<u64>,
     rss_growth_limit_kib: u64,
     analysis: Option<SpatialAnalysisConfig>,
+    storage_profile: ResidentStorageProfile,
 }
 
 impl Default for BenchConfig {
@@ -707,6 +713,7 @@ impl Default for BenchConfig {
             stability_seconds: None,
             rss_growth_limit_kib: 64 * 1024,
             analysis: None,
+            storage_profile: ResidentStorageProfile::FullF32,
         }
     }
 }
@@ -860,6 +867,19 @@ impl BenchConfig {
                     config.rss_growth_limit_kib = value
                         .parse::<u64>()
                         .map_err(|_| "invalid --rss-growth-limit-kib value")?;
+                }
+                "--storage-profile" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --storage-profile")?;
+                    config.storage_profile = match value.as_str() {
+                        "full-f32" => ResidentStorageProfile::FullF32,
+                        "quantized" => ResidentStorageProfile::Quantized,
+                        _ => {
+                            return Err(
+                                "--storage-profile must be full-f32 or quantized".to_owned()
+                            );
+                        }
+                    };
                 }
                 value if value.starts_with("--") => {
                     return Err(format!("unknown option: {value}"));
@@ -1081,8 +1101,8 @@ mod tests {
     use gsplat_core::{SceneBuffers, Vec3f};
 
     use super::{
-        BenchConfig, grid_axis_index, grid_cell_index, merge_max, merge_min, percentile_f32,
-        percentile_index, percentile_u32, scene_bounds,
+        BenchConfig, ResidentStorageProfile, grid_axis_index, grid_cell_index, merge_max,
+        merge_min, percentile_f32, percentile_index, percentile_u32, scene_bounds,
     };
 
     fn scene_with_positions(positions: Vec<Vec3f>) -> SceneBuffers {
@@ -1165,6 +1185,18 @@ mod tests {
         assert_eq!(config.frame_budget_ms, 33.333);
         assert_eq!(config.refresh_hz, 30.0);
         assert_eq!(config.stability_seconds, None);
+    }
+
+    #[test]
+    fn bench_config_parse_storage_profile() {
+        let config =
+            BenchConfig::parse(vec!["--storage-profile".to_owned(), "quantized".to_owned()])
+                .unwrap();
+        assert_eq!(config.storage_profile, ResidentStorageProfile::Quantized);
+
+        let err = BenchConfig::parse(vec!["--storage-profile".to_owned(), "packed".to_owned()])
+            .unwrap_err();
+        assert_eq!(err, "--storage-profile must be full-f32 or quantized");
     }
 
     #[test]

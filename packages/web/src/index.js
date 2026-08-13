@@ -41,16 +41,24 @@ export async function createGsplatRenderer(options) {
     width = canvas?.width,
     height = canvas?.height,
     sortInterval = 2,
+    storageProfile = "full-f32",
     module,
   } = options ?? {};
 
   assertCanvas(canvas);
   assertPositiveInteger(width, "width");
   assertPositiveInteger(height, "height");
+  assertStorageProfile(storageProfile);
   const bytes = normalizeBytes(plyBytes);
   const resolvedModule = module ?? loadedModule ?? (await initGsplatWeb());
-  const nativeRenderer = await resolvedModule.createRenderer(canvas, bytes, width, height);
-  const renderer = new GsplatWebRenderer(nativeRenderer);
+  const nativeRenderer = await resolvedModule.createRenderer(
+    canvas,
+    bytes,
+    width,
+    height,
+    storageProfile,
+  );
+  const renderer = new GsplatWebRenderer(nativeRenderer, storageProfile);
   renderer.setSortInterval(sortInterval);
   return renderer;
 }
@@ -74,13 +82,15 @@ export async function createGsplatRendererFromUrl(options) {
 
 export class GsplatWebRenderer {
   #nativeRenderer;
+  #storageProfile;
   #disposed = false;
 
-  constructor(nativeRenderer) {
+  constructor(nativeRenderer, storageProfile = "full-f32") {
     if (!nativeRenderer) {
       throw new TypeError("GsplatWebRenderer requires a native renderer");
     }
     this.#nativeRenderer = nativeRenderer;
+    this.#storageProfile = storageProfile;
   }
 
   get isDisposed() {
@@ -167,6 +177,14 @@ export class GsplatWebRenderer {
       return "resident_sorted_indices";
     }
     return String(nativeRenderer.rasterPath());
+  }
+
+  storageProfile() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.storageProfile === "function") {
+      return String(nativeRenderer.storageProfile());
+    }
+    return this.#storageProfile;
   }
 
   renderFrame() {
@@ -263,6 +281,12 @@ function assertFinite(value, name) {
 function assertPositiveInteger(value, name) {
   if (!Number.isInteger(value) || value <= 0) {
     throw new RangeError(`${name} must be a positive integer`);
+  }
+}
+
+function assertStorageProfile(value) {
+  if (value !== "full-f32" && value !== "quantized") {
+    throw new RangeError("storageProfile must be full-f32 or quantized");
   }
 }
 

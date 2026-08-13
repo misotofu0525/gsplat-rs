@@ -62,12 +62,12 @@ transient research belong under `docs/plans/`.
   `SurfaceRenderSession` for camera revisions, ordering cadence, compact order
   uploads, fallback behavior, presentation, and frame telemetry.
 - Scene attributes stay GPU-resident. CPU refreshes upload compact
-  sorted source IDs; projection, covariance use, SH evaluation, and rasterization
-  remain on the GPU.
-- Projection and SH evaluation currently run in the vertex stage for each of
-  the six quad vertices per splat, and attributes are stored full-f32
-  (~244 bytes per degree-3 splat). Both facts drive the data-plane items in
-  the execution sequence below.
+  sorted source IDs. A per-splat compute preprocess writes compact projected
+  records once per presented frame; the vertex/fragment stages only emit and
+  shade quads. Default resident storage remains full-f32; an explicit
+  `ResidentStorageProfile::Quantized` option packs a 32-byte SPZ-aligned hot
+  record plus per-degree u8 SH sidecars. The stable C ABI does not expose the
+  profile.
 - Mobile keeps the default CPU sort interval of 2. Identical redraws reuse the
   existing order, and native CPU ordering can use the bounded `AsyncLatest`
   schedule.
@@ -97,6 +97,8 @@ transient research belong under `docs/plans/`.
 - Surface device creation computes the largest binding required by the resident
   scene, starts from portable `wgpu` defaults, and raises only
   the required storage/buffer limits when the adapter exposes that headroom.
+  `max_storage_buffers_per_shader_stage` is raised to the WebGPU default of 8
+  when the adapter allows it, so quantized per-degree SH sidecars can bind.
 - The request is deterministic: one representation, one exact capability
   request, one structured result. There is no retry loop or hidden fallback.
 - Adapter limits are legality ceilings, not available-memory guarantees. Initial
@@ -136,30 +138,31 @@ proven insufficient.
 
 ### 2. Quantized resident storage and per-splat compute preprocessing
 
-Change the data plane before optimizing ordering. On bandwidth-limited mobile
-GPUs this is the highest-leverage step: it cuts per-frame attribute traffic
-and raises the capacity ceiling at the same time.
+Compute preprocess and an explicit quantized resident profile landed on
+2026-08-13 as a Rust-only option. Evidence:
+[`2026-08-13-quantized-resident-preprocess`](../docs/plans/active/2026-08-13-quantized-resident-preprocess/).
 
-- Prototype an explicit, capability-gated quantized resident profile aligned
-  with SPZ field semantics: f16/fixed-point positions, smallest-three
-  rotations, log-encoded `u8` scales, and `u8`-quantized SH split into
-  per-degree sidecar bindings, decoded in-shader. Target a hot record at or
-  below 32 bytes per splat so degree-3 scenes of one million splats fit
-  within the retained 128 MiB binding evidence.
-- Retain the current full-f32 profile as the quality reference. Keep profile
-  selection explicit and out of the stable C ABI initially. Report source,
-  CPU, and GPU bytes separately and validate requested binding sizes before
-  allocation.
-- Move projection, covariance, and SH evaluation into a per-splat compute
-  preprocess pass that writes compact projected records once per refresh; the
-  vertex/fragment stages consume those records instead of re-evaluating them
-  for every quad vertex. CPU ordering stays unchanged and composes with this
-  step.
+In tree today:
 
-Each profile needs real-scene SSIM/error analysis, capacity measurements,
-first-frame cost, sustained frame behavior, and cross-backend shader coverage.
-Compressed resident storage may extend capacity, but it is not streaming
-and must not be described as such.
+- every presented frame runs a per-splat compute preprocess that writes
+  compact projected records; the vertex/fragment stages only emit quads
+- `ResidentStorageProfile::FullF32` remains the default quality reference
+- `ResidentStorageProfile::Quantized` packs a 32-byte SPZ-aligned hot record
+  (f16 positions, smallest-three rotation, log-u8 scale, u8 DC/opacity) plus
+  per-degree u8 SH sidecars; preflight shows 1M degree-3 splats fit in 128 MiB
+  per binding, with the largest SH sidecar at 21 B/splat
+- profile selection stays out of the stable C ABI
+- CPU ordering is unchanged and composes with the preprocess
+- experimental GPU ordering keygen reads quantized f16 positions
+- Surface/offscreen devices request WebGPU's 8 storage buffers per stage when
+  the adapter exposes them; quantized preprocess uses 7
+- Android A065 and desktop Chrome WebGPU Kitsune artifacts exist for the
+  quantized layout. Sample/collector extras select the profile
+  (`gsplat_surface_storage_profile` / `--storage-profile` /
+  `GSPLAT_STORAGE_PROFILE`); the stable C ABI stays on full-f32
+
+This data-plane item is closed. Compressed resident storage is not
+streaming.
 
 ### 3. GPU-visible compaction, portable GPU ordering, and indirect drawing
 

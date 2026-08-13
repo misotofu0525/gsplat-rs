@@ -7,6 +7,16 @@ use wgpu::util::DeviceExt;
 
 use crate::draw_pass;
 use crate::math::{CameraCovarianceTerms, quat_inverse, quat_to_mat3};
+use crate::project::{
+    PROJECTED_RECORD_STRIDE, ProjectBindGroupBuffers, ProjectShBindings, create_draw_bind_group,
+    create_project_bind_group, create_project_bind_group_layout, create_project_pipeline,
+    encode_project, project_shader_source, validate_project_dispatch,
+};
+use crate::quantized::{
+    QUANTIZED_SOURCE_STRIDE, QUANTIZED_STORAGE_BUFFERS_PER_STAGE, ResidentStorageProfile,
+    pack_quantized_sh_sidecar, pack_quantized_sources, quantized_sh_max_sidecar_bytes,
+    quantized_sh_max_sidecar_stride,
+};
 use crate::timing::wgpu_label;
 use thiserror::Error;
 
@@ -15,6 +25,7 @@ pub enum ResidentSceneResource {
     SortedIndices,
     Source,
     ShRest,
+    Projected,
     DrawInstances,
 }
 
@@ -45,7 +56,7 @@ pub struct ResidentScenePreflight {
     pub path: ResidentScenePath,
     pub effective_storage_binding_limit: u64,
     pub effective_max_buffer_size: u64,
-    pub requirements: [ResidentSceneResourceRequirement; 3],
+    pub requirements: [ResidentSceneResourceRequirement; 4],
     pub limiting_resource: ResidentSceneResource,
     pub max_resident_splats: u64,
     pub remediation: ResidentSceneRemediation,
@@ -61,6 +72,10 @@ pub enum ResidentSceneError {
     ResourceSizeOverflow,
     #[error("resident scene resources exceed effective device limits: {0:?}")]
     ResourceLimitExceeded(Box<ResidentScenePreflight>),
+    #[error(
+        "quantized resident storage needs {required} storage buffers per shader stage; device allows {available}"
+    )]
+    StorageBuffersPerStage { required: u32, available: u32 },
 }
 
 #[repr(C)]
@@ -165,23 +180,64 @@ pub fn resident_scene_preflight(
     sh_degree: u8,
     limits: &wgpu::Limits,
 ) -> Result<ResidentScenePreflight, ResidentSceneError> {
+    resident_scene_preflight_for_profile(
+        splat_count,
+        sh_degree,
+        limits,
+        ResidentStorageProfile::FullF32,
+    )
+}
+
+pub fn resident_scene_preflight_for_profile(
+    splat_count: usize,
+    sh_degree: u8,
+    limits: &wgpu::Limits,
+    profile: ResidentStorageProfile,
+) -> Result<ResidentScenePreflight, ResidentSceneError> {
     let splat_count =
         u64::try_from(splat_count).map_err(|_| ResidentSceneError::ResourceSizeOverflow)?;
+    if profile == ResidentStorageProfile::Quantized
+        && limits.max_storage_buffers_per_shader_stage < QUANTIZED_STORAGE_BUFFERS_PER_STAGE
+    {
+        return Err(ResidentSceneError::StorageBuffersPerStage {
+            required: QUANTIZED_STORAGE_BUFFERS_PER_STAGE,
+            available: limits.max_storage_buffers_per_shader_stage,
+        });
+    }
     let capacity = splat_count.max(1);
     let binding_limit = u64::from(limits.max_storage_buffer_binding_size);
     let buffer_limit = limits.max_buffer_size;
     let effective_limit = binding_limit.min(buffer_limit);
 
     let order_stride = std::mem::size_of::<u32>() as u64;
-    let source_stride = std::mem::size_of::<GpuSurfaceSourceElem>() as u64;
-    let degree = u64::from(sh_degree);
-    let sh_stride = degree
-        .checked_add(1)
-        .and_then(|value| value.checked_mul(value))
-        .and_then(|value| value.checked_sub(1))
-        .and_then(|value| value.checked_mul(3))
-        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>() as u64))
-        .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
+    let (source_stride, sh_bytes, sh_capacity_stride) = match profile {
+        ResidentStorageProfile::FullF32 => {
+            let source_stride = std::mem::size_of::<GpuSurfaceSourceElem>() as u64;
+            let degree = u64::from(sh_degree);
+            let sh_stride = degree
+                .checked_add(1)
+                .and_then(|value| value.checked_mul(value))
+                .and_then(|value| value.checked_sub(1))
+                .and_then(|value| value.checked_mul(3))
+                .and_then(|value| value.checked_mul(std::mem::size_of::<f32>() as u64))
+                .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
+            let sh_bytes = if sh_stride == 0 {
+                std::mem::size_of::<f32>() as u64
+            } else {
+                splat_count
+                    .checked_mul(sh_stride)
+                    .ok_or(ResidentSceneError::ResourceSizeOverflow)?
+            };
+            let sh_capacity = if sh_stride == 0 { u64::MAX } else { sh_stride };
+            (source_stride, sh_bytes, sh_capacity)
+        }
+        ResidentStorageProfile::Quantized => {
+            let sh_bytes = quantized_sh_max_sidecar_bytes(splat_count.max(1), sh_degree)
+                .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
+            let rest = quantized_sh_max_sidecar_stride(sh_degree);
+            (QUANTIZED_SOURCE_STRIDE, sh_bytes, rest)
+        }
+    };
 
     let order_bytes = capacity
         .checked_mul(order_stride)
@@ -189,13 +245,9 @@ pub fn resident_scene_preflight(
     let source_bytes = capacity
         .checked_mul(source_stride)
         .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
-    let sh_bytes = if sh_stride == 0 {
-        std::mem::size_of::<f32>() as u64
-    } else {
-        splat_count
-            .checked_mul(sh_stride)
-            .ok_or(ResidentSceneError::ResourceSizeOverflow)?
-    };
+    let projected_bytes = capacity
+        .checked_mul(PROJECTED_RECORD_STRIDE)
+        .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
 
     let requirements = [
         ResidentSceneResourceRequirement {
@@ -216,6 +268,12 @@ pub fn resident_scene_preflight(
             limit_bytes: effective_limit,
             fits: sh_bytes <= effective_limit,
         },
+        ResidentSceneResourceRequirement {
+            resource: ResidentSceneResource::Projected,
+            required_bytes: projected_bytes,
+            limit_bytes: effective_limit,
+            fits: projected_bytes <= effective_limit,
+        },
     ];
 
     let capacities = [
@@ -229,11 +287,15 @@ pub fn resident_scene_preflight(
         ),
         (
             ResidentSceneResource::ShRest,
-            if sh_stride == 0 {
+            if sh_capacity_stride == u64::MAX {
                 u64::MAX
             } else {
-                effective_limit / sh_stride
+                effective_limit / sh_capacity_stride
             },
+        ),
+        (
+            ResidentSceneResource::Projected,
+            effective_limit / PROJECTED_RECORD_STRIDE,
         ),
         (ResidentSceneResource::DrawInstances, u64::from(u32::MAX)),
     ];
@@ -272,18 +334,24 @@ pub fn resident_scene_preflight(
 pub(crate) struct ResidentSceneResources {
     sorted_indices_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
-    pub(crate) cpu_bind_group: wgpu::BindGroup,
+    pub(crate) draw_bind_group: wgpu::BindGroup,
     capacity: usize,
     count: usize,
     sh_degree: u32,
+    profile: ResidentStorageProfile,
     source_buffer: wgpu::Buffer,
     sh_rest_buffer: wgpu::Buffer,
+    sh_sidecars: Option<[wgpu::Buffer; 3]>,
+    projected_buffer: wgpu::Buffer,
+    project_pipeline: wgpu::ComputePipeline,
+    project_layout: wgpu::BindGroupLayout,
+    cpu_project_bind_group: wgpu::BindGroup,
     gpu_order: Option<ResidentGpuSceneOrder>,
 }
 
 pub(crate) struct ResidentGpuSceneOrder {
     pub(crate) sorter: crate::resident_gpu_order::ResidentGpuOrder,
-    pub(crate) bind_group: wgpu::BindGroup,
+    project_bind_group: wgpu::BindGroup,
 }
 
 impl ResidentSceneResources {
@@ -293,14 +361,23 @@ impl ResidentSceneResources {
         scene: &SceneBuffers,
         world_covariance_terms: &[CameraCovarianceTerms],
         alpha_values: &[f32],
+        profile: ResidentStorageProfile,
     ) -> Result<Self, ResidentSceneError> {
-        let preflight = resident_scene_preflight(scene.len(), scene.sh_degree, &device.limits())?;
+        let preflight = resident_scene_preflight_for_profile(
+            scene.len(),
+            scene.sh_degree,
+            &device.limits(),
+            profile,
+        )?;
         if preflight.path != ResidentScenePath::Resident {
             return Err(ResidentSceneError::ResourceLimitExceeded(Box::new(
                 preflight,
             )));
         }
         let capacity = scene.len().max(1);
+        let capacity_u32 =
+            u32::try_from(capacity).map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
+        validate_project_dispatch(&device.limits(), capacity_u32)?;
         let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: wgpu_label("gsplat-resident-sorted-indices"),
             size: (capacity as u64) * (std::mem::size_of::<u32>() as u64),
@@ -312,38 +389,98 @@ impl ResidentSceneResources {
             contents: bytemuck::bytes_of(&GpuSurfaceRenderParams::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let source_elems = make_surface_source_elems(scene, world_covariance_terms, alpha_values);
-        let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-resident-source"),
-            contents: bytemuck::cast_slice(&source_elems),
+        let (source_buffer, sh_rest_buffer, sh_sidecars) = match profile {
+            ResidentStorageProfile::FullF32 => {
+                let source_elems =
+                    make_surface_source_elems(scene, world_covariance_terms, alpha_values);
+                let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: wgpu_label("gsplat-resident-source"),
+                    contents: bytemuck::cast_slice(&source_elems),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+                let sh_rest_fallback = [0.0_f32];
+                let sh_rest = scene.sh_rest.as_deref().unwrap_or(&sh_rest_fallback);
+                let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: wgpu_label("gsplat-resident-sh-rest"),
+                    contents: bytemuck::cast_slice(sh_rest),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+                (source_buffer, sh_rest_buffer, None)
+            }
+            ResidentStorageProfile::Quantized => {
+                let source_elems = pack_quantized_sources(scene, alpha_values);
+                let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: wgpu_label("gsplat-resident-quantized-source"),
+                    contents: bytemuck::cast_slice(&source_elems),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+                let sh1 = pack_quantized_sh_sidecar(scene, 1);
+                let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: wgpu_label("gsplat-resident-quantized-sh1"),
+                    contents: bytemuck::cast_slice(&sh1),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+                let sh2 = pack_quantized_sh_sidecar(scene, 2);
+                let sh3 = pack_quantized_sh_sidecar(scene, 3);
+                let sh4 = pack_quantized_sh_sidecar(scene, 4);
+                let sidecars = [
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: wgpu_label("gsplat-resident-quantized-sh2"),
+                        contents: bytemuck::cast_slice(&sh2),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    }),
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: wgpu_label("gsplat-resident-quantized-sh3"),
+                        contents: bytemuck::cast_slice(&sh3),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    }),
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: wgpu_label("gsplat-resident-quantized-sh4"),
+                        contents: bytemuck::cast_slice(&sh4),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    }),
+                ];
+                (source_buffer, sh_rest_buffer, Some(sidecars))
+            }
+        };
+        let projected_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: wgpu_label("gsplat-resident-projected"),
+            size: (capacity as u64) * PROJECTED_RECORD_STRIDE,
             usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
         });
-        let sh_rest_fallback = [0.0_f32];
-        let sh_rest = scene.sh_rest.as_deref().unwrap_or(&sh_rest_fallback);
-        let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-resident-sh-rest"),
-            contents: bytemuck::cast_slice(sh_rest),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let cpu_bind_group = create_resident_bind_group(
+        let project_layout = create_project_bind_group_layout(device, profile);
+        let shader_source = project_shader_source(profile);
+        let project_pipeline = create_project_pipeline(device, &project_layout, &shader_source);
+        let cpu_project_bind_group = create_project_bind_group(
             device,
-            bind_group_layout,
-            "gsplat-resident-cpu-order-bind-group",
-            &sorted_indices_buffer,
-            &source_buffer,
-            &sh_rest_buffer,
-            &params_buffer,
+            &project_layout,
+            "gsplat-resident-cpu-project-bind-group",
+            ProjectBindGroupBuffers {
+                order: &sorted_indices_buffer,
+                source: &source_buffer,
+                sh: project_sh_bindings(&sh_rest_buffer, sh_sidecars.as_ref()),
+                params: &params_buffer,
+                projected: &projected_buffer,
+            },
         );
+        let draw_bind_group = create_draw_bind_group(device, bind_group_layout, &projected_buffer);
 
         Ok(Self {
             sorted_indices_buffer,
             params_buffer,
-            cpu_bind_group,
+            draw_bind_group,
             capacity,
             count: scene.len(),
             sh_degree: scene.sh_degree as u32,
+            profile,
             source_buffer,
             sh_rest_buffer,
+            sh_sidecars,
+            projected_buffer,
+            project_pipeline,
+            project_layout,
+            cpu_project_bind_group,
             gpu_order: None,
         })
     }
@@ -374,10 +511,26 @@ impl ResidentSceneResources {
         Ok(instance_count)
     }
 
+    pub(crate) fn encode_project(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        instance_count: u32,
+        use_gpu_order: bool,
+    ) {
+        let bind_group = if use_gpu_order {
+            self.gpu_order
+                .as_ref()
+                .map(|order| &order.project_bind_group)
+                .unwrap_or(&self.cpu_project_bind_group)
+        } else {
+            &self.cpu_project_bind_group
+        };
+        encode_project(encoder, &self.project_pipeline, bind_group, instance_count);
+    }
+
     pub(crate) fn ensure_gpu_order(
         &mut self,
         device: &wgpu::Device,
-        bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Result<(), ResidentSceneError> {
         if self.gpu_order.is_some() {
             return Ok(());
@@ -401,15 +554,19 @@ impl ResidentSceneResources {
             &self.params_buffer,
             capacity,
             count,
+            self.profile,
         )?;
-        let bind_group = create_resident_bind_group(
+        let project_bind_group = create_project_bind_group(
             device,
-            bind_group_layout,
-            "gsplat-resident-gpu-order-bind-group",
-            sorter.final_pairs(),
-            &self.source_buffer,
-            &self.sh_rest_buffer,
-            &self.params_buffer,
+            &self.project_layout,
+            "gsplat-resident-gpu-project-bind-group",
+            ProjectBindGroupBuffers {
+                order: sorter.final_pairs(),
+                source: &self.source_buffer,
+                sh: project_sh_bindings(&self.sh_rest_buffer, self.sh_sidecars.as_ref()),
+                params: &self.params_buffer,
+                projected: &self.projected_buffer,
+            },
         );
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(error) = [
@@ -425,20 +582,22 @@ impl ResidentSceneResources {
                 error.to_string(),
             ));
         }
-        self.gpu_order = Some(ResidentGpuSceneOrder { sorter, bind_group });
+        self.gpu_order = Some(ResidentGpuSceneOrder {
+            sorter,
+            project_bind_group,
+        });
         Ok(())
     }
 
     pub(crate) fn prepare_gpu(
         &mut self,
         device: &wgpu::Device,
-        bind_group_layout: &wgpu::BindGroupLayout,
         queue: &wgpu::Queue,
         camera: &Camera,
         width: u32,
         height: u32,
     ) -> Result<u32, ResidentSceneError> {
-        self.ensure_gpu_order(device, bind_group_layout)?;
+        self.ensure_gpu_order(device)?;
         let instance_count = u32::try_from(self.count)
             .map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
         let mut params =
@@ -454,41 +613,23 @@ impl ResidentSceneResources {
     }
 }
 
-fn create_resident_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    label: &'static str,
-    order_buffer: &wgpu::Buffer,
-    source_buffer: &wgpu::Buffer,
-    sh_rest_buffer: &wgpu::Buffer,
-    params_buffer: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: wgpu_label(label),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: order_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: source_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: sh_rest_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: params_buffer.as_entire_binding(),
-            },
-        ],
-    })
+fn project_sh_bindings<'a>(
+    sh1: &'a wgpu::Buffer,
+    sidecars: Option<&'a [wgpu::Buffer; 3]>,
+) -> ProjectShBindings<'a> {
+    match sidecars {
+        Some(sidecars) => ProjectShBindings::Quantized {
+            sh1,
+            sh2: &sidecars[0],
+            sh3: &sidecars[1],
+            sh4: &sidecars[2],
+        },
+        None => ProjectShBindings::FullF32 { rest: sh1 },
+    }
 }
 
 pub(crate) fn create_resident_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    draw_pass::create_splat_bind_group_layout(device, "gsplat-resident-bgl", 3)
+    crate::project::create_draw_bind_group_layout(device)
 }
 
 pub(crate) fn create_resident_pipeline(

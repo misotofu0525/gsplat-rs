@@ -7,7 +7,9 @@ use crate::surface_async::{
     MAX_ASYNC_SORT_REVISION_LAG, MAX_ASYNC_SORT_TRANSLATION_DIAGONAL_FRACTION,
     async_order_pose_compatible, async_schedule_threshold,
 };
-use crate::{Renderer, RendererError, SurfacePresenter, timer_elapsed_ms, timer_now};
+use crate::{
+    Renderer, RendererError, ResidentStorageProfile, SurfacePresenter, timer_elapsed_ms, timer_now,
+};
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 
@@ -305,6 +307,44 @@ impl SurfaceRenderSession {
                 // Pipeline/buffer creation has already happened outside frame
                 // measurement; the first probe no longer needs a compile-jank
                 // sample exclusion.
+                self.adaptive_policy.gpu_initialized = true;
+            }
+        }
+        self.frame_state.force_sort();
+        Ok(())
+    }
+
+    pub fn storage_profile(&self) -> ResidentStorageProfile {
+        self.renderer.storage_profile()
+    }
+
+    /// Rebuilds resident GPU buffers for a storage profile. Sample/benchmark
+    /// use only; the stable C ABI stays on the default full-f32 layout.
+    pub fn set_storage_profile(
+        &mut self,
+        profile: ResidentStorageProfile,
+    ) -> Result<(), RendererError> {
+        if self.renderer.storage_profile() == profile {
+            return Ok(());
+        }
+        self.renderer.set_storage_profile(profile);
+        self.presenter.rebuild_resident_scene(&self.renderer)?;
+        self.gpu_order_initialized = false;
+        let gpu_prepare_error = if self.order_backend == SurfaceOrderBackend::Cpu {
+            None
+        } else {
+            self.presenter.prepare_resident_gpu_order().err()
+        };
+        let gpu_prepare_failed = match (self.order_backend, gpu_prepare_error) {
+            (SurfaceOrderBackend::Gpu, Some(error)) => return Err(error.into()),
+            (SurfaceOrderBackend::Adaptive, Some(_)) => true,
+            _ => false,
+        };
+        if self.order_backend == SurfaceOrderBackend::Adaptive {
+            self.adaptive_policy.reset();
+            if gpu_prepare_failed {
+                self.adaptive_policy.gpu_failed();
+            } else {
                 self.adaptive_policy.gpu_initialized = true;
             }
         }

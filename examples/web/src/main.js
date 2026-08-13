@@ -112,6 +112,7 @@ const state = {
   qualificationTraceUrl: null,
   qualificationDatasetId: null,
   cameraReceipt: null,
+  storageProfile: "full-f32",
 };
 
 const els = {
@@ -384,6 +385,7 @@ async function createWasmRenderer(scene) {
       width: els.canvas.width,
       height: els.canvas.height,
       sortInterval: Number(els.sortInterval.value),
+      storageProfile: state.storageProfile,
     });
     state.wasmRenderer = renderer;
     state.backend = "wasm";
@@ -1383,6 +1385,14 @@ function applyUrlConfig() {
   setNumberInputFromParam(els.benchmarkYaw, params.get("gsplat_benchmark_yaw_step") ?? params.get("benchmark_yaw_step"));
   setNumberInputFromParam(els.sortInterval, params.get("gsplat_surface_sort_interval") ?? params.get("sort_interval"));
   setNumberInputFromParam(els.drawBudget, params.get("draw_budget"));
+  const storageProfile = (
+    params.get("gsplat_surface_storage_profile") ??
+    params.get("storage_profile") ??
+    ""
+  ).trim().toLowerCase();
+  if (storageProfile === "full-f32" || storageProfile === "quantized") {
+    state.storageProfile = storageProfile;
+  }
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
@@ -1485,12 +1495,20 @@ function wasmRendererLabel() {
   return state.wasmRenderer.rasterPath();
 }
 
+function requestedStorageProfile() {
+  if (usingWasm() && typeof state.wasmRenderer.storageProfile === "function") {
+    return state.wasmRenderer.storageProfile();
+  }
+  return state.storageProfile;
+}
+
 function benchmarkResultLine(benchmark) {
   const averages = legacyAverages(benchmark.collector);
   return (
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
     `samples=${averages.count} warmup=${benchmark.warmupFrames} ` +
-    `sort_interval=${Number(els.sortInterval.value)} renderer=${wasmRendererLabel()} ` +
+    `sort_interval=${Number(els.sortInterval.value)} ` +
+    `storage_profile=${requestedStorageProfile()} renderer=${wasmRendererLabel()} ` +
     `draw_budget=${usingWasm() ? "full" : Number(els.drawBudget.value)} ` +
     `avg_call_ms=${(averages.callMs ?? 0).toFixed(3)} ` +
     `avg_frame_ms=${(averages.frameMs ?? 0).toFixed(3)} ` +
@@ -1557,6 +1575,7 @@ async function emitBenchmarkArtifacts(benchmark) {
       implementation: "gsplat-rs",
       path: rendererPath,
       backend,
+      storage_profile_requested: requestedStorageProfile(),
       sort_policy: `interval_${sortInterval}`,
     },
     timing: {
@@ -1656,6 +1675,7 @@ function buildStatusText() {
   if (!usingWasm() && state.wasmUnavailableReason) {
     lines.push(`wasm=${state.wasmUnavailableReason}`);
   }
+  lines.push(`storage_profile=${requestedStorageProfile()}`);
   if (state.benchmark?.enabled) {
     lines.push(
       `benchmark=orbit frames=${state.benchmark.frames} warmup=${state.benchmark.warmupFrames}`,

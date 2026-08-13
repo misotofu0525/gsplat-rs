@@ -88,6 +88,7 @@ impl GpuRasterizer {
         self.resident_scene = None;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_resident_sorted_indices(
         &mut self,
         config: RendererConfig,
@@ -96,6 +97,7 @@ impl GpuRasterizer {
         scene: &SceneBuffers,
         world_covariance_terms: &[CameraCovarianceTerms],
         alpha_values: &[f32],
+        profile: crate::ResidentStorageProfile,
     ) -> Result<(), RendererError> {
         self.ensure_output_target(config.width, config.height)?;
         if self.resident_scene.is_none() {
@@ -105,6 +107,7 @@ impl GpuRasterizer {
                 scene,
                 world_covariance_terms,
                 alpha_values,
+                profile,
             )?);
         }
         let resident_scene = self
@@ -122,21 +125,34 @@ impl GpuRasterizer {
             )
             .map_err(|_| RendererError::GpuDeviceCreation)?;
 
-        let commands = draw_pass::encode_splat_draw(
-            &self.device,
-            draw_pass::SplatDraw {
-                encoder_label: "gsplat-offscreen-resident-encoder",
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-offscreen-resident-encoder"),
+            });
+        resident_scene.encode_project(&mut encoder, instance_count, false);
+        draw_pass::encode_splat_draw_into(
+            &mut encoder,
+            &draw_pass::SplatDraw {
                 pass_label: "gsplat-offscreen-resident-pass",
                 view: &self.output_view,
                 pipeline: &self.resident_pipeline,
-                bind_group: &resident_scene.cpu_bind_group,
+                bind_group: &resident_scene.draw_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
                 vertex_count: 6,
                 instance_count,
             },
         );
-        self.queue.submit(Some(commands));
+        self.queue.submit(Some(encoder.finish()));
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ensure_gpu_order(&mut self) -> Result<(), crate::ResidentSceneError> {
+        let scene = self.resident_scene.as_mut().ok_or_else(|| {
+            crate::ResidentSceneError::GpuOrderInitialization("no resident scene".to_owned())
+        })?;
+        scene.ensure_gpu_order(&self.device)
     }
 
     pub(crate) fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {
@@ -259,6 +275,7 @@ pub(crate) fn offscreen_device_limits(
     // Preserve resize headroom instead of freezing the device to the initial
     // render-target size.
     required_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
+    crate::quantized::apply_storage_buffer_stage_headroom(&mut required_limits, adapter_limits);
     if !required_limits.check_limits(adapter_limits) {
         return Err(RendererError::GpuDeviceCreation);
     }

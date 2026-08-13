@@ -26,6 +26,15 @@ and this project adheres to
   `GpuOddEvenSortBackend`, `RenderMode::SortFree`, and the retired Surface
   no-op C ABI knobs (`set_gpu_preproject*`, `set_async_geometry`,
   `set_instance_buffer_count`). CPU `GpuInstance` expansion is test-only.
+- Moved projection, covariance, and SH evaluation into a per-splat compute
+  preprocess; the vertex stage consumes compact projected records. Added an
+  explicit Rust-only `ResidentStorageProfile::Quantized` (32-byte SPZ-aligned
+  hot record + per-degree u8 SH sidecars) while keeping full-f32 as the
+  default. Experimental GPU ordering reads quantized positions. `bench-runner`
+  accepts `--storage-profile quantized`. The Android sample collector can
+  select the same layout through a hidden `gsplat_surface_storage_profile`
+  extra; the published C ABI stays on full-f32. The Web example/collector
+  can select the same layout at wasm Surface create time.
 
 ## [0.1.3] - 2026-07-10
 

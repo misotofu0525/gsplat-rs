@@ -3,8 +3,9 @@
 `wgpu` renderer and surface presentation paths for `gsplat-rs`.
 
 This is the rendering heart of the workspace. It implements the release-gated
-`SortedAlpha` path: CPU visibility/depth sorting (via `gsplat-sort`) followed by
-direct GPU projection and splat rasterization from resident scene buffers.
+`SortedAlpha` path: CPU visibility/depth sorting (via `gsplat-sort`), a
+per-splat compute preprocess, then thin quad rasterization from compact
+projected records.
 
 Main entry points:
 
@@ -19,9 +20,11 @@ Main entry points:
   `CAMetalLayer`, desktop windows, or an HTML canvas
 
 Internal layout (not a public API split): `math.rs`, `preprocess.rs`,
-`resident.rs`, `offscreen.rs`, `surface.rs`, plus isolated Adaptive/async
-modules. CPU-projected `GpuInstance` helpers exist only as a `#[cfg(test)]`
-conformance oracle.
+`project.rs`, `quantized.rs`, `resident.rs`, `offscreen.rs`, `surface.rs`,
+plus isolated Adaptive/async modules. `ResidentStorageProfile::Quantized` is
+an explicit Rust-only GPU layout (32-byte hot record + per-degree u8 SH
+sidecars); the C ABI stays on full-f32. CPU-projected `GpuInstance` helpers
+exist only as a `#[cfg(test)]` conformance oracle.
 
 Shader sources live in [`shaders/`](shaders/) and are documented in
 [`shaders/README.md`](shaders/README.md).

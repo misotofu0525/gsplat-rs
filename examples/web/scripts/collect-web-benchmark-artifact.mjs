@@ -42,6 +42,15 @@ const outDir = resolve(
     )
 );
 const port = Number(process.env.GSPLAT_HTTP_PORT ?? 4173);
+const storageProfile = process.env.GSPLAT_STORAGE_PROFILE ?? 'full-f32';
+if (storageProfile !== 'full-f32' && storageProfile !== 'quantized') {
+  console.error(JSON.stringify({
+    status: 'blocked',
+    reason: 'GSPLAT_STORAGE_PROFILE must be full-f32 or quantized',
+    storageProfile
+  }));
+  process.exit(2);
+}
 
 async function findChrome() {
   for (const candidate of chromeCandidates) {
@@ -205,6 +214,7 @@ try {
     gsplat_benchmark_frames: String(frames),
     gsplat_benchmark_warmup_frames: String(warmup),
     gsplat_surface_sort_interval: '2',
+    gsplat_surface_storage_profile: storageProfile,
     benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   if (dataset) params.set('dataset', dataset);
@@ -220,6 +230,25 @@ try {
   );
   await new Promise((r) => setTimeout(r, 1500));
   const parsed = parseArtifacts(consoleLines);
+  const manifest = JSON.parse(parsed.manifests[0]);
+  const requested = manifest.renderer?.storage_profile_requested;
+  if (requested !== storageProfile) {
+    throw new Error(
+      `artifact requested storage profile ${JSON.stringify(requested)}, expected ${JSON.stringify(storageProfile)}`
+    );
+  }
+  if (storageProfile === 'quantized') {
+    if (manifest.renderer?.path !== 'resident_sorted_indices') {
+      throw new Error(
+        `quantized evidence requires resident_sorted_indices, got ${JSON.stringify(manifest.renderer?.path)}`
+      );
+    }
+    if (manifest.renderer?.backend !== 'webgpu') {
+      throw new Error(
+        `quantized evidence requires webgpu, got ${JSON.stringify(manifest.renderer?.backend)}`
+      );
+    }
+  }
   const artifactDir = await writeArtifact(parsed);
   if (qualification) {
     const dataUrl = await page.$eval('#viewport', (canvas) => canvas.toDataURL('image/png'));

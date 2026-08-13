@@ -12,12 +12,12 @@ use gsplat_core::{
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
-#[cfg(target_os = "android")]
-use gsplat_render_wgpu::SurfaceOrderBackend;
 use gsplat_render_wgpu::{
     Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed, SurfacePresenter,
     SurfaceRenderSession,
 };
+#[cfg(target_os = "android")]
+use gsplat_render_wgpu::{ResidentStorageProfile, SurfaceOrderBackend};
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
@@ -1012,6 +1012,46 @@ pub unsafe extern "C" fn gsplat_android_benchmark_set_order_backend(
             return ffi_error_display(
                 err.code(),
                 "gsplat_android_benchmark_set_order_backend",
+                err,
+            );
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
+/// Android sample-only storage-profile knob used to collect paired quantized
+/// evidence without widening the published v0.1 header.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_android_benchmark_set_storage_profile(
+    renderer: *mut GsplatSurfaceRenderer,
+    profile: u32,
+) -> i32 {
+    ffi_catch_i32("gsplat_android_benchmark_set_storage_profile", || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_android_benchmark_set_storage_profile: renderer is null",
+                );
+            }
+        };
+        let profile = match profile {
+            0 => ResidentStorageProfile::FullF32,
+            1 => ResidentStorageProfile::Quantized,
+            _ => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_android_benchmark_set_storage_profile: unsupported profile",
+                );
+            }
+        };
+        if let Err(err) = renderer.session.set_storage_profile(profile) {
+            return ffi_error_display(
+                err.code(),
+                "gsplat_android_benchmark_set_storage_profile",
                 err,
             );
         }

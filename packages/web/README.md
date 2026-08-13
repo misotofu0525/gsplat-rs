@@ -23,6 +23,8 @@ The wrapper exposes:
 - `GsplatWebRenderer` for camera controls, resize, stats, and disposal
 - GPU-resident sorted-index rendering; `rasterPath()` reports
   `resident_sorted_indices`
+- optional `storageProfile: "quantized"` on `createGsplatRenderer` for the
+  explicit experimental GPU layout; default remains `full-f32`
 - phase-specific frame stats: `renderSubmitMs` and `frameWallMs`;
   `cpuGeometryMs` and `rasterMs` remain zero-valued compatibility fields
 

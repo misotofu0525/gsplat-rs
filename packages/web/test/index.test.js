@@ -36,6 +36,9 @@ function makeNativeRenderer(overrides = {}) {
     setSortInterval(interval) {
       calls.push(["setSortInterval", interval]);
     },
+    storageProfile() {
+      return "full-f32";
+    },
     renderFrame() {
       calls.push(["renderFrame"]);
       return {
@@ -92,6 +95,7 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
   renderer.zoom(1.1);
   renderer.pan(0.05, -0.05);
   renderer.setSortInterval(2);
+  assert.equal(renderer.storageProfile(), "full-f32");
 
   assert.deepEqual(renderer.renderFrame(), {
     frameMs: 1.25,
@@ -180,14 +184,23 @@ test("createGsplatRenderer validates inputs before creating native renderer", as
     }),
     TypeError,
   );
+  await assert.rejects(
+    createGsplatRenderer({
+      canvas: { width: 640, height: 480 },
+      plyBytes: new Uint8Array(),
+      storageProfile: "packed",
+      module,
+    }),
+    RangeError,
+  );
 });
 
 test("createGsplatRenderer normalizes bytes and applies render options", async () => {
   const native = makeNativeRenderer();
   let captured;
   const module = {
-    async createRenderer(canvas, plyBytes, width, height) {
-      captured = { canvas, plyBytes, width, height };
+    async createRenderer(canvas, plyBytes, width, height, storageProfile) {
+      captured = { canvas, plyBytes, width, height, storageProfile };
       return native;
     },
   };
@@ -198,6 +211,7 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
     canvas,
     plyBytes: buffer,
     sortInterval: 3,
+    storageProfile: "quantized",
     module,
   });
 
@@ -206,6 +220,7 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   assert.deepEqual(Array.from(captured.plyBytes), [1, 2, 3]);
   assert.equal(captured.width, 320);
   assert.equal(captured.height, 240);
+  assert.equal(captured.storageProfile, "quantized");
   assert.deepEqual(native.calls[0], ["setSortInterval", 3]);
   assert.equal(native.calls.length, 1);
 });
@@ -214,8 +229,8 @@ test("createGsplatRenderer uses the resident constructor", async () => {
   const native = makeNativeRenderer();
   let captured;
   const module = {
-    async createRenderer(canvas, plyBytes, width, height) {
-      captured = { canvas, plyBytes, width, height };
+    async createRenderer(canvas, plyBytes, width, height, storageProfile) {
+      captured = { canvas, plyBytes, width, height, storageProfile };
       return native;
     },
   };
@@ -228,6 +243,7 @@ test("createGsplatRenderer uses the resident constructor", async () => {
   });
 
   assert.equal(captured.canvas, canvas);
+  assert.equal(captured.storageProfile, "full-f32");
   assert.deepEqual(native.calls, [["setSortInterval", 2]]);
 });
 

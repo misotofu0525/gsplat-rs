@@ -69,10 +69,11 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
-- Follow the roadmap execution sequence: quantized resident storage plus
-  per-splat compute preprocessing next, then GPU-visible compaction, portable
-  radix sorting, and indirect drawing. The Phase 0 crate split and vestige
-  deletion has landed.
+- Follow the roadmap execution sequence: GPU-visible compaction, portable
+  radix sorting, and indirect drawing next. Per-splat compute preprocess is
+  on the default path; quantized resident storage is an explicit Rust-only
+  profile with per-degree SH sidecars and sample/collector extras on
+  Android and Web.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.

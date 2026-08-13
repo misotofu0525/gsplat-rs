@@ -78,7 +78,7 @@ Touch and pointer controls mirror the Android validation app:
 For repeatable browser performance checks, use Android-style query parameters:
 
 ```text
-http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_frames=120&gsplat_benchmark_warmup_frames=10&gsplat_benchmark_yaw_step=0.001&gsplat_surface_sort_interval=2
+http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_frames=120&gsplat_benchmark_warmup_frames=10&gsplat_benchmark_yaw_step=0.001&gsplat_surface_sort_interval=2&gsplat_surface_storage_profile=full-f32
 ```
 
 The result is printed in the Benchmark panel and to the browser console as a
@@ -86,6 +86,10 @@ The result is printed in the Benchmark panel and to the browser console as a
 the browser exits, add `gsplat_benchmark_sync=true`. Add `dataset=flowers` to
 run the same benchmark against
 `tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply`.
+`gsplat_surface_storage_profile=quantized` selects the explicit quantized
+resident layout on the Rust/WASM path; the default remains `full-f32`. It is
+an example/collector extra, not a published Web SDK option. The headless
+collector accepts `GSPLAT_STORAGE_PROFILE=quantized`.
 
 The Rust/WASM Surface path always uses GPU-resident scene data plus compact
 sorted IDs while keeping CPU sorting. Benchmark output reports

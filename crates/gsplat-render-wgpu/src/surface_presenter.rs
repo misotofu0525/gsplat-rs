@@ -2,12 +2,12 @@
 
 use gsplat_core::Camera;
 
-use crate::draw_pass::{SplatDraw, encode_splat_draw, encode_splat_draw_into};
+use crate::draw_pass::{SplatDraw, encode_splat_draw_into};
 use crate::{
     Renderer, ResidentSceneError, ResidentScenePath, ResidentScenePreflight,
     ResidentSceneResources, SurfacePresenterError, create_resident_bind_group_layout,
-    create_resident_pipeline, create_surface_instance, fit_surface_size, resident_scene_preflight,
-    select_present_mode, surface_error_to_presenter, wgpu_label,
+    create_resident_pipeline, create_surface_instance, fit_surface_size, select_present_mode,
+    surface_error_to_presenter, wgpu_label,
 };
 
 struct SurfaceAdapterContext {
@@ -19,8 +19,8 @@ pub struct SurfacePresenter {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    resident_pipeline: wgpu::RenderPipeline,
     resident_bind_group_layout: wgpu::BindGroupLayout,
+    resident_pipeline: wgpu::RenderPipeline,
     surface_config: wgpu::SurfaceConfiguration,
     max_texture_dimension_2d: u32,
     instance_count: u32,
@@ -48,6 +48,7 @@ fn create_resident_scene_resources(
         scene,
         world_covariance_terms,
         alpha_values,
+        renderer.storage_profile(),
     )
     .map_err(SurfacePresenterError::from)
 }
@@ -75,9 +76,15 @@ pub(crate) fn surface_resource_plan(
     width: u32,
     height: u32,
     limits: &wgpu::Limits,
+    profile: crate::ResidentStorageProfile,
 ) -> Result<SurfaceResourcePlan, ResidentSceneError> {
     Ok(SurfaceResourcePlan {
-        resident_preflight: resident_scene_preflight(scene_splats, sh_degree, limits)?,
+        resident_preflight: crate::resident_scene_preflight_for_profile(
+            scene_splats,
+            sh_degree,
+            limits,
+            profile,
+        )?,
         required_texture_dimension: width.max(height),
     })
 }
@@ -116,6 +123,7 @@ fn surface_required_device_limits(
         .max_storage_buffer_binding_size
         .max(required_storage_binding_size);
     required_limits.max_buffer_size = required_limits.max_buffer_size.max(required_storage_bytes);
+    crate::quantized::apply_storage_buffer_stage_headroom(&mut required_limits, adapter_limits);
 
     if !required_limits.check_limits(adapter_limits) {
         return Err(SurfacePresenterError::DeviceCreation(format!(
@@ -276,8 +284,14 @@ impl SurfacePresenter {
         let scene = renderer
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-        let resource_plan =
-            surface_resource_plan(scene.len(), scene.sh_degree, width, height, &adapter_limits)?;
+        let resource_plan = surface_resource_plan(
+            scene.len(),
+            scene.sh_degree,
+            width,
+            height,
+            &adapter_limits,
+            renderer.storage_profile(),
+        )?;
         let required_limits = surface_required_device_limits(&adapter_limits, &resource_plan)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -336,8 +350,8 @@ impl SurfacePresenter {
             surface,
             device,
             queue,
-            resident_pipeline,
             resident_bind_group_layout,
+            resident_pipeline,
             surface_config,
             max_texture_dimension_2d,
             instance_count: 0,
@@ -386,11 +400,28 @@ impl SurfacePresenter {
         self.present_resident_scene()
     }
 
+    /// Recreates resident GPU buffers for the renderer's current storage
+    /// profile. The draw pipeline is unchanged; GPU-order resources are dropped
+    /// and must be prepared again if that backend is still selected.
+    pub(crate) fn rebuild_resident_scene(
+        &mut self,
+        renderer: &Renderer,
+    ) -> Result<(), SurfacePresenterError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        self.resident_scene = create_resident_scene_resources(
+            &self.device,
+            &self.resident_bind_group_layout,
+            renderer,
+        )?;
+        self.instance_count = 0;
+        Ok(())
+    }
+
     /// Pre-creates the resident GPU ordering pipelines and buffers outside a
     /// measured/presented frame. No sorting or drawing happens here.
     pub(crate) fn prepare_resident_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        self.resident_scene
-            .ensure_gpu_order(&self.device, &self.resident_bind_group_layout)?;
+        self.resident_scene.ensure_gpu_order(&self.device)?;
         Ok(())
     }
 
@@ -403,7 +434,6 @@ impl SurfacePresenter {
     ) -> Result<(), SurfacePresenterError> {
         self.instance_count = self.resident_scene.prepare_gpu(
             &self.device,
-            &self.resident_bind_group_layout,
             &self.queue,
             camera,
             self.surface_config.width,
@@ -425,6 +455,8 @@ impl SurfacePresenter {
                 gpu_order.sorter.encode(&mut encoder);
             }
         }
+        self.resident_scene
+            .encode_project(&mut encoder, self.instance_count, true);
 
         let Some(frame) = self.acquire_surface_texture()? else {
             // A swapchain timeout must not discard a requested order refresh:
@@ -438,19 +470,13 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let gpu_order = self.resident_scene.gpu_order().ok_or_else(|| {
-            ResidentSceneError::GpuOrderInitialization(
-                "GPU order resources were not initialized".to_owned(),
-            )
-        })?;
         encode_splat_draw_into(
             &mut encoder,
             &SplatDraw {
-                encoder_label: "gsplat-surface-resident-gpu-order-encoder",
                 pass_label: "gsplat-surface-resident-gpu-order-draw-pass",
                 view: &view,
                 pipeline: &self.resident_pipeline,
-                bind_group: &gpu_order.bind_group,
+                bind_group: &self.resident_scene.draw_bind_group,
                 clear: wgpu::Color::BLACK,
                 vertex_count: 6,
                 instance_count: self.instance_count,
@@ -468,20 +494,26 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let commands = encode_splat_draw(
-            &self.device,
-            SplatDraw {
-                encoder_label: "gsplat-surface-resident-encoder",
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-surface-resident-encoder"),
+            });
+        self.resident_scene
+            .encode_project(&mut encoder, self.instance_count, false);
+        encode_splat_draw_into(
+            &mut encoder,
+            &SplatDraw {
                 pass_label: "gsplat-surface-resident-pass",
                 view: &view,
                 pipeline: &self.resident_pipeline,
-                bind_group: &self.resident_scene.cpu_bind_group,
+                bind_group: &self.resident_scene.draw_bind_group,
                 clear: wgpu::Color::BLACK,
                 vertex_count: 6,
                 instance_count: self.instance_count,
             },
         );
-        self.queue.submit(Some(commands));
+        self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
     }
@@ -525,7 +557,15 @@ mod tests {
         sh_degree: u8,
         limits: &wgpu::Limits,
     ) -> SurfaceResourcePlan {
-        surface_resource_plan(scene_splats, sh_degree, 716, 1_600, limits).expect("resource plan")
+        surface_resource_plan(
+            scene_splats,
+            sh_degree,
+            716,
+            1_600,
+            limits,
+            crate::ResidentStorageProfile::FullF32,
+        )
+        .expect("resource plan")
     }
 
     #[test]
@@ -573,6 +613,7 @@ mod tests {
             adapter.max_texture_dimension_2d + 1,
             1_600,
             &adapter,
+            crate::ResidentStorageProfile::FullF32,
         )
         .expect("resource plan");
 
@@ -607,5 +648,16 @@ mod tests {
 
         assert_eq!(requested.max_storage_buffer_binding_size, 270_000_000);
         assert_eq!(requested.max_buffer_size, 270_000_000);
+    }
+
+    #[test]
+    fn surface_requests_webgpu_storage_buffer_count_when_adapter_allows() {
+        let mut adapter = adapter_limits(256 << 20, 512 << 20);
+        adapter.max_storage_buffers_per_shader_stage = 8;
+        let plan = resource_plan(279_199, 3, &adapter);
+
+        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
+
+        assert_eq!(requested.max_storage_buffers_per_shader_stage, 8);
     }
 }

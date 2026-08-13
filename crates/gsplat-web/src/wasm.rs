@@ -3,7 +3,9 @@ use gsplat_core::{
     RendererConfig, SceneBuffers, Vec3f,
 };
 use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
-use gsplat_render_wgpu::{Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession};
+use gsplat_render_wgpu::{
+    Renderer, ResidentStorageProfile, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession,
+};
 use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -27,8 +29,9 @@ pub async fn create_renderer(
     ply_bytes: Uint8Array,
     width: u32,
     height: u32,
+    storage_profile: Option<String>,
 ) -> Result<GsplatWebRenderer, JsValue> {
-    create_renderer_for_surface(canvas, ply_bytes, width, height).await
+    create_renderer_for_surface(canvas, ply_bytes, width, height, storage_profile.as_deref()).await
 }
 
 async fn create_renderer_for_surface(
@@ -36,6 +39,7 @@ async fn create_renderer_for_surface(
     ply_bytes: Uint8Array,
     width: u32,
     height: u32,
+    storage_profile: Option<&str>,
 ) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
@@ -47,6 +51,7 @@ async fn create_renderer_for_surface(
     })
     .map_err(renderer_error)?;
     renderer.load_scene(loaded.scene).map_err(renderer_error)?;
+    renderer.set_storage_profile(parse_storage_profile(storage_profile)?);
 
     let presenter = SurfacePresenter::from_canvas(canvas, width, height, &renderer)
         .await
@@ -200,6 +205,13 @@ impl GsplatWebRenderer {
     #[wasm_bindgen(js_name = rasterPath)]
     pub fn raster_path(&self) -> String {
         "resident_sorted_indices".to_owned()
+    }
+
+    /// Explicit resident layout token. Default is `full-f32`; `quantized` is
+    /// the experimental SPZ-aligned GPU profile, not a published SDK option.
+    #[wasm_bindgen(js_name = storageProfile)]
+    pub fn storage_profile(&self) -> String {
+        self.session.storage_profile().as_str().to_owned()
     }
 
     #[wasm_bindgen(js_name = renderFrame)]
@@ -458,6 +470,14 @@ fn set_u32(object: &Object, key: &str, value: u32) -> Result<(), JsValue> {
 
 fn set_bool(object: &Object, key: &str, value: bool) -> Result<(), JsValue> {
     Reflect::set(object, &JsValue::from_str(key), &JsValue::from_bool(value)).map(|_| ())
+}
+
+fn parse_storage_profile(token: Option<&str>) -> Result<ResidentStorageProfile, JsValue> {
+    match token.unwrap_or("full-f32") {
+        "" | "full-f32" => Ok(ResidentStorageProfile::FullF32),
+        "quantized" => Ok(ResidentStorageProfile::Quantized),
+        other => Err(js_error(format!("unsupported storage profile: {other}"))),
+    }
 }
 
 fn renderer_error(err: gsplat_render_wgpu::RendererError) -> JsValue {

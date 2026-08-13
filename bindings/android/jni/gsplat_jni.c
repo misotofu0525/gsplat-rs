@@ -15,6 +15,9 @@
 extern int32_t gsplat_android_benchmark_set_order_backend(
     GsplatSurfaceRenderer *renderer,
     uint32_t backend);
+extern int32_t gsplat_android_benchmark_set_storage_profile(
+    GsplatSurfaceRenderer *renderer,
+    uint32_t profile);
 
 JNIEXPORT jint JNICALL Java_com_gsplat_example_GsplatJniSmoke_nativeVersionMajor(JNIEnv *env, jclass cls) {
   (void)env;
@@ -295,6 +298,23 @@ JNIEXPORT jint JNICALL Java_com_gsplat_example_BenchmarkBridge_setSurfaceOrderBa
   return gsplat_android_benchmark_set_order_backend(
       handle->renderer,
       (uint32_t)backend);
+}
+
+JNIEXPORT jint JNICALL Java_com_gsplat_example_BenchmarkBridge_setSurfaceStorageProfile(
+    JNIEnv *env,
+    jclass cls,
+    jlong native_handle,
+    jint profile) {
+  (void)env;
+  (void)cls;
+
+  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
+  if (handle == NULL || handle->renderer == NULL || profile < 0 || profile > 1) {
+    return GSPLAT_ERROR_INVALID_ARGUMENT;
+  }
+  return gsplat_android_benchmark_set_storage_profile(
+      handle->renderer,
+      (uint32_t)profile);
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceFrameLatency(

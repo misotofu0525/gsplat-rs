@@ -41,12 +41,20 @@ import kotlin.math.roundToInt
 private const val GSPLAT_ORDER_BACKEND_CPU = 0
 private const val GSPLAT_ORDER_BACKEND_GPU = 1
 private const val GSPLAT_ORDER_BACKEND_ADAPTIVE = 2
+private const val GSPLAT_STORAGE_PROFILE_FULL_F32 = 0
+private const val GSPLAT_STORAGE_PROFILE_QUANTIZED = 1
 
 private fun orderBackendValue(label: String): Int =
     when (label) {
         "gpu" -> GSPLAT_ORDER_BACKEND_GPU
         "adaptive" -> GSPLAT_ORDER_BACKEND_ADAPTIVE
         else -> GSPLAT_ORDER_BACKEND_CPU
+    }
+
+private fun storageProfileValue(label: String): Int =
+    when (label) {
+        "quantized" -> GSPLAT_STORAGE_PROFILE_QUANTIZED
+        else -> GSPLAT_STORAGE_PROFILE_FULL_F32
     }
 
 private fun adaptiveStateName(flags: Long): String =
@@ -379,6 +387,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     NativeBridge.destroySurfaceRenderer(handle)
                     running = false
                     updateStatus("state=create_failed rc=$asyncSortRc error=$message")
+                    return@Thread
+                }
+                val storageProfileRc = BenchmarkBridge.setSurfaceStorageProfile(
+                    handle,
+                    storageProfileValue(benchmarkConfig.storageProfile)
+                )
+                if (storageProfileRc != 0) {
+                    val message = NativeBridge.errorMessage(storageProfileRc)
+                    Log.e(TAG, "setSurfaceStorageProfile failed rc=$storageProfileRc error=$message")
+                    NativeBridge.destroySurfaceRenderer(handle)
+                    running = false
+                    updateStatus("state=create_failed rc=$storageProfileRc error=$message")
                     return@Thread
                 }
                 val orderBackendRc = BenchmarkBridge.setSurfaceOrderBackend(
@@ -1000,6 +1020,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         appendLine(cameraStatus)
         appendLine("geometry_pipeline=resident_sorted_indices")
         appendLine("order_backend=${benchmarkConfig.orderBackend}")
+        appendLine("storage_profile=${benchmarkConfig.storageProfile}")
         if (benchmarkConfig.enabled) {
             appendLine("benchmark=orbit frames=${benchmarkConfig.frames} warmup=${benchmarkConfig.warmupFrames}")
         }
@@ -1040,6 +1061,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
         private const val EXTRA_SURFACE_ORDER_BACKEND = "gsplat_surface_order_backend"
+        private const val EXTRA_SURFACE_STORAGE_PROFILE = "gsplat_surface_storage_profile"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
         private const val DEFAULT_BENCHMARK_YAW_STEP = 0.001f
@@ -1047,6 +1069,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
         private const val DEFAULT_SURFACE_ORDER_BACKEND = "cpu"
+        private const val DEFAULT_SURFACE_STORAGE_PROFILE = "full-f32"
         private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
         private const val BENCHMARK_MANIFEST_PREFIX = "GSPLAT_BENCHMARK_MANIFEST "
         private const val BENCHMARK_FRAME_PREFIX = "GSPLAT_BENCHMARK_FRAME "
@@ -1111,6 +1134,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
         // Sample-only A/B knob: "cpu", "gpu", or "adaptive".
         val orderBackend: String = DEFAULT_SURFACE_ORDER_BACKEND,
+        // Sample-only A/B knob: "full-f32" or "quantized".
+        val storageProfile: String = DEFAULT_SURFACE_STORAGE_PROFILE,
     ) {
         companion object {
             fun fromIntent(intent: Intent): BenchmarkConfig {
@@ -1137,6 +1162,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     ?.lowercase(Locale.US)
                     ?.takeIf { it == "cpu" || it == "gpu" || it == "adaptive" }
                     ?: DEFAULT_SURFACE_ORDER_BACKEND
+                val storageProfile = intent.getStringExtra(EXTRA_SURFACE_STORAGE_PROFILE)
+                    ?.trim()
+                    ?.lowercase(Locale.US)
+                    ?.takeIf { it == "full-f32" || it == "quantized" }
+                    ?: DEFAULT_SURFACE_STORAGE_PROFILE
                 return BenchmarkConfig(
                     enabled = intent.getBooleanExtra(EXTRA_BENCHMARK, false),
                     frames = frames,
@@ -1145,7 +1175,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     sortInterval = sortInterval,
                     asyncSort = asyncSort,
                     frameLatency = frameLatency,
-                    orderBackend = orderBackend
+                    orderBackend = orderBackend,
+                    storageProfile = storageProfile
                 )
             }
         }
@@ -1250,6 +1281,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "async_sort=${config.asyncSort} " +
                 "order_backend=${config.orderBackend} " +
+                "storage_profile=${config.storageProfile} " +
                 "geometry_pipeline=resident_sorted_indices " +
                 "frame_latency=${config.frameLatency} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
@@ -1328,6 +1360,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("path", "resident_sorted_indices")
                     .put("backend", "vulkan")
                     .put("order_backend_requested", config.orderBackend)
+                    .put("storage_profile_requested", config.storageProfile)
                     .put("gpu_count_semantics", "source_count_upper_bound; sort-all/draw-all")
                     .put("sort_policy", if (config.asyncSort) {
                         "async_latest:${config.sortInterval}"

@@ -87,15 +87,64 @@ class ParsingTests(unittest.TestCase):
             sort_interval=2,
             async_sort=False,
             frame_latency=3,
+            storage_profile="full-f32",
         )
         launch = COLLECTOR.benchmark_launch_args(args, "gpu")
         self.assertIn("gsplat_surface_order_backend", launch)
-        self.assertEqual(launch[-1], "gpu")
+        self.assertEqual(launch[-1], "full-f32")
+        self.assertEqual(launch[launch.index("gsplat_surface_order_backend") + 1], "gpu")
+        self.assertEqual(
+            launch[launch.index("gsplat_surface_storage_profile") + 1], "full-f32"
+        )
         self.assertEqual(launch[launch.index("gsplat_benchmark_frames") + 1], "240")
+
+    def test_launch_arguments_select_quantized_storage_profile(self) -> None:
+        args = argparse.Namespace(
+            frames=80,
+            warmup=20,
+            yaw=0.001,
+            sort_interval=1,
+            async_sort=False,
+            frame_latency=2,
+            storage_profile="quantized",
+        )
+        launch = COLLECTOR.benchmark_launch_args(args, "cpu")
+        self.assertEqual(launch[launch.index("gsplat_surface_order_backend") + 1], "cpu")
+        self.assertEqual(
+            launch[launch.index("gsplat_surface_storage_profile") + 1], "quantized"
+        )
+
+    def test_artifact_rejects_wrong_storage_profile(self) -> None:
+        manifest = {
+            "renderer": {
+                "order_backend_requested": "cpu",
+                "storage_profile_requested": "full-f32",
+            },
+            "dataset": {"sha256": "abc", "bytes": 123},
+        }
+        summary = {
+            "sample_count": 1,
+            "sort_telemetry": {
+                "cpu_frame_count": 1,
+                "gpu_frame_count": 0,
+                "gpu_sort_fallback_count": 0,
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "storage profile"):
+            COLLECTOR.validate_run_artifact(
+                manifest,
+                summary,
+                "cpu",
+                {"sha256": "abc", "bytes": 123},
+                "quantized",
+            )
 
     def test_forced_backend_and_dataset_identity_are_validated(self) -> None:
         manifest = {
-            "renderer": {"order_backend_requested": "gpu"},
+            "renderer": {
+                "order_backend_requested": "gpu",
+                "storage_profile_requested": "full-f32",
+            },
             "dataset": {"sha256": "abc", "bytes": 123},
         }
         summary = {
@@ -119,7 +168,10 @@ class ParsingTests(unittest.TestCase):
 
     def test_artifact_rejects_wrong_packaged_dataset(self) -> None:
         manifest = {
-            "renderer": {"order_backend_requested": "cpu"},
+            "renderer": {
+                "order_backend_requested": "cpu",
+                "storage_profile_requested": "full-f32",
+            },
             "dataset": {"sha256": "wrong", "bytes": 123},
         }
         summary = {

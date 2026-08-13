@@ -2,39 +2,6 @@
 
 use crate::wgpu_label;
 
-pub(crate) fn create_splat_bind_group_layout(
-    device: &wgpu::Device,
-    label: &'static str,
-    storage_bindings: u32,
-) -> wgpu::BindGroupLayout {
-    let mut entries = (0..storage_bindings)
-        .map(|binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        })
-        .collect::<Vec<_>>();
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: storage_bindings,
-        visibility: wgpu::ShaderStages::VERTEX,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    });
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: wgpu_label(label),
-        entries: &entries,
-    })
-}
-
 pub(crate) struct SplatPipeline {
     pub(crate) shader_label: &'static str,
     pub(crate) shader_source: &'static str,
@@ -89,7 +56,6 @@ pub(crate) fn create_splat_pipeline(
 }
 
 pub(crate) struct SplatDraw<'a> {
-    pub(crate) encoder_label: &'static str,
     pub(crate) pass_label: &'static str,
     pub(crate) view: &'a wgpu::TextureView,
     pub(crate) pipeline: &'a wgpu::RenderPipeline,
@@ -97,14 +63,6 @@ pub(crate) struct SplatDraw<'a> {
     pub(crate) clear: wgpu::Color,
     pub(crate) vertex_count: u32,
     pub(crate) instance_count: u32,
-}
-
-pub(crate) fn encode_splat_draw(device: &wgpu::Device, draw: SplatDraw<'_>) -> wgpu::CommandBuffer {
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: wgpu_label(draw.encoder_label),
-    });
-    encode_splat_draw_into(&mut encoder, &draw);
-    encoder.finish()
 }
 
 pub(crate) fn encode_splat_draw_into(encoder: &mut wgpu::CommandEncoder, draw: &SplatDraw<'_>) {

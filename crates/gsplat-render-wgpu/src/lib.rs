@@ -6,6 +6,8 @@ mod math;
 #[cfg(not(target_arch = "wasm32"))]
 mod offscreen;
 mod preprocess;
+mod project;
+mod quantized;
 mod resident;
 mod resident_gpu_order;
 mod surface;
@@ -23,9 +25,11 @@ use cpu_geometry::{GpuInstance, build_instances_into};
 
 pub use error::{RendererError, SurfacePresenterError};
 pub use preprocess::PreprocessOutput;
+pub use quantized::ResidentStorageProfile;
 pub use resident::{
     ResidentSceneError, ResidentScenePath, ResidentScenePreflight, ResidentSceneRemediation,
     ResidentSceneResource, ResidentSceneResourceRequirement, resident_scene_preflight,
+    resident_scene_preflight_for_profile,
 };
 pub use surface_presenter::SurfacePresenter;
 pub use surface_session::{
@@ -65,6 +69,7 @@ pub struct Renderer {
     preprocess_depth_keys: Vec<u32>,
     preprocess_indices: Vec<u32>,
     last_stats: FrameStats,
+    storage_profile: ResidentStorageProfile,
 }
 
 impl Renderer {
@@ -128,11 +133,27 @@ impl Renderer {
             preprocess_depth_keys: Vec::new(),
             preprocess_indices: Vec::new(),
             last_stats: FrameStats::zero(),
+            storage_profile: ResidentStorageProfile::FullF32,
         }
     }
 
     pub fn config(&self) -> RendererConfig {
         self.config
+    }
+
+    pub fn storage_profile(&self) -> ResidentStorageProfile {
+        self.storage_profile
+    }
+
+    pub fn set_storage_profile(&mut self, profile: ResidentStorageProfile) {
+        if self.storage_profile == profile {
+            return;
+        }
+        self.storage_profile = profile;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
+            rasterizer.clear_scene_resources();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -215,8 +236,13 @@ impl Renderer {
                 .gpu_rasterizer
                 .as_ref()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            resident_scene_preflight(scene.len(), scene.sh_degree, &rasterizer.device.limits())
-                .map_err(RendererError::from)
+            resident_scene_preflight_for_profile(
+                scene.len(),
+                scene.sh_degree,
+                &rasterizer.device.limits(),
+                self.storage_profile,
+            )
+            .map_err(RendererError::from)
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -244,6 +270,15 @@ impl Renderer {
         {
             Err(RendererError::GpuRasterizerUnavailable)
         }
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn ensure_resident_gpu_order_for_test(&mut self) -> Result<(), RendererError> {
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_mut()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        rasterizer.ensure_gpu_order().map_err(RendererError::from)
     }
 
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
@@ -442,6 +477,7 @@ impl Renderer {
             self.alpha_values
                 .as_deref()
                 .ok_or(RendererError::InvalidScene)?,
+            self.storage_profile,
         )
     }
 
@@ -546,7 +582,8 @@ mod tests {
 
     use super::{
         Renderer, RendererError, ResidentSceneError, ResidentScenePath, ResidentSceneRemediation,
-        ResidentSceneResource, resident_scene_preflight,
+        ResidentSceneResource, ResidentStorageProfile, resident_scene_preflight,
+        resident_scene_preflight_for_profile,
     };
     use crate::cpu_geometry::{
         build_instances, ellipse_axes_from_covariance, project_covariance_to_ndc,
@@ -898,6 +935,238 @@ mod tests {
         eprintln!("wrote {}", out_path.display());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quantized_profile_renders_close_to_full_f32() {
+        let config = test_config(64);
+        let Some(mut reference) = test_renderer(config, "quantized vs f32") else {
+            return;
+        };
+        let mut quantized = Renderer::with_config(config).expect("second renderer");
+        quantized.set_storage_profile(ResidentStorageProfile::Quantized);
+        let scene = build_scene();
+        reference.load_scene(scene.clone()).unwrap();
+        quantized.load_scene(scene).unwrap();
+        let camera = Camera::default();
+        reference.render_frame(&camera).unwrap();
+        quantized.render_frame(&camera).unwrap();
+        let metrics = rgba_image_parity_metrics(
+            &reference.readback_rgba8().unwrap(),
+            &quantized.readback_rgba8().unwrap(),
+        );
+        eprintln!(
+            "quantized vs f32: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
+            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 2.0 / 255.0,
+            "quantized mean abs RGB {:.6} exceeded 2/255",
+            metrics.mean_abs_rgb
+        );
+    }
+
+    fn ssim_luma_srgb_window8(first: &[u8], second: &[u8], width: u32, height: u32) -> f64 {
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first.len(), (width * height * 4) as usize);
+        const WINDOW: u32 = 8;
+        const C1: f64 = (0.01 * 255.0) * (0.01 * 255.0);
+        const C2: f64 = (0.03 * 255.0) * (0.03 * 255.0);
+        let mut scores = Vec::new();
+        let mut top = 0_u32;
+        while top < height {
+            let mut left = 0_u32;
+            while left < width {
+                let bottom = (top + WINDOW).min(height);
+                let right = (left + WINDOW).min(width);
+                let mut luma_a = Vec::new();
+                let mut luma_b = Vec::new();
+                for y in top..bottom {
+                    for x in left..right {
+                        let offset = ((y * width + x) * 4) as usize;
+                        luma_a.push(
+                            0.2126 * f64::from(first[offset])
+                                + 0.7152 * f64::from(first[offset + 1])
+                                + 0.0722 * f64::from(first[offset + 2]),
+                        );
+                        luma_b.push(
+                            0.2126 * f64::from(second[offset])
+                                + 0.7152 * f64::from(second[offset + 1])
+                                + 0.0722 * f64::from(second[offset + 2]),
+                        );
+                    }
+                }
+                scores.push(window_ssim(&luma_a, &luma_b, C1, C2));
+                left += WINDOW;
+            }
+            top += WINDOW;
+        }
+        scores.iter().sum::<f64>() / scores.len().max(1) as f64
+    }
+
+    fn window_ssim(a: &[f64], b: &[f64], c1: f64, c2: f64) -> f64 {
+        let count = a.len() as f64;
+        let mean_a = a.iter().sum::<f64>() / count;
+        let mean_b = b.iter().sum::<f64>() / count;
+        let mut var_a = 0.0;
+        let mut var_b = 0.0;
+        let mut cov = 0.0;
+        for index in 0..a.len() {
+            let da = a[index] - mean_a;
+            let db = b[index] - mean_b;
+            var_a += da * da;
+            var_b += db * db;
+            cov += da * db;
+        }
+        let denom = (count - 1.0).max(1.0);
+        var_a /= denom;
+        var_b /= denom;
+        cov /= denom;
+        ((2.0 * mean_a * mean_b + c1) * (2.0 * cov + c2))
+            / ((mean_a * mean_a + mean_b * mean_b + c1) * (var_a + var_b + c2))
+    }
+
+    fn build_degree_three_scene() -> SceneBuffers {
+        let mut rest = [0.0_f32; 45];
+        rest[0] = 0.2;
+        rest[1] = -0.15;
+        rest[8] = 0.1;
+        rest[15] = 0.05;
+        rest[30] = -0.08;
+        SceneBuffers {
+            positions: vec![
+                Vec3f::new(0.0, 0.0, 1.5),
+                Vec3f::new(0.15, 0.0, 1.8),
+                Vec3f::new(-0.12, 0.08, 1.4),
+            ],
+            opacity: vec![0.95, 0.9, 0.85],
+            scale_xyz: vec![[-1.2, -1.4, -1.5], [-1.1, -1.1, -1.3], [-1.3, -1.2, -1.4]],
+            rotation_xyzw: vec![
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.1, 0.0, 0.995],
+                [0.05, 0.0, 0.05, 0.997],
+            ],
+            color_dc: vec![[0.4, 0.2, 0.1], [0.1, 0.35, 0.2], [0.2, 0.15, 0.4]],
+            sh_degree: 3,
+            sh_rest: Some(rest.as_slice().repeat(3)),
+        }
+    }
+
+    #[test]
+    fn ssim_self_check_identical_is_one() {
+        let pixels = [
+            0_u8, 64, 128, 255, 10, 20, 30, 255, 255, 128, 0, 255, 1, 2, 3, 255,
+        ];
+        let score = ssim_luma_srgb_window8(&pixels, &pixels, 2, 2);
+        assert!((score - 1.0).abs() < 1e-12, "{score}");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_profile_pair(
+        scene: SceneBuffers,
+        size: u32,
+        label: &str,
+        camera: &Camera,
+    ) -> Option<(Vec<u8>, Vec<u8>, f32, f32)> {
+        let config = test_config(size);
+        let mut reference = test_renderer(config, label)?;
+        let mut quantized = Renderer::with_config(config).expect("second renderer");
+        quantized.set_storage_profile(ResidentStorageProfile::Quantized);
+        reference.load_scene(scene.clone()).unwrap();
+        quantized.load_scene(scene).unwrap();
+        let started = std::time::Instant::now();
+        reference.render_frame(camera).unwrap();
+        let f32_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let started = std::time::Instant::now();
+        quantized.render_frame(camera).unwrap();
+        let quantized_ms = started.elapsed().as_secs_f32() * 1000.0;
+        Some((
+            reference.readback_rgba8().unwrap(),
+            quantized.readback_rgba8().unwrap(),
+            f32_ms,
+            quantized_ms,
+        ))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quantized_degree_three_matches_f32_ssim() {
+        let scene = build_degree_three_scene();
+        scene.validate().unwrap();
+        let Some((reference, quantized, f32_ms, quantized_ms)) =
+            render_profile_pair(scene, 64, "quantized degree-3 SSIM", &Camera::default())
+        else {
+            return;
+        };
+        let metrics = rgba_image_parity_metrics(&reference, &quantized);
+        let ssim = ssim_luma_srgb_window8(&reference, &quantized, 64, 64);
+        eprintln!(
+            "quantized degree-3: mean_abs_rgb={:.6} ssim={:.6} first_frame_ms f32={:.3} quantized={:.3}",
+            metrics.mean_abs_rgb, ssim, f32_ms, quantized_ms
+        );
+        assert!(ssim >= 0.99, "degree-3 SSIM {ssim} below 0.99");
+        assert!(metrics.mean_abs_rgb <= 3.0 / 255.0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quantized_gpu_order_initializes_after_first_frame() {
+        let config = test_config(32);
+        let Some(mut renderer) = test_renderer(config, "quantized GPU order") else {
+            return;
+        };
+        renderer.set_storage_profile(ResidentStorageProfile::Quantized);
+        renderer.load_scene(build_degree_three_scene()).unwrap();
+        renderer.render_frame(&Camera::default()).unwrap();
+        renderer
+            .ensure_resident_gpu_order_for_test()
+            .expect("quantized GPU order should initialize");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quantized_real_scenes_keep_high_ssim_when_present() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/datasets");
+        let datasets = [
+            (
+                "Kitsune",
+                root.join("external/wakufactory_kitune/kitune1.ply"),
+            ),
+            (
+                "Flowers",
+                root.join("external/nvidia_flowers_1/flowers_1/flowers_1.ply"),
+            ),
+        ];
+        let mut ran = 0_u32;
+        for (label, path) in datasets {
+            if !path.is_file() {
+                eprintln!("skipping {label} quantized SSIM; dataset missing");
+                continue;
+            }
+            let loaded = gsplat_io_ply::load_ply(&path)
+                .unwrap_or_else(|error| panic!("load {label} at {}: {error}", path.display()));
+            let camera = orbit_camera_for_scene(&loaded.scene, test_config(128), 0.0);
+            let Some((reference, quantized, f32_ms, quantized_ms)) = render_profile_pair(
+                loaded.scene,
+                128,
+                &format!("{label} quantized SSIM"),
+                &camera,
+            ) else {
+                return;
+            };
+            let metrics = rgba_image_parity_metrics(&reference, &quantized);
+            let ssim = ssim_luma_srgb_window8(&reference, &quantized, 128, 128);
+            eprintln!(
+                "{label} quantized vs f32: splats-ssim={ssim:.6} mean_abs_rgb={:.6} first_frame_ms f32={f32_ms:.3} quantized={quantized_ms:.3}",
+                metrics.mean_abs_rgb
+            );
+            assert!(ssim >= 0.99, "{label} SSIM {ssim} below 0.99");
+            ran += 1;
+        }
+        if ran == 0 {
+            eprintln!("no local real scenes available for quantized SSIM");
+        }
+    }
+
     #[test]
     fn sorted_alpha_orders_visible_indices_back_to_front() {
         let scene = SceneBuffers {
@@ -1033,10 +1302,28 @@ mod tests {
         assert_eq!(requested.max_texture_dimension_2d, 8192);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn offscreen_limits_raise_storage_buffers_per_stage_when_adapter_allows() {
+        let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+        adapter_limits.max_storage_buffers_per_shader_stage = 8;
+        adapter_limits.max_texture_dimension_2d = 8192;
+        let config = RendererConfig {
+            width: 64,
+            height: 64,
+            mode: RenderMode::SortedAlpha,
+        };
+
+        let requested = offscreen_device_limits(&config, &adapter_limits).unwrap();
+
+        assert_eq!(requested.max_storage_buffers_per_shader_stage, 8);
+    }
+
     fn limits_with_storage_binding_limit(bytes: u32) -> wgpu::Limits {
         let mut limits = wgpu::Limits::downlevel_defaults();
         limits.max_storage_buffer_binding_size = bytes;
         limits.max_buffer_size = u64::from(bytes);
+        limits.max_storage_buffers_per_shader_stage = 8;
         limits
     }
 
@@ -1050,6 +1337,7 @@ mod tests {
         assert_eq!(report.requirements[0].required_bytes, 4);
         assert_eq!(report.requirements[1].required_bytes, 64);
         assert_eq!(report.requirements[2].required_bytes, 4);
+        assert_eq!(report.requirements[3].required_bytes, 48);
     }
 
     #[test]
@@ -1080,6 +1368,53 @@ mod tests {
         assert_eq!(at_limit.limiting_resource, ResidentSceneResource::ShRest);
         assert_eq!(above_limit.path, ResidentScenePath::CapacityExceeded);
         assert_eq!(above_limit.requirements[2].required_bytes, 134_217_900);
+    }
+
+    #[test]
+    fn quantized_degree_three_fits_one_million_in_128_mib() {
+        let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
+        let at_limit = resident_scene_preflight_for_profile(
+            1_000_000,
+            3,
+            &limits,
+            ResidentStorageProfile::Quantized,
+        )
+        .unwrap();
+        let above_projected = resident_scene_preflight_for_profile(
+            2_796_203,
+            3,
+            &limits,
+            ResidentStorageProfile::Quantized,
+        )
+        .unwrap();
+
+        assert_eq!(at_limit.path, ResidentScenePath::Resident);
+        assert_eq!(at_limit.requirements[2].required_bytes, 21_000_000);
+        assert_eq!(above_projected.path, ResidentScenePath::CapacityExceeded);
+        assert_eq!(
+            above_projected.limiting_resource,
+            ResidentSceneResource::Projected
+        );
+    }
+
+    #[test]
+    fn quantized_preflight_rejects_downlevel_storage_buffer_count() {
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        limits.max_storage_buffers_per_shader_stage = 4;
+        let error = resident_scene_preflight_for_profile(
+            1_000,
+            3,
+            &limits,
+            ResidentStorageProfile::Quantized,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ResidentSceneError::StorageBuffersPerStage {
+                required: 7,
+                available: 4,
+            }
+        );
     }
 
     #[test]

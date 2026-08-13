@@ -474,6 +474,9 @@ def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
         "--es",
         "gsplat_surface_order_backend",
         backend,
+        "--es",
+        "gsplat_surface_storage_profile",
+        args.storage_profile,
     ]
 
 
@@ -555,11 +558,18 @@ def validate_run_artifact(
     summary: dict[str, Any],
     expected_backend: str,
     expected_dataset: dict[str, Any],
+    expected_storage_profile: str = "full-f32",
 ) -> None:
     requested = manifest.get("renderer", {}).get("order_backend_requested")
     if requested != expected_backend:
         raise RuntimeError(
             f"artifact requested backend {requested!r}, expected {expected_backend!r}"
+        )
+    requested_profile = manifest.get("renderer", {}).get("storage_profile_requested")
+    if requested_profile != expected_storage_profile:
+        raise RuntimeError(
+            f"artifact requested storage profile {requested_profile!r}, "
+            f"expected {expected_storage_profile!r}"
         )
 
     dataset = manifest.get("dataset", {})
@@ -648,6 +658,12 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         choices=BACKENDS,
         help="backend to include; repeat for an A/B set (default: cpu, gpu)",
+    )
+    result.add_argument(
+        "--storage-profile",
+        choices=("full-f32", "quantized"),
+        default="full-f32",
+        help="resident GPU storage layout (sample-only; default full-f32)",
     )
     result.add_argument("--repetitions", type=int, default=1, help="runs per backend")
     result.add_argument(
@@ -903,6 +919,7 @@ def collect_scheduled_runs(
         print(
             f"run={spec.index}/{len(schedule)} repetition={spec.repetition} "
             f"position={spec.position} backend={spec.backend} "
+            f"storage_profile={args.storage_profile} "
             f"interval={args.sort_interval} frames={args.frames} "
             f"warmup={args.warmup} yaw={args.yaw} "
             f"async_sort={str(args.async_sort).lower()} "
@@ -940,6 +957,7 @@ def collect_scheduled_runs(
             summary,
             spec.backend,
             experiment["dataset"],
+            args.storage_profile,
         )
 
         run_record.update(
@@ -989,6 +1007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "configuration": {
             "backends": backends,
+            "storage_profile": args.storage_profile,
             "repetitions": args.repetitions,
             "randomize_order": args.randomize_order,
             "seed": args.seed,

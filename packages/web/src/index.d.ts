@@ -7,6 +7,7 @@ export interface GsplatWebModule {
     plyBytes: Uint8Array,
     width: number,
     height: number,
+    storageProfile?: "full-f32" | "quantized",
   ): Promise<unknown>;
 }
 
@@ -27,6 +28,8 @@ export interface CreateRendererOptions {
   width?: number;
   height?: number;
   sortInterval?: number;
+  /** Explicit experimental GPU layout. Default `full-f32`. */
+  storageProfile?: "full-f32" | "quantized";
   module?: GsplatWebModule;
 }
 
@@ -72,6 +75,7 @@ export class GsplatWebRenderer {
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
   setSortInterval(interval: number): void;
   rasterPath(): string;
+  storageProfile(): "full-f32" | "quantized";
   renderFrame(): GsplatFrameStats;
   sceneSummary(): GsplatSceneSummary;
   surfaceSize(): GsplatSurfaceSize;

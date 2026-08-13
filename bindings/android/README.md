@@ -211,6 +211,9 @@ python3 bindings/android/scripts/collect-android-sort-benchmarks.py \
 ```
 
 Add `--backend adaptive` to include the runtime selector in every repetition.
+Use `--storage-profile quantized` for the explicit quantized resident layout;
+the default remains `full-f32`. This is a sample-only collector extra
+(`gsplat_surface_storage_profile`), not a stable Android SDK option.
 The collector defaults to 80 measured frames so the final indexed JSONL burst
 stays below conservative Android `logd` per-tag quotas. Larger values are
 allowed, but the artifact validator rejects the run if `logd` drops even one
@@ -267,4 +270,7 @@ with the previous order. It keeps the full splat count and is intended for
 interaction A/B checks.
 `gsplat_surface_frame_latency` maps to wgpu
 `desired_maximum_frame_latency`. The default is `2`.
+`gsplat_surface_storage_profile` selects `full-f32` (default) or `quantized`
+resident GPU buffers. It is a sample-only A/B knob used with the collector's
+`--storage-profile` flag; it is not part of the published Android AAR.
 The emitted benchmark artifact records `renderer.path=resident_sorted_indices`.
