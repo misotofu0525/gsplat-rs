@@ -101,7 +101,7 @@ final class SurfaceBenchmark {
             ],
             "trace": ["id": "orbit-yaw-step-\(config.yawStepRadians)", "sha256": traceHash()],
             "renderer": [
-                "implementation": "gsplat-rs", "path": geometryPipelineName(config.geometryPath), "backend": "metal",
+                "implementation": "gsplat-rs", "path": "resident_sorted_indices", "backend": "metal",
                 "sort_policy": config.sortInterval == 1 ? "cpu_every_frame" : "cpu_interval_\(config.sortInterval)",
             ],
             "display": [
@@ -142,7 +142,7 @@ final class SurfaceBenchmark {
         return [
             "BENCHMARK_RESULT", "dataset=\(datasetLabel)", "samples=\(samples.count)",
             "warmup=\(config.warmupFrames)", "sort_interval=\(config.sortInterval)",
-            "async_sort=\(config.asyncSort)", "geometry_pipeline=\(geometryPipelineName(config.geometryPath))",
+            "async_sort=\(config.asyncSort)", "geometry_pipeline=resident_sorted_indices",
             "frame_latency=\(config.frameLatency)", "avg_call_ms=\(format(mean { $0.callMs }))",
             "avg_frame_ms=\(format(mean { $0.rendererFrameMs }))",
             "avg_preprocess_ms=\(format(mean { $0.preprocessMs }))",

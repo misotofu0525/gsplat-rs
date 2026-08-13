@@ -1,11 +1,5 @@
 export const GSPLAT_WEB_SDK_VERSION = "0.1.3";
 
-const GEOMETRY_PATH_IDS = Object.freeze({
-  direct: 0,
-  packed: 1,
-  paged: 2,
-});
-
 let loadedModule = null;
 let initPromise = null;
 
@@ -47,7 +41,6 @@ export async function createGsplatRenderer(options) {
     width = canvas?.width,
     height = canvas?.height,
     sortInterval = 2,
-    geometryPath = "direct",
     module,
   } = options ?? {};
 
@@ -55,43 +48,11 @@ export async function createGsplatRenderer(options) {
   assertPositiveInteger(width, "width");
   assertPositiveInteger(height, "height");
   const bytes = normalizeBytes(plyBytes);
-  const geometryPathId = resolveGeometryPathId(geometryPath);
   const resolvedModule = module ?? loadedModule ?? (await initGsplatWeb());
-  const nativeRenderer = geometryPathId === GEOMETRY_PATH_IDS.direct
-    ? await resolvedModule.createRenderer(canvas, bytes, width, height)
-    : await createRendererWithGeometryPath(
-        resolvedModule,
-        canvas,
-        bytes,
-        width,
-        height,
-        geometryPathId,
-      );
+  const nativeRenderer = await resolvedModule.createRenderer(canvas, bytes, width, height);
   const renderer = new GsplatWebRenderer(nativeRenderer);
   renderer.setSortInterval(sortInterval);
   return renderer;
-}
-
-async function createRendererWithGeometryPath(
-  module,
-  canvas,
-  bytes,
-  width,
-  height,
-  geometryPathId,
-) {
-  if (typeof module.createRendererWithGeometryPath !== "function") {
-    throw new Error(
-      "the loaded gsplat-web module does not support constructor-time geometry selection",
-    );
-  }
-  return module.createRendererWithGeometryPath(
-    canvas,
-    bytes,
-    width,
-    height,
-    geometryPathId,
-  );
 }
 
 export async function createGsplatRendererFromUrl(options) {
@@ -200,15 +161,10 @@ export class GsplatWebRenderer {
     nativeRenderer.setSortInterval(interval);
   }
 
-  setGeometryPath(path) {
-    const id = resolveGeometryPathId(path);
-    this.#requireNativeRenderer().setGeometryPath(id);
-  }
-
   rasterPath() {
     const nativeRenderer = this.#requireNativeRenderer();
     if (typeof nativeRenderer.rasterPath !== "function") {
-      return "sorted_index_direct";
+      return "resident_sorted_indices";
     }
     return String(nativeRenderer.rasterPath());
   }
@@ -253,14 +209,6 @@ export class GsplatWebRenderer {
     }
     return this.#nativeRenderer;
   }
-}
-
-function resolveGeometryPathId(path) {
-  const id = GEOMETRY_PATH_IDS[path];
-  if (id === undefined) {
-    throw new TypeError("geometryPath must be direct, packed, or paged");
-  }
-  return id;
 }
 
 function normalizeFrameStats(raw) {

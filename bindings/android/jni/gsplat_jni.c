@@ -138,13 +138,10 @@ static jlong create_surface_renderer(
     jstring dataset_path,
     jint width,
     jint height,
-    jint geometry_path,
     jintArray out_error) {
   set_out_error(env, out_error, GSPLAT_OK);
 
-  if (surface == NULL || dataset_path == NULL || width <= 0 || height <= 0 ||
-      geometry_path < GSPLAT_GEOMETRY_PATH_DIRECT ||
-      geometry_path > GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS) {
+  if (surface == NULL || dataset_path == NULL || width <= 0 || height <= 0) {
     set_out_error(env, out_error, GSPLAT_ERROR_INVALID_ARGUMENT);
     return 0;
   }
@@ -176,19 +173,17 @@ static jlong create_surface_renderer(
   __android_log_print(
       ANDROID_LOG_INFO,
       GSPLAT_LOG_TAG,
-      "creating surface renderer width=%d height=%d geometry_path=%d dataset=%s",
+      "creating surface renderer width=%d height=%d dataset=%s",
       width,
       height,
-      geometry_path,
       dataset);
 
   GsplatSurfaceRenderer *renderer = NULL;
-  int32_t rc = gsplat_surface_renderer_create_android_with_geometry_path(
+  int32_t rc = gsplat_surface_renderer_create_android(
       (void *)window,
       dataset,
       (uint32_t)width,
       (uint32_t)height,
-      (uint32_t)geometry_path,
       &renderer);
 
   (*env)->ReleaseStringUTFChars(env, dataset_path, dataset);
@@ -198,7 +193,7 @@ static jlong create_surface_renderer(
     __android_log_print(
         ANDROID_LOG_ERROR,
         GSPLAT_LOG_TAG,
-        "gsplat_surface_renderer_create_android_with_geometry_path failed rc=%d renderer=%p",
+        "gsplat_surface_renderer_create_android failed rc=%d renderer=%p",
         rc,
         (void *)renderer);
     ANativeWindow_release(window);
@@ -228,27 +223,6 @@ JNIEXPORT jlong JNICALL Java_com_gsplat_android_NativeBridge_createSurfaceRender
       dataset_path,
       width,
       height,
-      GSPLAT_GEOMETRY_PATH_DIRECT,
-      out_error);
-}
-
-JNIEXPORT jlong JNICALL Java_com_gsplat_android_NativeBridge_createSurfaceRendererWithGeometryPath(
-    JNIEnv *env,
-    jclass cls,
-    jobject surface,
-    jstring dataset_path,
-    jint width,
-    jint height,
-    jint geometry_path,
-    jintArray out_error) {
-  (void)cls;
-  return create_surface_renderer(
-      env,
-      surface,
-      dataset_path,
-      width,
-      height,
-      geometry_path,
       out_error);
 }
 
@@ -286,22 +260,6 @@ JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceSortInterv
   }
 
   return gsplat_surface_renderer_set_sort_interval(handle->renderer, (uint32_t)interval);
-}
-
-JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceGeometryPath(
-    JNIEnv *env,
-    jclass cls,
-    jlong native_handle,
-    jint path) {
-  (void)env;
-  (void)cls;
-
-  AndroidSurfaceRendererHandle *handle = android_handle_from_jlong(native_handle);
-  if (handle == NULL || handle->renderer == NULL) {
-    return GSPLAT_ERROR_INVALID_ARGUMENT;
-  }
-
-  return gsplat_surface_renderer_set_geometry_path(handle->renderer, (uint32_t)path);
 }
 
 JNIEXPORT jint JNICALL Java_com_gsplat_android_NativeBridge_setSurfaceAsyncSortEnabled(

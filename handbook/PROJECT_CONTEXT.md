@@ -35,8 +35,8 @@
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-io-spz`: experimental bounded SPZ v4 parsing and scene buffer construction
-- `crates/gsplat-sort`: GPU and CPU sort backends
-- `crates/gsplat-render-wgpu`: preprocessing, CPU sort scheduling, shared Surface/offscreen rendering, packed atlas, and the experimental fixed-budget local paged runtime
+- `crates/gsplat-sort`: CPU sort backend and ordering utilities
+- `crates/gsplat-render-wgpu`: resident scene resources, preprocessing, ordering policy, and shared Surface/offscreen rendering
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
 - `crates/gsplat-web`: experimental `wasm-bindgen` bindings over the shared `wgpu` Surface renderer
 - `examples/desktop`: desktop viewer and offscreen PNG harness
@@ -69,15 +69,15 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
-- Move Direct toward GPU-visible compaction, portable radix sorting, and
-  indirect drawing before investing further in local paging.
+- Move the resident path toward GPU-visible compaction, portable radix sorting,
+  and indirect drawing.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
 - Harden the local Web `@gsplat-rs/web` wrapper around the shared Rust `wgpu` Surface renderer before treating it as a published npm SDK.
-- Keep validated in-memory `SceneBuffers` as the stable path. Retain the
-  fixed-slot local Paged runtime only as an explicit diagnostic until a future
-  metadata-first design proves bounded source, CPU, and GPU residency.
+- Keep validated in-memory `SceneBuffers` and one resident GPU representation
+  as the stable path. Treat future streaming as a separate metadata-first
+  architecture with independently proven source, CPU, and GPU budgets.
 - Keep release checks reproducible: pinned CI actions, checksum-verified policy tooling, version consistency, and GPU-backed conformance evidence.
 - Update the docs immediately when repository structure or responsibilities change.
 - Keep contributor-facing maintenance files aligned with the actual verification and release boundary.
@@ -101,17 +101,11 @@ For the broader command matrix, use `VERIFICATION.md`.
   same one-thread-or-queue ownership rule.
 - Web, desktop interactive, Android, and iOS Surface clients delegate frame
   cadence, CPU sort refreshes, compact order uploads, and presentation to the
-  shared `SurfaceRenderSession`. Direct sorted indices remain the stable path;
-  the experimental paged path owns a fixed four-slot local active atlas and is
-  qualified only for local-source D0 browser and Android Surface smoke. Mobile
-  keeps the default CPU sort interval of 2.
-- Existing Surface constructors and `GeometryPath::default()` stay Direct.
-  Packed/Paged selection is explicit and remains an A/B diagnostic; the repo
-  does not automatically promote an oversized Direct scene into Paged.
-- Local paging now decodes page payloads behind `LocalScenePageSource` before
-  fixed-slot GPU upload. The adapter still borrows the complete `SceneBuffers`,
-  page metadata still stores source indices, and scheduling is synchronous, so
-  this is an architecture seam rather than end-to-end streaming.
+  shared `SurfaceRenderSession`. All clients use the same resident scene and
+  sorted-index draw path. Mobile keeps the default CPU sort interval of 2.
+- Resident capacity is checked before GPU allocation. A scene that exceeds the
+  adapter's binding or buffer limits returns a structured error; there is no
+  hidden storage-mode or paging fallback.
 - The Web example is a browser validation surface. The Rust/WASM renderer boundary
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the

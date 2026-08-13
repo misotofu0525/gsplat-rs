@@ -472,9 +472,6 @@ def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
         "gsplat_surface_frame_latency",
         str(args.frame_latency),
         "--es",
-        "gsplat_geometry_path",
-        "direct",
-        "--es",
         "gsplat_surface_order_backend",
         backend,
     ]
@@ -848,7 +845,6 @@ def collect_scheduled_runs(
                 "sort_interval": args.sort_interval,
                 "async_sort": args.async_sort,
                 "frame_latency": args.frame_latency,
-                "geometry_path": "direct",
             },
             "log": str(log_path.relative_to(output)),
             "artifact": str(artifact_dir.relative_to(output)),

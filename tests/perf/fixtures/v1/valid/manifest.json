@@ -28,7 +28,7 @@
   },
   "renderer": {
     "implementation": "gsplat-rs",
-    "path": "sorted_index_direct",
+    "path": "resident_sorted_indices",
     "backend": "fixture",
     "sort_policy": "cpu_every_frame"
   },

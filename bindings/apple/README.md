@@ -25,7 +25,7 @@ handles; `GsplatUIKitSurfaceRenderer` serializes access internally, and direct C
 callers should use one owner thread or queue.
 
 The C handle adapts the shared Rust `SurfaceRenderSession`; iOS does not own a
-separate frame scheduler. CPU sort cadence, compact order uploads, direct
+separate frame scheduler. CPU sort cadence, compact order uploads, resident
 drawing, and optional native async sorting are shared with Android, Web, and
 desktop Surface rendering.
 
@@ -133,22 +133,15 @@ bash bindings/apple/scripts/run-ios-sim-app.sh -- \
   --gsplat_benchmark_yaw_step 0.001 \
   --gsplat_surface_sort_interval 2 \
   --gsplat_surface_async_sort false \
-  --gsplat_surface_frame_latency 2 \
-  --gsplat_geometry_path direct
+  --gsplat_surface_frame_latency 2
 ```
 
 Benchmark mode forces a tiny camera orbit each frame and prints a
 `BENCHMARK_RESULT` line to the simulator log. Measurement samples are stored in
 a preallocated numeric buffer; JSON serialization happens after measurement.
-Every run uses the shared resident-scene pipeline selected by
-`gsplat_geometry_path`; the remaining knobs cover CPU sort scheduling and
-frame latency.
-`gsplat_geometry_path` selects `direct` (default, release-gated
-`SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
-(experimental local-source `PagedActiveAtlas`) before scene derivation and
-Surface resource creation. The example records the resulting `renderer.path`
-(`sorted_index_direct`, `packed_atlas`, or `paged_active_atlas`) in the emitted
-benchmark artifact.
+Every run uses the shared resident-scene pipeline; the remaining knobs cover
+CPU sort scheduling and frame latency. The example records
+`renderer.path=resident_sorted_indices` in the emitted benchmark artifact.
 
 ## 4) iOS simulator target build
 

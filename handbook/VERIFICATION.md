@@ -90,11 +90,11 @@ cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 30 --war
 ```
 
 - Use the PNG path for deterministic local smoke output.
-- Expect `offscreen_geometry_pipeline=sorted_index_direct` in the PNG and
+- Expect `offscreen_geometry_pipeline=resident_sorted_indices` in the PNG and
   benchmark logs. GPU-required conformance compares this renderer against the
   CPU projection reference with an image tolerance.
 - Use the interactive viewer when changing windowed presentation or camera
-  interaction behavior. It uses the same `SurfaceRenderSession` and direct
+  interaction behavior. It uses the same `SurfaceRenderSession` and resident
   shader/resource layout as Web and mobile.
 
 For a versioned raw-frame artifact, choose a fresh output directory; the runner
@@ -115,7 +115,7 @@ python3 tests/perf/validate-benchmark-artifacts.py \
 The artifact contract is `tests/perf/benchmark-artifact-v1.md`. A valid run
 contains `manifest.json`, contiguous raw `frames.jsonl`, and recomputable
 `summary.json`. The manifest distinguishes configured display values from
-observed values and includes the direct resource preflight report.
+observed values and includes the resident resource preflight report.
 
 Committed dataset identities and the shared camera oracle have separate checks:
 
@@ -254,17 +254,17 @@ http://127.0.0.1:4173/examples/web/?dataset=flowers&gsplat_benchmark=true&gsplat
 ```
 
 - Expected benchmark output includes `BENCHMARK_RESULT dataset=flowers_1.ply`.
-- Direct Surface path smoke (after wasm build):
+- Resident Surface path smoke (after wasm build):
 
 ```text
 http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_sync=true&gsplat_benchmark_frames=5&gsplat_benchmark_warmup_frames=1
 ```
 
-- Expected wasm benchmark output includes `renderer=wasm_sorted_index_direct`.
+- Expected wasm benchmark output includes `renderer=resident_sorted_indices`.
 - After the benchmark/camera motion stops, leave the page visible for at least
   three animation frames. The canvas must remain non-black with non-zero
-  `Visible` / `Drawn` counts; this is the stationary direct-path regression
-  check and proves a cached order is still redrawn through the direct pipeline.
+  `Visible` / `Drawn` counts; this is the stationary resident-path regression
+  check and proves a cached order is still redrawn through the resident pipeline.
 
 ## Web WASM Build
 
@@ -290,7 +290,7 @@ npm --prefix packages/web run pack:dry-run
 - This is the proof path for the shared Rust `wgpu` renderer and local Web SDK
   wrapper running in the browser. After the package exists, reload
   `http://127.0.0.1:4173/examples/web/?dataset=flowers`; expected status should
-  report `surface=wasm-wgpu`, `renderer=wasm_sorted_index_direct` in benchmark output,
+  report `surface=wasm-wgpu`, `renderer=resident_sorted_indices` in benchmark output,
   and non-zero `Visible` / `Drawn` counts for `flowers_1.ply`.
 
 For a local external-consumer check, build the distribution, pack from the
@@ -359,22 +359,12 @@ ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
 ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
 "$ADB" install -r examples/android/app/build/outputs/apk/debug/sample-app-debug.apk
 "$ADB" shell am start -n com.gsplat.example/.MainActivity
-# Experimental local paged path:
-"$ADB" shell am start -n com.gsplat.example/.MainActivity \
-  --es gsplat_geometry_path paged
 ```
 
 - Expected first frame includes `Kitsune shrine`, `LIVE`, a non-zero splat count,
   and frame time. Open `Studio` and confirm `surface=wgpu realtime` and
-  `state=rendering`. Direct/packed receipts use
-  `drawn=<surface_instances>/<visible_instances>`; paged receipts use
-  `drawn=<active_resident>/<loaded_source>`.
-- For the paged Kitsune smoke, expect dense fixed-slot residency rather than a
-  fragmented low-thousands subset. The 2026-07-13 A065 initial-view smoke
-  observed `drawn=225784/279199`: one global cover plus three balanced
-  refinements. A different camera may select the 53,415-entry final refinement
-  and report one fewer active splat. The denominator is loaded source splats,
-  not a claim that every source splat is simultaneously resident.
+  `state=rendering`. Expect
+  `drawn=<surface_instances>/<visible_instances>`.
 - For repeatable perf checks, add the benchmark extras documented in `bindings/android/README.md` and read the `BENCHMARK_RESULT` logcat line.
 - The APK packages the selected scene as `assets/showcase.ply`. If `adb install -r`
   reports insufficient storage, uninstall `com.gsplat.example` and reinstall.
@@ -453,11 +443,7 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   `cargo test -p gsplat-render-wgpu ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture`.
   Load metrics land under `target/benchmarks/phase-c/`
   (`minimal-spz-vs-ply-load-metrics.json`, `minimal-spz-vs-ply-ttff.json`).
-- If you touch Phase D residency / spatial pages / page scheduling in
-  `crates/gsplat-render-wgpu/`, run
-  `cargo test -p gsplat-render-wgpu --lib` and confirm the
-  `spatial_pages`, `residency`, and `page_scheduler` unit tests pass.
-- If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, GPU-complete, nearest-rank frame distributions, missed-frame counts, and structured direct-resource preflight together with adapter/backend/driver metadata. Use the artifact route above when the result will be retained or compared. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the sole direct path.
+- If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, GPU-complete, nearest-rank frame distributions, missed-frame counts, and structured resident-resource preflight together with adapter/backend/driver metadata. Use the artifact route above when the result will be retained or compared. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the resident path.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch
   `packages/web/`, also run

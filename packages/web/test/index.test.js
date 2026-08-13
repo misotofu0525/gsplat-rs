@@ -36,9 +36,6 @@ function makeNativeRenderer(overrides = {}) {
     setSortInterval(interval) {
       calls.push(["setSortInterval", interval]);
     },
-    setGeometryPath(path) {
-      calls.push(["setGeometryPath", path]);
-    },
     renderFrame() {
       calls.push(["renderFrame"]);
       return {
@@ -95,7 +92,6 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
   renderer.zoom(1.1);
   renderer.pan(0.05, -0.05);
   renderer.setSortInterval(2);
-  renderer.setGeometryPath("paged");
 
   assert.deepEqual(renderer.renderFrame(), {
     frameMs: 1.25,
@@ -126,7 +122,7 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
   assert.ok(Math.abs(cameraReceipt.intrinsics.verticalFovRadians - Math.PI / 3) < 1e-6);
   renderer.free();
 
-  assert.deepEqual(native.calls.slice(0, 10), [
+  assert.deepEqual(native.calls.slice(0, 9), [
     ["resize", 640, 480],
     ["resetCamera"],
     ["setCamera", 1, 2, 3, 0, 0, 0, 1, 1, Math.fround(0.1), 100],
@@ -134,7 +130,6 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
     ["zoom", 1.1],
     ["pan", 0.05, -0.05],
     ["setSortInterval", 2],
-    ["setGeometryPath", 2],
     ["renderFrame"],
     ["free"],
   ]);
@@ -150,7 +145,6 @@ test("GsplatWebRenderer rejects invalid command arguments", () => {
   assert.throws(() => renderer.zoom(0), RangeError);
   assert.throws(() => renderer.pan(0, Number.POSITIVE_INFINITY), TypeError);
   assert.throws(() => renderer.setSortInterval(1.5), RangeError);
-  assert.throws(() => renderer.setGeometryPath("unknown"), TypeError);
 });
 
 test("createGsplatRenderer validates inputs before creating native renderer", async () => {
@@ -192,8 +186,8 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   const native = makeNativeRenderer();
   let captured;
   const module = {
-    async createRendererWithGeometryPath(canvas, plyBytes, width, height, geometryPath) {
-      captured = { canvas, plyBytes, width, height, geometryPath };
+    async createRenderer(canvas, plyBytes, width, height) {
+      captured = { canvas, plyBytes, width, height };
       return native;
     },
   };
@@ -204,7 +198,6 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
     canvas,
     plyBytes: buffer,
     sortInterval: 3,
-    geometryPath: "packed",
     module,
   });
 
@@ -213,21 +206,17 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   assert.deepEqual(Array.from(captured.plyBytes), [1, 2, 3]);
   assert.equal(captured.width, 320);
   assert.equal(captured.height, 240);
-  assert.equal(captured.geometryPath, 1);
   assert.deepEqual(native.calls[0], ["setSortInterval", 3]);
   assert.equal(native.calls.length, 1);
 });
 
-test("createGsplatRenderer preserves the direct constructor by default", async () => {
+test("createGsplatRenderer uses the resident constructor", async () => {
   const native = makeNativeRenderer();
   let captured;
   const module = {
     async createRenderer(canvas, plyBytes, width, height) {
       captured = { canvas, plyBytes, width, height };
       return native;
-    },
-    async createRendererWithGeometryPath() {
-      throw new Error("should use the direct constructor");
     },
   };
   const canvas = { width: 320, height: 240 };

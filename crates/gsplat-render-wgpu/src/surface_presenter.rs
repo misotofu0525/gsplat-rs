@@ -1,20 +1,13 @@
 //! WGPU Surface presentation and geometry-resource ownership.
 
-use gsplat_core::{Camera, SceneBuffers};
-use gsplat_sort::CpuSortBackend;
+use gsplat_core::Camera;
 
 use crate::draw_pass::{SplatDraw, encode_splat_draw, encode_splat_draw_into};
-use crate::packed_gpu;
-use crate::paged_active_set::PagedActiveSet;
 use crate::{
-    DEFAULT_PAGED_ATLAS_SLOTS, DirectSceneError, DirectScenePath, DirectScenePreflight,
-    DirectSceneResources, GeometryPath, PackedScenePath, PackedScenePreflight, Renderer,
-    SpatialPageSet, SurfacePresenterError, create_direct_bind_group_layout, create_direct_pipeline,
-    create_surface_instance, direct_scene_preflight, fit_surface_size,
-    packed_color_refresh_band_size, packed_color_refresh_needed, packed_color_refresh_position_key,
-    packed_scene_preflight, preprocess_paged_visible_into, refresh_packed_hot_colors,
-    refresh_packed_hot_colors_range, refresh_paged_hot_colors, select_present_mode,
-    surface_error_to_presenter, wgpu_label,
+    Renderer, ResidentSceneError, ResidentScenePath, ResidentScenePreflight,
+    ResidentSceneResources, SurfacePresenterError, create_resident_bind_group_layout,
+    create_resident_pipeline, create_surface_instance, fit_surface_size, resident_scene_preflight,
+    select_present_mode, surface_error_to_presenter, wgpu_label,
 };
 
 struct SurfaceAdapterContext {
@@ -22,270 +15,78 @@ struct SurfaceAdapterContext {
     limits: wgpu::Limits,
 }
 
-pub(crate) struct SurfacePagedRuntime {
-    pub(crate) active_set: PagedActiveSet,
-    sort_backend: CpuSortBackend,
-    depth_keys: Vec<u32>,
-    sorted_indices: Vec<u32>,
-}
-
-impl SurfacePagedRuntime {
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        scene: &SceneBuffers,
-        pages: SpatialPageSet,
-    ) -> Result<Self, SurfacePresenterError> {
-        let active_set = PagedActiveSet::new(device, layout, scene, pages)
-            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        Ok(Self {
-            active_set,
-            sort_backend: CpuSortBackend::default(),
-            depth_keys: Vec::new(),
-            sorted_indices: Vec::new(),
-        })
-    }
-
-    pub(crate) fn prepare(
-        &mut self,
-        queue: &wgpu::Queue,
-        scene: &SceneBuffers,
-        camera: &Camera,
-        width: u32,
-        height: u32,
-    ) -> Result<u32, SurfacePresenterError> {
-        self.active_set
-            .sync(queue, scene, camera)
-            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        let entries = self.active_set.atlas.active_entries();
-        preprocess_paged_visible_into(
-            scene,
-            &entries,
-            camera,
-            &mut self.depth_keys,
-            &mut self.sorted_indices,
-        )
-        .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        self.sort_backend
-            .sort_values_by_keys(&self.depth_keys, &mut self.sorted_indices)
-            .map_err(|err| SurfacePresenterError::PagedAtlas(err.to_string()))?;
-        refresh_paged_hot_colors(queue, &mut self.active_set.atlas, scene, camera);
-        self.active_set
-            .atlas
-            .resources
-            .prepare(queue, &self.sorted_indices, camera, width, height, true)
-            .map_err(SurfacePresenterError::from)
-    }
-}
-
 pub struct SurfacePresenter {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    direct_pipeline: wgpu::RenderPipeline,
-    direct_bind_group_layout: wgpu::BindGroupLayout,
-    packed_pipeline: wgpu::RenderPipeline,
-    packed_bind_group_layout: wgpu::BindGroupLayout,
+    resident_pipeline: wgpu::RenderPipeline,
+    resident_bind_group_layout: wgpu::BindGroupLayout,
     surface_config: wgpu::SurfaceConfiguration,
     max_texture_dimension_2d: u32,
     instance_count: u32,
-    geometry: SurfaceGeometry,
-    packed_color_refresh: PackedColorRefreshState,
+    resident_scene: ResidentSceneResources,
 }
-
-#[derive(Debug, Default)]
-struct PackedColorRefreshState {
-    /// Last camera position whose hot colors have been fully applied.
-    applied_position: Option<[f32; 3]>,
-    /// Next splat index for an in-flight banded refresh, if any.
-    cursor: Option<usize>,
-    /// Frozen camera for the whole in-flight refresh.
-    target_camera: Option<Camera>,
-}
-
-impl PackedColorRefreshState {
-    fn needs_full_refresh(&self) -> bool {
-        self.applied_position.is_none()
-    }
-
-    fn mark_full_refresh(&mut self, camera: &Camera) {
-        self.applied_position = Some(packed_color_refresh_position_key(camera));
-        self.cursor = None;
-        self.target_camera = None;
-    }
-
-    fn begin_banded_refresh(&mut self, camera: &Camera) {
-        debug_assert!(self.cursor.is_none());
-        self.cursor = Some(0);
-        self.target_camera = Some(*camera);
-    }
-
-    fn batch(&self, splat_count: usize) -> Option<(usize, usize, Camera)> {
-        let start = self.cursor?;
-        let target = self.target_camera?;
-        let end = (start + packed_color_refresh_band_size(splat_count)).min(splat_count);
-        Some((start, end, target))
-    }
-
-    fn finish_batch(&mut self, end: usize, splat_count: usize) {
-        if end >= splat_count {
-            if let Some(target) = self.target_camera {
-                self.mark_full_refresh(&target);
-            }
-        } else {
-            self.cursor = Some(end);
-        }
-    }
-}
-
-enum SurfaceGeometry {
-    Direct(DirectSceneResources),
-    Packed(packed_gpu::PackedAtlasResources),
-    Paged(Box<SurfacePagedRuntime>),
-}
-
-impl SurfaceGeometry {
-    const fn path(&self) -> GeometryPath {
-        match self {
-            Self::Direct(_) => GeometryPath::SortedIndexDirect,
-            Self::Packed(_) => GeometryPath::PackedAtlas,
-            Self::Paged(_) => GeometryPath::PagedActiveAtlas,
-        }
-    }
-}
-
-fn create_geometry_resources(
+fn create_resident_scene_resources(
     device: &wgpu::Device,
-    direct_bind_group_layout: &wgpu::BindGroupLayout,
-    packed_bind_group_layout: &wgpu::BindGroupLayout,
-    path: GeometryPath,
+    resident_bind_group_layout: &wgpu::BindGroupLayout,
     renderer: &Renderer,
-) -> Result<SurfaceGeometry, SurfacePresenterError> {
+) -> Result<ResidentSceneResources, SurfacePresenterError> {
     let scene = renderer
         .scene()
         .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-
-    match path {
-        GeometryPath::SortedIndexDirect => {
-            let world_covariance_terms = renderer
-                .world_covariance_terms
-                .as_deref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let alpha_values = renderer
-                .alpha_values
-                .as_deref()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let direct_scene = DirectSceneResources::new(
-                device,
-                direct_bind_group_layout,
-                scene,
-                world_covariance_terms,
-                alpha_values,
-            )?;
-            Ok(SurfaceGeometry::Direct(direct_scene))
-        }
-        GeometryPath::PackedAtlas => {
-            let packed_scene = packed_gpu::PackedAtlasResources::from_scene(
-                device,
-                packed_bind_group_layout,
-                scene,
-            )?;
-            Ok(SurfaceGeometry::Packed(packed_scene))
-        }
-        GeometryPath::PagedActiveAtlas => {
-            let pages = renderer
-                .spatial_pages
-                .clone()
-                .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-            let paged_scene =
-                SurfacePagedRuntime::new(device, packed_bind_group_layout, scene, pages)?;
-            Ok(SurfaceGeometry::Paged(Box::new(paged_scene)))
-        }
-    }
+    let world_covariance_terms = renderer
+        .world_covariance_terms
+        .as_deref()
+        .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+    let alpha_values = renderer
+        .alpha_values
+        .as_deref()
+        .ok_or(SurfacePresenterError::SceneNotLoaded)?;
+    ResidentSceneResources::new(
+        device,
+        resident_bind_group_layout,
+        scene,
+        world_covariance_terms,
+        alpha_values,
+    )
+    .map_err(SurfacePresenterError::from)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SurfaceResourcePlan {
-    pub(crate) geometry_path: GeometryPath,
-    pub(crate) direct_preflight: DirectScenePreflight,
-    pub(crate) packed_preflight: PackedScenePreflight,
+    pub(crate) resident_preflight: ResidentScenePreflight,
     pub(crate) required_texture_dimension: u32,
 }
 
 impl SurfaceResourcePlan {
-    pub(crate) fn validate_selected_path(self) -> Result<(), DirectSceneError> {
-        match self.geometry_path {
-            GeometryPath::SortedIndexDirect
-                if self.direct_preflight.path == DirectScenePath::ActiveAtlasRequired =>
-            {
-                Err(DirectSceneError::ResourceLimitExceeded(Box::new(
-                    self.direct_preflight,
-                )))
-            }
-            GeometryPath::PackedAtlas | GeometryPath::PagedActiveAtlas
-                if self.packed_preflight.path == PackedScenePath::PagingRequired =>
-            {
-                Err(DirectSceneError::PackedResourceLimitExceeded(Box::new(
-                    self.packed_preflight,
-                )))
-            }
-            _ => Ok(()),
+    pub(crate) fn validate(self) -> Result<(), ResidentSceneError> {
+        if self.resident_preflight.path == ResidentScenePath::CapacityExceeded {
+            return Err(ResidentSceneError::ResourceLimitExceeded(Box::new(
+                self.resident_preflight,
+            )));
         }
+        Ok(())
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn surface_resource_plan(
-    geometry_path: GeometryPath,
     scene_splats: usize,
     sh_degree: u8,
-    page_count: usize,
-    page_capacity: usize,
     width: u32,
     height: u32,
     limits: &wgpu::Limits,
-) -> Result<SurfaceResourcePlan, DirectSceneError> {
-    let direct_preflight = direct_scene_preflight(scene_splats, sh_degree, limits)?;
-    let (resident_capacity, packed_sh_degree) = match geometry_path {
-        GeometryPath::PagedActiveAtlas => {
-            let slot_count = page_count.clamp(1, DEFAULT_PAGED_ATLAS_SLOTS);
-            let resident_capacity = slot_count
-                .checked_mul(page_capacity.max(1))
-                .ok_or(DirectSceneError::ResourceSizeOverflow)?;
-            (resident_capacity, 0)
-        }
-        GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => (scene_splats, sh_degree),
-    };
-    let packed_preflight = packed_scene_preflight(
-        resident_capacity,
-        packed_sh_degree,
-        u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size),
-    )?;
-    let required_texture_dimension = width.max(height);
-
+) -> Result<SurfaceResourcePlan, ResidentSceneError> {
     Ok(SurfaceResourcePlan {
-        geometry_path,
-        direct_preflight,
-        packed_preflight,
-        required_texture_dimension,
+        resident_preflight: resident_scene_preflight(scene_splats, sh_degree, limits)?,
+        required_texture_dimension: width.max(height),
     })
-}
-
-pub(crate) fn try_prepare_then_commit<State, Prepared, Error>(
-    state: &mut State,
-    prepare: impl FnOnce(&State) -> Result<Prepared, Error>,
-    commit: impl FnOnce(&mut State, Prepared),
-) -> Result<(), Error> {
-    let prepared = prepare(state)?;
-    commit(state, prepared);
-    Ok(())
 }
 
 fn surface_required_device_limits(
     adapter_limits: &wgpu::Limits,
     resource_plan: &SurfaceResourcePlan,
 ) -> Result<wgpu::Limits, SurfacePresenterError> {
-    resource_plan.validate_selected_path()?;
+    resource_plan.validate()?;
     if resource_plan.required_texture_dimension > adapter_limits.max_texture_dimension_2d {
         return Err(SurfacePresenterError::DeviceCreation(format!(
             "required texture dimension {} exceeds adapter limit {}",
@@ -293,22 +94,16 @@ fn surface_required_device_limits(
         )));
     }
 
-    let required_storage_bytes = match resource_plan.geometry_path {
-        GeometryPath::SortedIndexDirect => resource_plan
-            .direct_preflight
-            .requirements
-            .iter()
-            .map(|requirement| requirement.required_bytes)
-            .max()
-            .unwrap_or(0),
-        GeometryPath::PackedAtlas | GeometryPath::PagedActiveAtlas => resource_plan
-            .packed_preflight
-            .sorted_indices_bytes
-            .max(resource_plan.packed_preflight.hot_record_storage_bytes),
-    };
+    let required_storage_bytes = resource_plan
+        .resident_preflight
+        .requirements
+        .iter()
+        .map(|requirement| requirement.required_bytes)
+        .max()
+        .unwrap_or(0);
     let required_storage_binding_size = u32::try_from(required_storage_bytes).map_err(|_| {
         SurfacePresenterError::DeviceCreation(format!(
-            "selected geometry path requires a {required_storage_bytes}-byte storage binding, exceeding the wgpu limit representation"
+            "resident scene requires a {required_storage_bytes}-byte storage binding, exceeding the wgpu limit representation"
         ))
     })?;
 
@@ -476,30 +271,13 @@ impl SurfacePresenter {
             limits: adapter_limits,
         } = adapter_context;
         // Plan against the adapter's physical limits first. Device creation
-        // then requests only the selected path's exact increase above portable
-        // defaults rather than copying the adapter maximum wholesale.
+        // then requests only the resident scene's exact increase above
+        // portable defaults rather than copying the adapter maximum wholesale.
         let scene = renderer
             .scene()
             .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-        let geometry_path = renderer.geometry_path();
-        let (page_count, page_capacity) = renderer
-            .spatial_pages
-            .as_ref()
-            .map(|pages| (pages.page_count(), pages.page_capacity))
-            .unwrap_or_default();
-        if geometry_path == GeometryPath::PagedActiveAtlas && page_count == 0 {
-            return Err(SurfacePresenterError::SceneNotLoaded);
-        }
-        let resource_plan = surface_resource_plan(
-            geometry_path,
-            scene.len(),
-            scene.sh_degree,
-            page_count,
-            page_capacity,
-            width,
-            height,
-            &adapter_limits,
-        )?;
+        let resource_plan =
+            surface_resource_plan(scene.len(), scene.sh_degree, width, height, &adapter_limits)?;
         let required_limits = surface_required_device_limits(&adapter_limits, &resource_plan)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -548,32 +326,22 @@ impl SurfacePresenter {
             return Err(SurfacePresenterError::SurfaceConfigure(err.to_string()));
         }
 
-        let direct_bind_group_layout = create_direct_bind_group_layout(&device);
-        let direct_pipeline = create_direct_pipeline(&device, &direct_bind_group_layout, format);
-        let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(&device);
-        let packed_pipeline =
-            packed_gpu::create_packed_pipeline(&device, &packed_bind_group_layout, format);
-        let geometry = create_geometry_resources(
-            &device,
-            &direct_bind_group_layout,
-            &packed_bind_group_layout,
-            geometry_path,
-            renderer,
-        )?;
+        let resident_bind_group_layout = create_resident_bind_group_layout(&device);
+        let resident_pipeline =
+            create_resident_pipeline(&device, &resident_bind_group_layout, format);
+        let resident_scene =
+            create_resident_scene_resources(&device, &resident_bind_group_layout, renderer)?;
 
         Ok(Self {
             surface,
             device,
             queue,
-            direct_pipeline,
-            direct_bind_group_layout,
-            packed_pipeline,
-            packed_bind_group_layout,
+            resident_pipeline,
+            resident_bind_group_layout,
             surface_config,
             max_texture_dimension_2d,
             instance_count: 0,
-            geometry,
-            packed_color_refresh: PackedColorRefreshState::default(),
+            resident_scene,
         })
     }
 
@@ -601,170 +369,58 @@ impl SurfacePresenter {
         self.surface.configure(&self.device, &self.surface_config);
     }
 
-    pub const fn geometry_path(&self) -> GeometryPath {
-        self.geometry.path()
-    }
-
-    /// Switches the Surface geometry path, clearing and rebuilding the GPU
-    /// scene resources for the new path from the renderer's loaded scene.
-    ///
-    /// This is an experimental A/B benchmark knob: callers must keep
-    /// `renderer`'s loaded scene in sync with the presenter that was created
-    /// from it. The device was sized for the initially selected path, so a
-    /// target path needing larger bindings can return an error; preparation is
-    /// transactional and leaves the current path intact in that case.
-    pub fn set_geometry_path(
-        &mut self,
-        path: GeometryPath,
-        renderer: &Renderer,
-    ) -> Result<(), SurfacePresenterError> {
-        if self.geometry.path() == path {
-            return Ok(());
-        }
-
-        try_prepare_then_commit(
-            self,
-            |presenter| presenter.prepare_geometry_resources(path, renderer),
-            |presenter, geometry| {
-                presenter.geometry = geometry;
-                presenter.packed_color_refresh = PackedColorRefreshState::default();
-                presenter.instance_count = 0;
-            },
-        )
-    }
-
-    fn prepare_geometry_resources(
-        &self,
-        path: GeometryPath,
-        renderer: &Renderer,
-    ) -> Result<SurfaceGeometry, SurfacePresenterError> {
-        create_geometry_resources(
-            &self.device,
-            &self.direct_bind_group_layout,
-            &self.packed_bind_group_layout,
-            path,
-            renderer,
-        )
-    }
-
     pub fn render_sorted_indices(
         &mut self,
-        scene: &SceneBuffers,
         sorted_indices: &[u32],
         camera: &Camera,
         refresh_indices: bool,
     ) -> Result<(), SurfacePresenterError> {
-        self.instance_count = match &mut self.geometry {
-            SurfaceGeometry::Direct(direct) => direct.prepare_cpu(
-                &self.queue,
-                sorted_indices,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-                refresh_indices,
-            )?,
-            SurfaceGeometry::Packed(packed) => {
-                if self.packed_color_refresh.needs_full_refresh() {
-                    // Packed records are initialized with DC only. The first
-                    // presented frame must receive complete view-dependent SH
-                    // colors even though it also uploads the initial order.
-                    refresh_packed_hot_colors(&self.queue, packed, scene, camera);
-                    self.packed_color_refresh.mark_full_refresh(camera);
-                }
-                let needs_refresh = packed_color_refresh_needed(
-                    self.packed_color_refresh.applied_position,
-                    camera,
-                    packed.bounds_min,
-                    packed.bounds_extent,
-                );
-                if !refresh_indices && (self.packed_color_refresh.cursor.is_some() || needs_refresh)
-                {
-                    // Defer banded SH refresh off synchronous sort frames so
-                    // p95 does not stack a full CPU sort with SH eval/upload.
-                    if self.packed_color_refresh.cursor.is_none() {
-                        self.packed_color_refresh.begin_banded_refresh(camera);
-                    }
-                    if let Some((start, end, target)) = self.packed_color_refresh.batch(scene.len())
-                    {
-                        refresh_packed_hot_colors_range(
-                            &self.queue,
-                            packed,
-                            scene,
-                            &target,
-                            start,
-                            end,
-                        );
-                        self.packed_color_refresh.finish_batch(end, scene.len());
-                    }
-                }
-                packed.prepare(
-                    &self.queue,
-                    sorted_indices,
-                    camera,
-                    self.surface_config.width,
-                    self.surface_config.height,
-                    refresh_indices,
-                )?
-            }
-            SurfaceGeometry::Paged(paged) => paged.prepare(
-                &self.queue,
-                scene,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-            )?,
-        };
-        self.present_geometry()
+        self.instance_count = self.resident_scene.prepare_cpu(
+            &self.queue,
+            sorted_indices,
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+            refresh_indices,
+        )?;
+        self.present_resident_scene()
     }
 
-    /// Pre-creates the Direct GPU ordering pipelines and buffers outside a
+    /// Pre-creates the resident GPU ordering pipelines and buffers outside a
     /// measured/presented frame. No sorting or drawing happens here.
-    pub(crate) fn prepare_direct_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
-        match &mut self.geometry {
-            SurfaceGeometry::Direct(direct) => {
-                direct.ensure_gpu_order(&self.device, &self.direct_bind_group_layout)?
-            }
-            SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => {
-                return Err(SurfacePresenterError::GpuOrderUnsupported);
-            }
-        }
+    pub(crate) fn prepare_resident_gpu_order(&mut self) -> Result<(), SurfacePresenterError> {
+        self.resident_scene
+            .ensure_gpu_order(&self.device, &self.resident_bind_group_layout)?;
         Ok(())
     }
 
-    /// Generates and stably sorts Direct depth pairs on this presenter's GPU,
+    /// Generates and stably sorts depth pairs on this presenter's GPU,
     /// then draws from the resident pair buffer in the same submission.
-    pub(crate) fn render_direct_gpu_order(
+    pub(crate) fn render_resident_gpu_order(
         &mut self,
         camera: &Camera,
         refresh_order: bool,
     ) -> Result<(), SurfacePresenterError> {
-        self.instance_count = match &mut self.geometry {
-            SurfaceGeometry::Direct(direct) => direct.prepare_gpu(
-                &self.device,
-                &self.direct_bind_group_layout,
-                &self.queue,
-                camera,
-                self.surface_config.width,
-                self.surface_config.height,
-            )?,
-            SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => {
-                return Err(SurfacePresenterError::GpuOrderUnsupported);
-            }
-        };
+        self.instance_count = self.resident_scene.prepare_gpu(
+            &self.device,
+            &self.resident_bind_group_layout,
+            &self.queue,
+            camera,
+            self.surface_config.width,
+            self.surface_config.height,
+        )?;
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: wgpu_label("gsplat-surface-direct-gpu-order-encoder"),
+                label: wgpu_label("gsplat-surface-resident-gpu-order-encoder"),
             });
         {
-            let direct = match &self.geometry {
-                SurfaceGeometry::Direct(direct) => direct,
-                SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => unreachable!(),
-            };
-            let gpu_order = direct
-                .gpu_order()
-                .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
+            let gpu_order = self.resident_scene.gpu_order().ok_or_else(|| {
+                ResidentSceneError::GpuOrderInitialization(
+                    "GPU order resources were not initialized".to_owned(),
+                )
+            })?;
             if refresh_order {
                 gpu_order.sorter.encode(&mut encoder);
             }
@@ -782,20 +438,18 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let direct = match &self.geometry {
-            SurfaceGeometry::Direct(direct) => direct,
-            SurfaceGeometry::Packed(_) | SurfaceGeometry::Paged(_) => unreachable!(),
-        };
-        let gpu_order = direct
-            .gpu_order()
-            .ok_or(SurfacePresenterError::GpuOrderUnsupported)?;
+        let gpu_order = self.resident_scene.gpu_order().ok_or_else(|| {
+            ResidentSceneError::GpuOrderInitialization(
+                "GPU order resources were not initialized".to_owned(),
+            )
+        })?;
         encode_splat_draw_into(
             &mut encoder,
             &SplatDraw {
-                encoder_label: "gsplat-surface-direct-gpu-order-encoder",
-                pass_label: "gsplat-surface-direct-gpu-order-draw-pass",
+                encoder_label: "gsplat-surface-resident-gpu-order-encoder",
+                pass_label: "gsplat-surface-resident-gpu-order-draw-pass",
                 view: &view,
-                pipeline: &self.direct_pipeline,
+                pipeline: &self.resident_pipeline,
                 bind_group: &gpu_order.bind_group,
                 clear: wgpu::Color::BLACK,
                 vertex_count: 6,
@@ -807,46 +461,23 @@ impl SurfacePresenter {
         Ok(())
     }
 
-    fn present_geometry(&mut self) -> Result<(), SurfacePresenterError> {
+    fn present_resident_scene(&mut self) -> Result<(), SurfacePresenterError> {
         let Some(frame) = self.acquire_surface_texture()? else {
             return Ok(());
         };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let (pipeline, bind_group, vertex_count, encoder_label, pass_label) = match &self.geometry {
-            SurfaceGeometry::Direct(direct) => (
-                &self.direct_pipeline,
-                &direct.cpu_bind_group,
-                6,
-                "gsplat-surface-direct-encoder",
-                "gsplat-surface-direct-pass",
-            ),
-            SurfaceGeometry::Packed(packed) => (
-                &self.packed_pipeline,
-                &packed.bind_group,
-                packed_gpu::PACKED_QUAD_VERTEX_COUNT,
-                "gsplat-surface-packed-encoder",
-                "gsplat-surface-packed-pass",
-            ),
-            SurfaceGeometry::Paged(paged) => (
-                &self.packed_pipeline,
-                &paged.active_set.atlas.resources.bind_group,
-                packed_gpu::PACKED_QUAD_VERTEX_COUNT,
-                "gsplat-surface-paged-encoder",
-                "gsplat-surface-paged-pass",
-            ),
-        };
         let commands = encode_splat_draw(
             &self.device,
             SplatDraw {
-                encoder_label,
-                pass_label,
+                encoder_label: "gsplat-surface-resident-encoder",
+                pass_label: "gsplat-surface-resident-pass",
                 view: &view,
-                pipeline,
-                bind_group,
+                pipeline: &self.resident_pipeline,
+                bind_group: &self.resident_scene.cpu_bind_group,
                 clear: wgpu::Color::BLACK,
-                vertex_count,
+                vertex_count: 6,
                 instance_count: self.instance_count,
             },
         );
@@ -880,56 +511,7 @@ impl SurfacePresenter {
 
 #[cfg(test)]
 mod tests {
-    use gsplat_core::Vec3f;
-
     use super::*;
-
-    fn camera_at(x: f32) -> Camera {
-        let mut camera = Camera::default();
-        camera.pose.position = Vec3f::new(x, 0.0, 0.0);
-        camera
-    }
-
-    #[test]
-    fn packed_color_refresh_requires_a_complete_first_frame() {
-        let mut state = PackedColorRefreshState::default();
-        let camera = camera_at(1.0);
-
-        assert!(state.needs_full_refresh());
-        state.mark_full_refresh(&camera);
-        assert!(!state.needs_full_refresh());
-        assert_eq!(
-            state.applied_position,
-            Some(packed_color_refresh_position_key(&camera))
-        );
-    }
-
-    #[test]
-    fn packed_banded_color_refresh_keeps_one_frozen_camera() {
-        let mut state = PackedColorRefreshState::default();
-        let target = camera_at(1.0);
-        let later_camera = camera_at(2.0);
-        let splat_count = packed_color_refresh_band_size(100_000) * 2;
-
-        state.begin_banded_refresh(&target);
-        let mut batches = 0;
-        while let Some((_, end, batch_target)) = state.batch(splat_count) {
-            // A newer camera may arrive while this refresh is in flight, but
-            // every remaining band must still use the original target.
-            assert_eq!(batch_target, target);
-            assert_ne!(batch_target, later_camera);
-            state.finish_batch(end, splat_count);
-            batches += 1;
-        }
-
-        assert!(batches > 1);
-        assert_eq!(
-            state.applied_position,
-            Some(packed_color_refresh_position_key(&target))
-        );
-        assert!(state.cursor.is_none());
-        assert!(state.target_camera.is_none());
-    }
 
     fn adapter_limits(storage_bytes: u32, buffer_bytes: u64) -> wgpu::Limits {
         let mut adapter_limits = wgpu::Limits::downlevel_defaults();
@@ -939,31 +521,18 @@ mod tests {
     }
 
     fn resource_plan(
-        path: GeometryPath,
         scene_splats: usize,
         sh_degree: u8,
-        page_count: usize,
-        page_capacity: usize,
         limits: &wgpu::Limits,
     ) -> SurfaceResourcePlan {
-        surface_resource_plan(
-            path,
-            scene_splats,
-            sh_degree,
-            page_count,
-            page_capacity,
-            716,
-            1_600,
-            limits,
-        )
-        .expect("resource plan")
+        surface_resource_plan(scene_splats, sh_degree, 716, 1_600, limits).expect("resource plan")
     }
 
     #[test]
-    fn small_direct_scene_keeps_portable_limits_on_larger_adapter() {
+    fn small_resident_scene_keeps_portable_limits_on_larger_adapter() {
         let mut adapter = adapter_limits(256 << 20, 512 << 20);
         adapter.max_texture_dimension_2d = 16_384;
-        let plan = resource_plan(GeometryPath::SortedIndexDirect, 279_199, 3, 0, 0, &adapter);
+        let plan = resource_plan(279_199, 3, &adapter);
 
         let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
 
@@ -981,17 +550,17 @@ mod tests {
     #[test]
     fn larger_adapter_requests_exact_750k_degree_three_binding() {
         let adapter = adapter_limits(256 << 20, 512 << 20);
-        let plan = resource_plan(GeometryPath::SortedIndexDirect, 750_000, 3, 0, 0, &adapter);
+        let plan = resource_plan(750_000, 3, &adapter);
 
         let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
 
         assert_eq!(requested.max_storage_buffer_binding_size, 135_000_000);
         assert_eq!(requested.max_buffer_size, 256 << 20);
         assert_eq!(
-            crate::direct_scene_preflight(750_000, 3, &requested)
+            crate::resident_scene_preflight(750_000, 3, &requested)
                 .expect("preflight")
                 .path,
-            crate::DirectScenePath::Direct
+            crate::ResidentScenePath::Resident
         );
     }
 
@@ -999,11 +568,8 @@ mod tests {
     fn surface_larger_than_adapter_texture_limit_is_rejected() {
         let adapter = adapter_limits(256 << 20, 512 << 20);
         let plan = surface_resource_plan(
-            GeometryPath::SortedIndexDirect,
             279_199,
             3,
-            0,
-            0,
             adapter.max_texture_dimension_2d + 1,
             1_600,
             &adapter,
@@ -1019,86 +585,27 @@ mod tests {
     #[test]
     fn physical_128_mib_adapter_rejects_750k_degree_three_scene() {
         let adapter = wgpu::Limits::downlevel_defaults();
-        let plan = resource_plan(GeometryPath::SortedIndexDirect, 750_000, 3, 0, 0, &adapter);
+        let plan = resource_plan(750_000, 3, &adapter);
 
         let error = surface_required_device_limits(&adapter, &plan).unwrap_err();
-        let SurfacePresenterError::DirectScene(DirectSceneError::ResourceLimitExceeded(report)) =
+        let SurfacePresenterError::ResidentScene(ResidentSceneError::ResourceLimitExceeded(report)) =
             error
         else {
             panic!("unexpected error: {error:?}");
         };
         assert_eq!(report.effective_storage_binding_limit, 128 << 20);
-        assert_eq!(report.max_direct_splats, 745_654);
+        assert_eq!(report.max_resident_splats, 745_654);
         assert_eq!(report.requirements[2].required_bytes, 135_000_000);
     }
 
     #[test]
-    fn direct_scene_above_256_mib_raises_binding_and_buffer_exactly() {
+    fn resident_scene_above_256_mib_raises_binding_and_buffer_exactly() {
         let adapter = adapter_limits(512 << 20, 512 << 20);
-        let plan = resource_plan(
-            GeometryPath::SortedIndexDirect,
-            1_500_000,
-            3,
-            0,
-            0,
-            &adapter,
-        );
+        let plan = resource_plan(1_500_000, 3, &adapter);
 
         let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
 
         assert_eq!(requested.max_storage_buffer_binding_size, 270_000_000);
         assert_eq!(requested.max_buffer_size, 270_000_000);
-    }
-
-    #[test]
-    fn packed_selection_does_not_request_oversized_direct_binding() {
-        let adapter = adapter_limits(512 << 20, 512 << 20);
-        let plan = resource_plan(GeometryPath::PackedAtlas, 3_000_000, 3, 0, 0, &adapter);
-
-        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
-
-        assert_eq!(
-            plan.direct_preflight.path,
-            DirectScenePath::ActiveAtlasRequired
-        );
-        assert_eq!(plan.packed_preflight.hot_record_storage_bytes, 60_000_000);
-        assert_eq!(
-            requested.max_storage_buffer_binding_size,
-            wgpu::Limits::downlevel_defaults().max_storage_buffer_binding_size
-        );
-        assert_eq!(
-            requested.max_buffer_size,
-            wgpu::Limits::downlevel_defaults().max_buffer_size
-        );
-    }
-
-    #[test]
-    fn paged_selection_requests_only_fixed_resident_capacity() {
-        let adapter = wgpu::Limits::downlevel_defaults();
-        let page_capacity = 65_536;
-        let scene_splats = 10_000_000;
-        let plan = resource_plan(
-            GeometryPath::PagedActiveAtlas,
-            scene_splats,
-            3,
-            scene_splats.div_ceil(page_capacity),
-            page_capacity,
-            &adapter,
-        );
-
-        let requested = surface_required_device_limits(&adapter, &plan).expect("limits");
-
-        assert_eq!(
-            plan.packed_preflight.hot_record_storage_bytes,
-            4 * 65_536 * 20
-        );
-        assert_eq!(
-            requested.max_storage_buffer_binding_size,
-            wgpu::Limits::downlevel_defaults().max_storage_buffer_binding_size
-        );
-        assert_eq!(
-            requested.max_buffer_size,
-            wgpu::Limits::downlevel_defaults().max_buffer_size
-        );
     }
 }

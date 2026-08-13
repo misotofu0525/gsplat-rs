@@ -91,8 +91,6 @@ class ParsingTests(unittest.TestCase):
         launch = COLLECTOR.benchmark_launch_args(args, "gpu")
         self.assertIn("gsplat_surface_order_backend", launch)
         self.assertEqual(launch[-1], "gpu")
-        self.assertIn("gsplat_geometry_path", launch)
-        self.assertIn("direct", launch)
         self.assertEqual(launch[launch.index("gsplat_benchmark_frames") + 1], "240")
 
     def test_forced_backend_and_dataset_identity_are_validated(self) -> None:

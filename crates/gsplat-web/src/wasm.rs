@@ -3,9 +3,7 @@ use gsplat_core::{
     RendererConfig, SceneBuffers, Vec3f,
 };
 use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
-use gsplat_render_wgpu::{
-    GeometryPath, Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession,
-};
+use gsplat_render_wgpu::{Renderer, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession};
 use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -30,34 +28,14 @@ pub async fn create_renderer(
     width: u32,
     height: u32,
 ) -> Result<GsplatWebRenderer, JsValue> {
-    create_renderer_for_path(
-        canvas,
-        ply_bytes,
-        width,
-        height,
-        GeometryPath::SortedIndexDirect,
-    )
-    .await
+    create_renderer_for_surface(canvas, ply_bytes, width, height).await
 }
 
-#[wasm_bindgen(js_name = createRendererWithGeometryPath)]
-pub async fn create_renderer_with_geometry_path(
+async fn create_renderer_for_surface(
     canvas: HtmlCanvasElement,
     ply_bytes: Uint8Array,
     width: u32,
     height: u32,
-    geometry_path: u32,
-) -> Result<GsplatWebRenderer, JsValue> {
-    let geometry_path = geometry_path_from_id(geometry_path)?;
-    create_renderer_for_path(canvas, ply_bytes, width, height, geometry_path).await
-}
-
-async fn create_renderer_for_path(
-    canvas: HtmlCanvasElement,
-    ply_bytes: Uint8Array,
-    width: u32,
-    height: u32,
-    geometry_path: GeometryPath,
 ) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
     let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
@@ -68,7 +46,6 @@ async fn create_renderer_for_path(
         mode: RenderMode::SortedAlpha,
     })
     .map_err(renderer_error)?;
-    renderer.set_geometry_path(geometry_path);
     renderer.load_scene(loaded.scene).map_err(renderer_error)?;
 
     let presenter = SurfacePresenter::from_canvas(canvas, width, height, &renderer)
@@ -182,12 +159,6 @@ impl GsplatWebRenderer {
         let _ = self.session.set_sort_interval(interval.max(1));
     }
 
-    #[wasm_bindgen(js_name = setGeometryPath)]
-    pub fn set_geometry_path(&mut self, path: u32) -> Result<(), JsValue> {
-        let path = geometry_path_from_id(path)?;
-        self.session.set_geometry_path(path).map_err(renderer_error)
-    }
-
     #[wasm_bindgen(js_name = setCamera)]
     pub fn set_camera(&mut self, values: Float32Array) -> Result<(), JsValue> {
         let values = values.to_vec();
@@ -228,12 +199,7 @@ impl GsplatWebRenderer {
 
     #[wasm_bindgen(js_name = rasterPath)]
     pub fn raster_path(&self) -> String {
-        match self.session.geometry_path() {
-            GeometryPath::SortedIndexDirect => "sorted_index_direct",
-            GeometryPath::PackedAtlas => "packed_atlas",
-            GeometryPath::PagedActiveAtlas => "paged_active_atlas",
-        }
-        .to_owned()
+        "resident_sorted_indices".to_owned()
     }
 
     #[wasm_bindgen(js_name = renderFrame)]
@@ -263,15 +229,6 @@ impl GsplatWebRenderer {
         set_u32(&object, "width", width)?;
         set_u32(&object, "height", height)?;
         Ok(object.into())
-    }
-}
-
-fn geometry_path_from_id(path: u32) -> Result<GeometryPath, JsValue> {
-    match path {
-        0 => Ok(GeometryPath::SortedIndexDirect),
-        1 => Ok(GeometryPath::PackedAtlas),
-        2 => Ok(GeometryPath::PagedActiveAtlas),
-        _ => Err(error_code(ErrorCode::InvalidArgument)),
     }
 }
 

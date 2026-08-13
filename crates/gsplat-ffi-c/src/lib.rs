@@ -15,8 +15,8 @@ use gsplat_io_ply::load_ply;
 #[cfg(target_os = "android")]
 use gsplat_render_wgpu::SurfaceOrderBackend;
 use gsplat_render_wgpu::{
-    GeometryPath, Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed,
-    SurfacePresenter, SurfaceRenderSession,
+    Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed, SurfacePresenter,
+    SurfaceRenderSession,
 };
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
@@ -591,36 +591,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_android(
             path,
             width,
             height,
-            0,
             out_renderer,
             "gsplat_surface_renderer_create_android",
-        )
-    }
-}
-
-/// Create an Android Surface renderer with a preselected experimental geometry path.
-///
-/// # Safety
-///
-/// The pointer requirements match [`gsplat_surface_renderer_create_android`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_create_android_with_geometry_path(
-    native_window: *mut c_void,
-    path: *const c_char,
-    width: u32,
-    height: u32,
-    geometry_path: u32,
-    out_renderer: *mut *mut GsplatSurfaceRenderer,
-) -> i32 {
-    unsafe {
-        create_android_surface_renderer(
-            native_window,
-            path,
-            width,
-            height,
-            geometry_path,
-            out_renderer,
-            "gsplat_surface_renderer_create_android_with_geometry_path",
         )
     }
 }
@@ -630,7 +602,6 @@ unsafe fn create_android_surface_renderer(
     path: *const c_char,
     width: u32,
     height: u32,
-    geometry_path: u32,
     out_renderer: *mut *mut GsplatSurfaceRenderer,
     operation: &'static str,
 ) -> i32 {
@@ -641,16 +612,6 @@ unsafe fn create_android_surface_renderer(
                 format!("{operation}: native_window, path, or out_renderer is null"),
             );
         }
-
-        let geometry_path = match geometry_path_from_ffi(geometry_path) {
-            Some(path) => path,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    format!("{operation}: unsupported geometry path"),
-                );
-            }
-        };
 
         unsafe {
             *out_renderer = std::ptr::null_mut();
@@ -676,8 +637,6 @@ unsafe fn create_android_surface_renderer(
                 return ffi_error_display(err.code(), operation, err);
             }
         };
-        renderer.set_geometry_path(geometry_path);
-
         let loaded = match load_ply(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
@@ -737,37 +696,8 @@ pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit(
             path,
             width,
             height,
-            0,
             out_renderer,
             "gsplat_surface_renderer_create_uikit",
-        )
-    }
-}
-
-/// Create a UIKit Surface renderer with a preselected experimental geometry path.
-///
-/// # Safety
-///
-/// The pointer requirements match [`gsplat_surface_renderer_create_uikit`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_create_uikit_with_geometry_path(
-    ui_view: *mut c_void,
-    ui_view_controller: *mut c_void,
-    path: *const c_char,
-    width: u32,
-    height: u32,
-    geometry_path: u32,
-    out_renderer: *mut *mut GsplatSurfaceRenderer,
-) -> i32 {
-    unsafe {
-        create_uikit_surface_renderer(
-            (ui_view, ui_view_controller),
-            path,
-            width,
-            height,
-            geometry_path,
-            out_renderer,
-            "gsplat_surface_renderer_create_uikit_with_geometry_path",
         )
     }
 }
@@ -777,7 +707,6 @@ unsafe fn create_uikit_surface_renderer(
     path: *const c_char,
     width: u32,
     height: u32,
-    geometry_path: u32,
     out_renderer: *mut *mut GsplatSurfaceRenderer,
     operation: &'static str,
 ) -> i32 {
@@ -789,16 +718,6 @@ unsafe fn create_uikit_surface_renderer(
                 format!("{operation}: ui_view, path, or out_renderer is null"),
             );
         }
-
-        let geometry_path = match geometry_path_from_ffi(geometry_path) {
-            Some(path) => path,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    format!("{operation}: unsupported geometry path"),
-                );
-            }
-        };
 
         unsafe {
             *out_renderer = std::ptr::null_mut();
@@ -824,8 +743,6 @@ unsafe fn create_uikit_surface_renderer(
                 return ffi_error_display(err.code(), operation, err);
             }
         };
-        renderer.set_geometry_path(geometry_path);
-
         let loaded = match load_ply(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
@@ -1032,64 +949,9 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_sort_interval(
     })
 }
 
-/// Set the Surface renderer geometry path.
-///
-/// `path` must be `GSPLAT_GEOMETRY_PATH_DIRECT` (0),
-/// `GSPLAT_GEOMETRY_PATH_PACKED_ATLAS` (1), or
-/// `GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS` (2). This is an experimental A/B
-/// benchmark knob; the default remains the direct sorted-index path.
-///
-/// # Safety
-///
-/// `renderer` must be null or a live handle returned by a Surface renderer
-/// create function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gsplat_surface_renderer_set_geometry_path(
-    renderer: *mut GsplatSurfaceRenderer,
-    path: u32,
-) -> i32 {
-    ffi_catch_i32("gsplat_surface_renderer_set_geometry_path", || {
-        let renderer = match unsafe { renderer.as_mut() } {
-            Some(renderer) => renderer,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_set_geometry_path: renderer is null",
-                );
-            }
-        };
-
-        let geometry_path = match geometry_path_from_ffi(path) {
-            Some(path) => path,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_surface_renderer_set_geometry_path: unsupported path",
-                );
-            }
-        };
-
-        if let Err(err) = renderer.session.set_geometry_path(geometry_path) {
-            return ffi_error_display(err.code(), "gsplat_surface_renderer_set_geometry_path", err);
-        }
-        renderer.render_error_logged = false;
-        ffi_ok()
-    })
-}
-
-fn geometry_path_from_ffi(path: u32) -> Option<GeometryPath> {
-    match path {
-        0 => Some(GeometryPath::SortedIndexDirect),
-        1 => Some(GeometryPath::PackedAtlas),
-        2 => Some(GeometryPath::PagedActiveAtlas),
-        _ => None,
-    }
-}
-
 /// Compatibility no-op retained for the v0.1 ABI.
 ///
-/// CPU-sorted-index rendering is always used; `gsplat_surface_renderer_set_geometry_path`
-/// is the only supported geometry A/B knob.
+/// CPU-sorted-index rendering is always used.
 ///
 /// # Safety
 ///
@@ -1782,26 +1644,24 @@ fn scene_bounds(scene: &gsplat_core::SceneBuffers) -> Option<(Vec3f, Vec3f)> {
 mod tests {
     use std::ptr;
 
-    use gsplat_core::ErrorCode;
-    use gsplat_render_wgpu::GeometryPath;
-
     use super::{
         GsplatCamera, GsplatConfig, GsplatContext, SurfaceCameraControl,
-        camera_rotation_looking_at, ffi_catch_i32, geometry_path_from_ffi, gsplat_camera_default,
-        gsplat_config_default, gsplat_context_create, gsplat_context_destroy,
-        gsplat_context_get_stats, gsplat_context_load_scene_path, gsplat_context_render_frame,
+        camera_rotation_looking_at, ffi_catch_i32, gsplat_camera_default, gsplat_config_default,
+        gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
+        gsplat_context_load_scene_path, gsplat_context_render_frame,
         gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
         gsplat_last_error_message, gsplat_surface_renderer_get_stats,
         gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
         gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
         gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_geometry,
         gsplat_surface_renderer_set_async_sort, gsplat_surface_renderer_set_frame_latency,
-        gsplat_surface_renderer_set_geometry_path, gsplat_surface_renderer_set_gpu_preproject,
+        gsplat_surface_renderer_set_gpu_preproject,
         gsplat_surface_renderer_set_gpu_preproject_double_buffer,
         gsplat_surface_renderer_set_instance_buffer_count,
         gsplat_surface_renderer_set_sort_interval, gsplat_surface_renderer_zoom,
         surface_camera_from_control,
     };
+    use gsplat_core::ErrorCode;
 
     #[test]
     fn default_ffi_values_match_release_contract() {
@@ -1814,20 +1674,6 @@ mod tests {
         assert_eq!(camera.rotation_xyzw, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(camera.near_plane, 0.01);
         assert_eq!(camera.far_plane, 1000.0);
-    }
-
-    #[test]
-    fn geometry_path_ids_cover_the_experimental_constructor_contract() {
-        assert_eq!(
-            geometry_path_from_ffi(0),
-            Some(GeometryPath::SortedIndexDirect)
-        );
-        assert_eq!(geometry_path_from_ffi(1), Some(GeometryPath::PackedAtlas));
-        assert_eq!(
-            geometry_path_from_ffi(2),
-            Some(GeometryPath::PagedActiveAtlas)
-        );
-        assert_eq!(geometry_path_from_ffi(3), None);
     }
 
     #[test]
@@ -2026,10 +1872,6 @@ mod tests {
         );
         assert_eq!(
             unsafe { gsplat_surface_renderer_set_async_geometry(ptr::null_mut(), 1) },
-            expected
-        );
-        assert_eq!(
-            unsafe { gsplat_surface_renderer_set_geometry_path(ptr::null_mut(), 1) },
             expected
         );
         assert_eq!(

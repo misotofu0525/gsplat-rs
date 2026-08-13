@@ -11,7 +11,7 @@ use artifact::{
 };
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{GeometryPath, Renderer};
+use gsplat_render_wgpu::Renderer;
 
 fn main() {
     if let Err(err) = run() {
@@ -46,16 +46,12 @@ fn run() -> Result<(), String> {
     let splat_count = loaded.scene.len();
     let sh_degree = loaded.scene.sh_degree;
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
-    renderer.set_geometry_path(config.geometry_path);
     renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
     print_gpu_metadata(&renderer);
-    print_direct_scene_preflight(&renderer)?;
-    println!(
-        "offscreen_geometry_pipeline={}",
-        geometry_path_label(config.geometry_path)
-    );
+    print_resident_scene_preflight(&renderer)?;
+    println!("offscreen_geometry_pipeline=resident_sorted_indices");
 
     let camera = Camera::default();
 
@@ -322,32 +318,32 @@ fn print_gpu_metadata(renderer: &Renderer) {
     println!("gpu_driver_info={}", single_line(&info.driver_info));
 }
 
-fn print_direct_scene_preflight(renderer: &Renderer) -> Result<(), String> {
+fn print_resident_scene_preflight(renderer: &Renderer) -> Result<(), String> {
     let report = renderer
-        .current_direct_scene_preflight()
+        .current_resident_scene_preflight()
         .map_err(|error| error.to_string())?;
-    println!("direct_preflight_path={:?}", report.path);
-    println!("direct_preflight_splats={}", report.splat_count);
-    println!("direct_preflight_sh_degree={}", report.sh_degree);
+    println!("resident_preflight_path={:?}", report.path);
+    println!("resident_preflight_splats={}", report.splat_count);
+    println!("resident_preflight_sh_degree={}", report.sh_degree);
     println!(
-        "direct_preflight_storage_binding_limit_bytes={}",
+        "resident_preflight_storage_binding_limit_bytes={}",
         report.effective_storage_binding_limit
     );
     println!(
-        "direct_preflight_max_buffer_size_bytes={}",
+        "resident_preflight_max_buffer_size_bytes={}",
         report.effective_max_buffer_size
     );
     println!(
-        "direct_preflight_limiting_resource={:?}",
+        "resident_preflight_limiting_resource={:?}",
         report.limiting_resource
     );
     println!(
-        "direct_preflight_max_direct_splats={}",
-        report.max_direct_splats
+        "resident_preflight_max_resident_splats={}",
+        report.max_resident_splats
     );
     for requirement in report.requirements {
         println!(
-            "direct_preflight_resource={:?} required_bytes={} limit_bytes={} fits={}",
+            "resident_preflight_resource={:?} required_bytes={} limit_bytes={} fits={}",
             requirement.resource,
             requirement.required_bytes,
             requirement.limit_bytes,
@@ -426,7 +422,7 @@ fn artifact_context(
     );
     let info = renderer.gpu_adapter_info();
     let preflight = renderer
-        .current_direct_scene_preflight()
+        .current_resident_scene_preflight()
         .map_err(|error| error.to_string())?;
     let backend = info
         .map(|value| format!("{:?}", value.backend))
@@ -465,7 +461,7 @@ fn artifact_context(
         trace,
         renderer: ArtifactRenderer {
             implementation: "gsplat-rs".to_owned(),
-            path: geometry_path_label(config.geometry_path).to_owned(),
+            path: "resident_sorted_indices".to_owned(),
             backend,
             sort_policy: "cpu_every_frame".to_owned(),
             resource_preflight: Some(ResourcePreflight {
@@ -475,7 +471,7 @@ fn artifact_context(
                 storage_binding_limit_bytes: preflight.effective_storage_binding_limit,
                 max_buffer_size_bytes: preflight.effective_max_buffer_size,
                 limiting_resource: format!("{:?}", preflight.limiting_resource),
-                max_direct_splats: preflight.max_direct_splats,
+                max_resident_splats: preflight.max_resident_splats,
                 remediation: format!("{:?}", preflight.remediation),
                 requirements: preflight
                     .requirements
@@ -694,7 +690,6 @@ struct BenchConfig {
     stability_seconds: Option<u64>,
     rss_growth_limit_kib: u64,
     analysis: Option<SpatialAnalysisConfig>,
-    geometry_path: GeometryPath,
 }
 
 impl Default for BenchConfig {
@@ -712,27 +707,7 @@ impl Default for BenchConfig {
             stability_seconds: None,
             rss_growth_limit_kib: 64 * 1024,
             analysis: None,
-            geometry_path: GeometryPath::SortedIndexDirect,
         }
-    }
-}
-
-fn geometry_path_label(path: GeometryPath) -> &'static str {
-    match path {
-        GeometryPath::SortedIndexDirect => "sorted_index_direct",
-        GeometryPath::PackedAtlas => "packed_atlas",
-        GeometryPath::PagedActiveAtlas => "paged_active_atlas",
-    }
-}
-
-fn parse_geometry_path(value: &str) -> Result<GeometryPath, String> {
-    match value {
-        "direct" | "sorted_index_direct" => Ok(GeometryPath::SortedIndexDirect),
-        "packed" | "packed_atlas" => Ok(GeometryPath::PackedAtlas),
-        "paged" | "paged_active_atlas" => Ok(GeometryPath::PagedActiveAtlas),
-        other => Err(format!(
-            "invalid --geometry-path '{other}' (expected direct|packed|paged)"
-        )),
     }
 }
 
@@ -861,11 +836,6 @@ impl BenchConfig {
                     config.warmup_iterations = value
                         .parse::<usize>()
                         .map_err(|_| "invalid --warmup-iterations value")?;
-                }
-                "--geometry-path" => {
-                    i += 1;
-                    let value = args.get(i).ok_or("missing value for --geometry-path")?;
-                    config.geometry_path = parse_geometry_path(value)?;
                 }
                 "--max-avg-gpu-complete-ms" => {
                     i += 1;

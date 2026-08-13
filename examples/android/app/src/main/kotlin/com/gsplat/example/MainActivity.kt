@@ -38,26 +38,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-private const val GSPLAT_GEOMETRY_PATH_DIRECT = 0
-private const val GSPLAT_GEOMETRY_PATH_PACKED_ATLAS = 1
-private const val GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS = 2
 private const val GSPLAT_ORDER_BACKEND_CPU = 0
 private const val GSPLAT_ORDER_BACKEND_GPU = 1
 private const val GSPLAT_ORDER_BACKEND_ADAPTIVE = 2
-
-private fun geometryPathValue(label: String): Int =
-    when (label) {
-        "packed" -> GSPLAT_GEOMETRY_PATH_PACKED_ATLAS
-        "paged" -> GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS
-        else -> GSPLAT_GEOMETRY_PATH_DIRECT
-    }
-
-private fun geometryPipelineName(label: String): String =
-    when (label) {
-        "packed" -> "packed_atlas"
-        "paged" -> "paged_active_atlas"
-        else -> "sorted_index_direct"
-    }
 
 private fun orderBackendValue(label: String): Int =
     when (label) {
@@ -352,15 +335,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         running = true
         renderThread = Thread(
             {
-                Log.i(TAG, "createSurfaceRenderer start size=${width}x$height geometry=${benchmarkConfig.geometryPath} dataset=$datasetPath")
+                Log.i(TAG, "createSurfaceRenderer start size=${width}x$height dataset=$datasetPath")
                 updateStatus("state=creating size=${width}x$height")
                 val createError = IntArray(1)
-                val handle = NativeBridge.createSurfaceRendererWithGeometryPath(
+                val handle = NativeBridge.createSurfaceRenderer(
                     surface,
                     datasetPath,
                     width,
                     height,
-                    geometryPathValue(benchmarkConfig.geometryPath),
                     createError
                 )
                 if (handle == 0L) {
@@ -497,11 +479,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 lastStatusAt = now
                                 val statsRc = NativeBridge.getSurfaceStats(handle, stats)
                                 val detail = if (statsRc == 0) {
-                                    val counts = if (benchmarkConfig.geometryPath == "paged") {
-                                        "loaded=${stats[0]} drawn=${stats[1]}/${stats[0]}"
-                                    } else {
-                                        "visible=${stats[0]} drawn=${stats[1]}/${stats[0]}"
-                                    }
+                                    val counts = "visible=${stats[0]} drawn=${stats[1]}/${stats[0]}"
                                     "state=rendering frames=$frameCount " +
                                         "$counts " +
                                         "frame=${formatMicros(stats[2])}ms " +
@@ -960,11 +938,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         if (latestStatus.startsWith("state=rendering")) {
             val drawn = statusValue("drawn")
             val frame = statusValue("frame")
-            val splats = if (benchmarkConfig.geometryPath == "paged") {
-                drawn?.replace("/", " / ")
-            } else {
-                drawn?.substringBefore('/')
-            }
+            val splats = drawn?.substringBefore('/')
             return listOfNotNull(
                 "LIVE",
                 splats?.let { "$it SPLATS" },
@@ -1024,7 +998,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         appendLine("surface=wgpu realtime ${surfaceSizeLabel}")
         appendLine(status)
         appendLine(cameraStatus)
-        appendLine("geometry_pipeline=${geometryPipelineName(benchmarkConfig.geometryPath)}")
+        appendLine("geometry_pipeline=resident_sorted_indices")
         appendLine("order_backend=${benchmarkConfig.orderBackend}")
         if (benchmarkConfig.enabled) {
             appendLine("benchmark=orbit frames=${benchmarkConfig.frames} warmup=${benchmarkConfig.warmupFrames}")
@@ -1065,7 +1039,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val EXTRA_SURFACE_SORT_INTERVAL = "gsplat_surface_sort_interval"
         private const val EXTRA_SURFACE_ASYNC_SORT = "gsplat_surface_async_sort"
         private const val EXTRA_SURFACE_FRAME_LATENCY = "gsplat_surface_frame_latency"
-        private const val EXTRA_SURFACE_GEOMETRY_PATH = "gsplat_geometry_path"
         private const val EXTRA_SURFACE_ORDER_BACKEND = "gsplat_surface_order_backend"
         private const val DEFAULT_BENCHMARK_FRAMES = 120
         private const val DEFAULT_BENCHMARK_WARMUP_FRAMES = 10
@@ -1073,7 +1046,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val DEFAULT_SURFACE_SORT_INTERVAL = 2
         private const val DEFAULT_SURFACE_ASYNC_SORT = false
         private const val DEFAULT_SURFACE_FRAME_LATENCY = 2
-        private const val DEFAULT_SURFACE_GEOMETRY_PATH = "direct"
         private const val DEFAULT_SURFACE_ORDER_BACKEND = "cpu"
         private const val TARGET_FRAME_INTERVAL_NS = 16_666_667L
         private const val BENCHMARK_MANIFEST_PREFIX = "GSPLAT_BENCHMARK_MANIFEST "
@@ -1139,8 +1111,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val frameLatency: Int = DEFAULT_SURFACE_FRAME_LATENCY,
         // Sample-only A/B knob: "cpu", "gpu", or "adaptive".
         val orderBackend: String = DEFAULT_SURFACE_ORDER_BACKEND,
-        // Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
-        val geometryPath: String = DEFAULT_SURFACE_GEOMETRY_PATH
     ) {
         companion object {
             fun fromIntent(intent: Intent): BenchmarkConfig {
@@ -1162,11 +1132,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 val frameLatency = intent
                     .getIntExtra(EXTRA_SURFACE_FRAME_LATENCY, DEFAULT_SURFACE_FRAME_LATENCY)
                     .coerceIn(1, 4)
-                val geometryPath = intent.getStringExtra(EXTRA_SURFACE_GEOMETRY_PATH)
-                    ?.trim()
-                    ?.lowercase(Locale.US)
-                    ?.takeIf { it == "direct" || it == "packed" || it == "paged" }
-                    ?: DEFAULT_SURFACE_GEOMETRY_PATH
                 val orderBackend = intent.getStringExtra(EXTRA_SURFACE_ORDER_BACKEND)
                     ?.trim()
                     ?.lowercase(Locale.US)
@@ -1180,8 +1145,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     sortInterval = sortInterval,
                     asyncSort = asyncSort,
                     frameLatency = frameLatency,
-                    orderBackend = orderBackend,
-                    geometryPath = geometryPath
+                    orderBackend = orderBackend
                 )
             }
         }
@@ -1281,16 +1245,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             val averageCpuPreprocess = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuPreprocessMicros, cpuDivisor)
             val averageCpuSort = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuSortMicros, cpuDivisor)
             val averageCpuRaster = if (cpuTimingSamples == 0) "n/a" else avgMicros(cpuRasterMicros, cpuDivisor)
-            val averageCount = if (config.geometryPath == "paged") {
-                "avg_loaded_source=${totalVisible / safeSamples}"
-            } else {
-                "avg_visible=${totalVisible / safeSamples}"
-            }
+            val averageCount = "avg_visible=${totalVisible / safeSamples}"
             return "BENCHMARK_RESULT dataset=$datasetLabel " +
                 "samples=$samples warmup=${config.warmupFrames} sort_interval=${config.sortInterval} " +
                 "async_sort=${config.asyncSort} " +
                 "order_backend=${config.orderBackend} " +
-                "geometry_pipeline=${geometryPipelineName(config.geometryPath)} " +
+                "geometry_pipeline=resident_sorted_indices " +
                 "frame_latency=${config.frameLatency} " +
                 "avg_call_ms=${avgNs(totalCallNs, safeSamples)} " +
                 "avg_frame_ms=${avgMicros(totalFrameMicros, safeSamples)} " +
@@ -1365,7 +1325,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     .put("sha256", sha256(traceId.toByteArray(Charsets.UTF_8))))
                 .put("renderer", JSONObject()
                     .put("implementation", "gsplat-rs-native")
-                    .put("path", geometryPipelineName(config.geometryPath))
+                    .put("path", "resident_sorted_indices")
                     .put("backend", "vulkan")
                     .put("order_backend_requested", config.orderBackend)
                     .put("gpu_count_semantics", "source_count_upper_bound; sort-all/draw-all")

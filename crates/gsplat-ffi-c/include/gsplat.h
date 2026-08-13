@@ -40,16 +40,6 @@ typedef enum GsplatRenderMode {
   GSPLAT_RENDER_MODE_SORTED_ALPHA = 0,
 } GsplatRenderMode;
 
-/*
- * Surface geometry A/B benchmark knob. GSPLAT_GEOMETRY_PATH_DIRECT is the
- * release-gated default; packed and paged atlas paths are experimental.
- */
-typedef enum GsplatGeometryPath {
-  GSPLAT_GEOMETRY_PATH_DIRECT = 0,
-  GSPLAT_GEOMETRY_PATH_PACKED_ATLAS = 1,
-  GSPLAT_GEOMETRY_PATH_PAGED_ACTIVE_ATLAS = 2,
-} GsplatGeometryPath;
-
 typedef struct GsplatConfig {
   uint32_t width;
   uint32_t height;
@@ -116,27 +106,12 @@ int32_t gsplat_surface_renderer_create_android(
     uint32_t width,
     uint32_t height,
     GsplatSurfaceRenderer **out_renderer);
-int32_t gsplat_surface_renderer_create_android_with_geometry_path(
-    void *native_window,
-    const char *path,
-    uint32_t width,
-    uint32_t height,
-    uint32_t geometry_path,
-    GsplatSurfaceRenderer **out_renderer);
 int32_t gsplat_surface_renderer_create_uikit(
     void *ui_view,
     void *ui_view_controller,
     const char *path,
     uint32_t width,
     uint32_t height,
-    GsplatSurfaceRenderer **out_renderer);
-int32_t gsplat_surface_renderer_create_uikit_with_geometry_path(
-    void *ui_view,
-    void *ui_view_controller,
-    const char *path,
-    uint32_t width,
-    uint32_t height,
-    uint32_t geometry_path,
     GsplatSurfaceRenderer **out_renderer);
 void gsplat_surface_renderer_destroy(GsplatSurfaceRenderer *renderer);
 int32_t gsplat_surface_renderer_resize(
@@ -147,18 +122,8 @@ int32_t gsplat_surface_renderer_set_sort_interval(
     GsplatSurfaceRenderer *renderer,
     uint32_t interval);
 /*
- * Experimental A/B benchmark knob: switch between the direct sorted-index
- * pipeline (GSPLAT_GEOMETRY_PATH_DIRECT, default), packed-atlas pipeline, and
- * local-source paged active atlas. `path` is a GsplatGeometryPath value. May
- * change before a published mobile SDK.
- */
-int32_t gsplat_surface_renderer_set_geometry_path(
-    GsplatSurfaceRenderer *renderer,
-    uint32_t path);
-/*
  * v0.1 ABI compatibility no-ops. Rendering always uses the resident-scene
- * sorted-index pipeline selected by gsplat_surface_renderer_set_geometry_path;
- * new integrations should not call these.
+ * sorted-index pipeline; new integrations should not call these.
  */
 int32_t gsplat_surface_renderer_set_gpu_preproject(
     GsplatSurfaceRenderer *renderer,

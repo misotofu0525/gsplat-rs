@@ -72,7 +72,7 @@ by one serialized thread or queue and destroy it only after in-flight work has
 returned.
 
 The C handle is an adapter over the shared Rust `SurfaceRenderSession`, not a
-separate Android scheduler. CPU sort cadence, compact order uploads, direct
+separate Android scheduler. CPU sort cadence, compact order uploads, resident
 drawing, and optional native async sorting therefore follow the same state
 machine as Web, iOS, and desktop Surface rendering.
 
@@ -152,15 +152,9 @@ Notes:
 - This example uses `files/imported_scene.ply` when present, then extracts the bundled `assets/showcase.ply` into app storage, then checks `files/flowers_1.ply`; otherwise it writes a minimal ASCII PLY into app internal storage.
 - Imported files come from the Android system picker as `content://` URIs and are copied into `files/imported_scene.ply` before crossing the JNI/C ABI boundary, which still receives a normal local file path.
 - On Android emulator, the `SurfaceView` buffer is capped to a 1600px maximum side. The Surface presenter does not sample or cap the sorted splat list; visual stability is preferred over artificial throughput wins.
-- The compact overlay reports the live splat count and frame time. Direct and
-  packed paths retain `drawn=<surface_instances>/<visible_instances>`. The
-  experimental paged path reports `drawn=<active_resident>/<loaded_source>` so
-  a bounded working set cannot be mistaken for full installation; its compact
-  overlay shows the same ratio. The `Studio` panel retains the full Android
+- The compact overlay reports the live splat count and frame time as
+  `drawn=<surface_instances>/<visible_instances>`. The `Studio` panel retains the full Android
   Surface diagnostics.
-- `GsplatSurfaceOptions.geometryPath` selects `DIRECT` by default or the
-  experimental `PACKED_ATLAS` / local-source `PAGED_ACTIVE_ATLAS` before scene
-  derivation and Surface resource creation.
 - Maven publishing, additional ABIs, and a higher-level `GsplatSurfaceView`
   are intentionally not solved here yet. Future Android SDK work should keep
   wrapping the same C ABI rather than introduce a separate render contract.
@@ -189,8 +183,7 @@ For repeatable Surface performance checks, launch with benchmark extras:
   --ef gsplat_benchmark_yaw_step 0.001 \
   --ei gsplat_surface_sort_interval 2 \
   --ez gsplat_surface_async_sort false \
-  --ei gsplat_surface_frame_latency 2 \
-  --es gsplat_geometry_path direct
+  --ei gsplat_surface_frame_latency 2
 "$ADB" logcat -d -s GsplatExample:I | grep BENCHMARK_RESULT
 ```
 
@@ -254,13 +247,13 @@ hashes, device identity, thermal observations, and progress in
 overwritten.
 
 Benchmark mode forces a tiny camera orbit each frame so it measures the shared
-CPU-sort + direct-render path rather than stationary presentation.
+CPU-sort + resident-render path rather than stationary presentation.
 `gsplat_surface_sort_interval` controls how often the Surface path refreshes
 depth sorting during camera changes. The Android example default is `2`, which
 reuses the previous sorted index order for one camera-change frame while the
 vertex shader still projects the current camera; use `1` to force sorting every
 camera-change frame for comparison.
-All three choices use the same persistent Direct source buffers and Direct
+All three choices use the same persistent resident source buffers and resident
 draw shaders, but they compare complete ordering strategies rather than an
 isolated sort kernel. CPU refreshes apply the near/far candidate filter, sort
 on CPU, and upload compact source IDs. GPU refreshes generate and stably sort
@@ -274,10 +267,4 @@ with the previous order. It keeps the full splat count and is intended for
 interaction A/B checks.
 `gsplat_surface_frame_latency` maps to wgpu
 `desired_maximum_frame_latency`. The default is `2`.
-`gsplat_geometry_path` selects `direct` (default, release-gated
-`SortedIndexDirect`), `packed` (experimental `PackedAtlas`), or `paged`
-(experimental four-slot local-source `PagedActiveAtlas`) for on-device smoke
-and A/B checks.
-The example passes the value to the additive constructor-time geometry entry
-and records the resulting `renderer.path` (`sorted_index_direct`,
-`packed_atlas`, or `paged_active_atlas`) in the emitted benchmark artifact.
+The emitted benchmark artifact records `renderer.path=resident_sorted_indices`.

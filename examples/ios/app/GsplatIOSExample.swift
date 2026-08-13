@@ -41,8 +41,6 @@ struct BenchmarkConfig {
     var sortInterval: UInt32 = 2
     var asyncSort = false
     var frameLatency: UInt32 = 2
-    /// Experimental A/B benchmark knob: "direct" (default), "packed", or "paged".
-    var geometryPath = "direct"
 
     static func fromArguments(_ arguments: [String]) -> BenchmarkConfig {
         let args = LaunchArguments(arguments)
@@ -57,27 +55,7 @@ struct BenchmarkConfig {
         config.frameLatency = UInt32(
             min(max(1, args.int("gsplat_surface_frame_latency", default: Int(config.frameLatency))), 4)
         )
-        let geometryPath = args.string("gsplat_geometry_path", default: config.geometryPath).lowercased()
-        config.geometryPath = ["packed", "paged"].contains(geometryPath) ? geometryPath : "direct"
         return config
-    }
-}
-
-/// Maps the experimental geometry-path label to the `GsplatGeometryPath` FFI value.
-func geometryPathValue(_ label: String) -> UInt32 {
-    switch label {
-    case "packed": return 1
-    case "paged": return 2
-    default: return 0
-    }
-}
-
-/// Maps the experimental geometry-path label to the artifact `renderer.path` name.
-func geometryPipelineName(_ label: String) -> String {
-    switch label {
-    case "packed": return "packed_atlas"
-    case "paged": return "paged_active_atlas"
-    default: return "sorted_index_direct"
     }
 }
 
@@ -451,13 +429,12 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
         let viewPointer = Unmanaged.passUnretained(surfaceView).toOpaque()
         let controllerPointer = Unmanaged.passUnretained(self).toOpaque()
         let rc = datasetPath.withCString { path in
-            gsplat_surface_renderer_create_uikit_with_geometry_path(
+            gsplat_surface_renderer_create_uikit(
                 viewPointer,
                 controllerPointer,
                 path,
                 UInt32(size.width),
                 UInt32(size.height),
-                geometryPathValue(benchmarkConfig.geometryPath),
                 &handle
             )
         }
@@ -1054,7 +1031,7 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
             "surface=wgpu realtime \(surfaceSizeLabel())",
             latestState,
             cameraState,
-            "geometry_pipeline=\(geometryPipelineName(benchmarkConfig.geometryPath))",
+            "geometry_pipeline=resident_sorted_indices",
         ]
         if benchmarkConfig.enabled {
             lines.append("benchmark=orbit frames=\(benchmarkConfig.frames) warmup=\(benchmarkConfig.warmupFrames)")

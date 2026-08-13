@@ -1,4 +1,4 @@
-//! Stable GPU depth ordering for the resident Direct scene.
+//! Stable GPU depth ordering for a resident scene.
 //!
 //! The sorter records into a caller-owned encoder and never submits, maps, or
 //! polls. Eight stable 4-bit LSD passes leave the final pairs in `pairs_a`.
@@ -8,7 +8,7 @@ use std::num::NonZeroU64;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::{DirectSceneError, GpuSurfaceRenderParams, wgpu_label};
+use crate::{GpuSurfaceRenderParams, ResidentSceneError, wgpu_label};
 
 const WORKGROUP_SIZE: u32 = 64;
 const ITEMS_PER_THREAD: u32 = 4;
@@ -35,7 +35,7 @@ struct PassParams {
     _pad: u32,
 }
 
-pub(crate) struct DirectGpuOrder {
+pub(crate) struct ResidentGpuOrder {
     count: u32,
     group_count: u32,
     keygen_group_count: u32,
@@ -53,18 +53,18 @@ pub(crate) struct DirectGpuOrder {
     pass_stride: u32,
 }
 
-impl DirectGpuOrder {
+impl ResidentGpuOrder {
     pub(crate) fn validate_dispatch_limits(
         device: &wgpu::Device,
         capacity: u32,
         count: u32,
-    ) -> Result<(), DirectSceneError> {
+    ) -> Result<(), ResidentSceneError> {
         let group_count = workgroup_count(capacity.max(1));
         let keygen_group_count = workgroup_count(count);
         let dispatch_limit = device.limits().max_compute_workgroups_per_dimension;
         if group_count > dispatch_limit || keygen_group_count > dispatch_limit {
-            return Err(DirectSceneError::GpuOrderInitialization(format!(
-                "direct GPU order requires {group_count} radix and {keygen_group_count} key-generation workgroups; device limit is {dispatch_limit}"
+            return Err(ResidentSceneError::GpuOrderInitialization(format!(
+                "resident GPU order requires {group_count} radix and {keygen_group_count} key-generation workgroups; device limit is {dispatch_limit}"
             )));
         }
         Ok(())
@@ -76,7 +76,7 @@ impl DirectGpuOrder {
         render_params_buffer: &wgpu::Buffer,
         capacity: u32,
         count: u32,
-    ) -> Result<Self, DirectSceneError> {
+    ) -> Result<Self, ResidentSceneError> {
         debug_assert!(count <= capacity);
         let allocation_count = capacity.max(1);
         let group_count = workgroup_count(allocation_count);
@@ -87,13 +87,13 @@ impl DirectGpuOrder {
             | wgpu::BufferUsages::COPY_SRC
             | wgpu::BufferUsages::COPY_DST;
         let pairs_a = device.create_buffer(&wgpu::BufferDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-a"),
+            label: wgpu_label("gsplat-resident-gpu-order-a"),
             size: pair_bytes,
             usage: pair_usage,
             mapped_at_creation: false,
         });
         let pairs_b = device.create_buffer(&wgpu::BufferDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-b"),
+            label: wgpu_label("gsplat-resident-gpu-order-b"),
             size: pair_bytes,
             usage: pair_usage,
             mapped_at_creation: false,
@@ -101,7 +101,7 @@ impl DirectGpuOrder {
 
         let meta_words = 16_u64 + 16_u64 * u64::from(group_count);
         let meta = device.create_buffer(&wgpu::BufferDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-meta"),
+            label: wgpu_label("gsplat-resident-gpu-order-meta"),
             size: meta_words * std::mem::size_of::<u32>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
@@ -121,19 +121,19 @@ impl DirectGpuOrder {
                 .copy_from_slice(bytemuck::bytes_of(&params));
         }
         let pass_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-pass-params"),
+            label: wgpu_label("gsplat-resident-gpu-order-pass-params"),
             contents: &params_bytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-shader"),
+            label: wgpu_label("gsplat-resident-gpu-order-shader"),
             source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/direct_gpu_order.wgsl").into(),
+                include_str!("../shaders/resident_gpu_order.wgsl").into(),
             ),
         });
         let keygen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-keygen-bgl"),
+            label: wgpu_label("gsplat-resident-gpu-order-keygen-bgl"),
             entries: &[
                 storage_entry(0, true),
                 uniform_entry(
@@ -145,7 +145,7 @@ impl DirectGpuOrder {
             ],
         });
         let radix_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-radix-bgl"),
+            label: wgpu_label("gsplat-resident-gpu-order-radix-bgl"),
             entries: &[
                 storage_entry(4, true),
                 storage_entry(5, false),
@@ -160,13 +160,13 @@ impl DirectGpuOrder {
 
         let keygen_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: wgpu_label("gsplat-direct-gpu-order-keygen-layout"),
+                label: wgpu_label("gsplat-resident-gpu-order-keygen-layout"),
                 bind_group_layouts: &[&keygen_layout],
                 immediate_size: 0,
             });
         let radix_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: wgpu_label("gsplat-direct-gpu-order-radix-layout"),
+                label: wgpu_label("gsplat-resident-gpu-order-radix-layout"),
                 bind_group_layouts: &[&radix_layout],
                 immediate_size: 0,
             });
@@ -175,32 +175,32 @@ impl DirectGpuOrder {
             &shader,
             &keygen_pipeline_layout,
             "generate_pairs",
-            "gsplat-direct-gpu-order-keygen-pipeline",
+            "gsplat-resident-gpu-order-keygen-pipeline",
         );
         let histogram_pipeline = compute_pipeline(
             device,
             &shader,
             &radix_pipeline_layout,
             "histogram",
-            "gsplat-direct-gpu-order-histogram-pipeline",
+            "gsplat-resident-gpu-order-histogram-pipeline",
         );
         let prefix_pipeline = compute_pipeline(
             device,
             &shader,
             &radix_pipeline_layout,
             "prefix",
-            "gsplat-direct-gpu-order-prefix-pipeline",
+            "gsplat-resident-gpu-order-prefix-pipeline",
         );
         let scatter_pipeline = compute_pipeline(
             device,
             &shader,
             &radix_pipeline_layout,
             "scatter",
-            "gsplat-direct-gpu-order-scatter-pipeline",
+            "gsplat-resident-gpu-order-scatter-pipeline",
         );
 
         let keygen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: wgpu_label("gsplat-direct-gpu-order-keygen-bg"),
+            label: wgpu_label("gsplat-resident-gpu-order-keygen-bg"),
             layout: &keygen_layout,
             entries: &[
                 entire_buffer_entry(0, source_buffer),
@@ -211,7 +211,7 @@ impl DirectGpuOrder {
         let radix_a_to_b = radix_bind_group(
             device,
             &radix_layout,
-            "gsplat-direct-gpu-order-a-to-b-bg",
+            "gsplat-resident-gpu-order-a-to-b-bg",
             &pairs_a,
             &pairs_b,
             &meta,
@@ -220,7 +220,7 @@ impl DirectGpuOrder {
         let radix_b_to_a = radix_bind_group(
             device,
             &radix_layout,
-            "gsplat-direct-gpu-order-b-to-a-bg",
+            "gsplat-resident-gpu-order-b-to-a-bg",
             &pairs_b,
             &pairs_a,
             &meta,
@@ -256,7 +256,7 @@ impl DirectGpuOrder {
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: wgpu_label("gsplat-direct-gpu-order-keygen-pass"),
+                label: wgpu_label("gsplat-resident-gpu-order-keygen-pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.keygen_pipeline);
@@ -284,7 +284,7 @@ impl DirectGpuOrder {
                 bind_group,
                 dynamic_offset,
                 self.group_count,
-                "gsplat-direct-gpu-order-histogram-pass",
+                "gsplat-resident-gpu-order-histogram-pass",
             );
             self.encode_radix_stage(
                 encoder,
@@ -292,7 +292,7 @@ impl DirectGpuOrder {
                 bind_group,
                 dynamic_offset,
                 1,
-                "gsplat-direct-gpu-order-prefix-pass",
+                "gsplat-resident-gpu-order-prefix-pass",
             );
             self.encode_radix_stage(
                 encoder,
@@ -300,7 +300,7 @@ impl DirectGpuOrder {
                 bind_group,
                 dynamic_offset,
                 self.group_count,
-                "gsplat-direct-gpu-order-scatter-pass",
+                "gsplat-resident-gpu-order-scatter-pass",
             );
         }
     }
@@ -413,7 +413,7 @@ mod tests {
             let limits = wgpu::Limits::downlevel_defaults();
             adapter
                 .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("direct-gpu-order-test-device"),
+                    label: Some("resident-gpu-order-test-device"),
                     required_features: wgpu::Features::empty(),
                     required_limits: limits,
                     experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -427,13 +427,13 @@ mod tests {
 
     fn dummy_inputs(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer) {
         let source = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("direct-gpu-order-test-source"),
+            label: Some("resident-gpu-order-test-source"),
             size: 64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("direct-gpu-order-test-render-params"),
+            label: Some("resident-gpu-order-test-render-params"),
             contents: bytemuck::bytes_of(&GpuSurfaceRenderParams::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -448,7 +448,7 @@ mod tests {
     ) -> Vec<GpuSortPair> {
         let (source, params) = dummy_inputs(device);
         let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let order = DirectGpuOrder::new(device, &source, &params, capacity, pairs.len() as u32)
+        let order = ResidentGpuOrder::new(device, &source, &params, capacity, pairs.len() as u32)
             .expect("test GPU sort capacity must fit the adapter dispatch limit");
         let validation_error = pollster::block_on(error_scope.pop());
         assert!(
@@ -476,13 +476,13 @@ mod tests {
 
         let output_bytes = pairs.len() as u64 * std::mem::size_of::<GpuSortPair>() as u64;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("direct-gpu-order-test-readback"),
+            label: Some("resident-gpu-order-test-readback"),
             size: output_bytes,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("direct-gpu-order-test-encoder"),
+            label: Some("resident-gpu-order-test-encoder"),
         });
         order.encode_radix(&mut encoder);
         encoder.copy_buffer_to_buffer(&order.pairs_a, 0, &readback, 0, output_bytes);
@@ -517,20 +517,20 @@ mod tests {
     fn readback_pairs(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        order: &DirectGpuOrder,
+        order: &ResidentGpuOrder,
     ) -> Vec<GpuSortPair> {
         if order.count == 0 {
             return Vec::new();
         }
         let output_bytes = u64::from(order.count) * std::mem::size_of::<GpuSortPair>() as u64;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("direct-gpu-order-keygen-test-readback"),
+            label: Some("resident-gpu-order-keygen-test-readback"),
             size: output_bytes,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("direct-gpu-order-keygen-test-encoder"),
+            label: Some("resident-gpu-order-keygen-test-encoder"),
         });
         order.encode(&mut encoder);
         encoder.copy_buffer_to_buffer(order.final_pairs(), 0, &readback, 0, output_bytes);
@@ -606,7 +606,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("direct-gpu-order-keygen-test-source"),
+            label: Some("resident-gpu-order-keygen-test-source"),
             contents: bytemuck::cast_slice(&sources),
             usage: wgpu::BufferUsages::STORAGE,
         });
@@ -616,11 +616,11 @@ mod tests {
         params.far_plane = 100.0;
         params.len = count;
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("direct-gpu-order-keygen-test-params"),
+            label: Some("resident-gpu-order-keygen-test-params"),
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let order = DirectGpuOrder::new(&device, &source_buffer, &params_buffer, count, count)
+        let order = ResidentGpuOrder::new(&device, &source_buffer, &params_buffer, count, count)
             .expect("257-source key-generation test must fit the adapter dispatch limit");
         let actual = readback_pairs(&device, &queue, &order);
         let mut expected = (0..count)

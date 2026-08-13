@@ -42,7 +42,6 @@ const outDir = resolve(
     )
 );
 const port = Number(process.env.GSPLAT_HTTP_PORT ?? 4173);
-const geometryPath = process.env.GSPLAT_GEOMETRY_PATH ?? 'direct';
 
 async function findChrome() {
   for (const candidate of chromeCandidates) {
@@ -209,7 +208,6 @@ try {
     benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   if (dataset) params.set('dataset', dataset);
-  params.set('gsplat_geometry_path', geometryPath);
   if (qualification) params.set('gsplat_camera_trace', `phase-e-${qualificationName}`);
   const url = `http://127.0.0.1:${port}/examples/web/?${params.toString()}`;
   await page.goto(url, { waitUntil: 'networkidle0', timeout: 120_000 });

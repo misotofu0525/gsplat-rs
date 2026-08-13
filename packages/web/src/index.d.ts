@@ -8,13 +8,6 @@ export interface GsplatWebModule {
     width: number,
     height: number,
   ): Promise<unknown>;
-  createRendererWithGeometryPath?(
-    canvas: HTMLCanvasElement,
-    plyBytes: Uint8Array,
-    width: number,
-    height: number,
-    geometryPath: 0 | 1 | 2,
-  ): Promise<unknown>;
 }
 
 export interface InitGsplatWebOptions {
@@ -34,8 +27,6 @@ export interface CreateRendererOptions {
   width?: number;
   height?: number;
   sortInterval?: number;
-  /** Experimental geometry selector. The default release path remains `direct`. */
-  geometryPath?: "direct" | "packed" | "paged";
   module?: GsplatWebModule;
 }
 
@@ -60,7 +51,7 @@ export interface GsplatFrameStats {
   frameMs: number;
   preprocessMs: number;
   sortMs: number;
-  /** Compatibility field; always zero for the direct production pipeline. */
+  /** Compatibility field; always zero for the resident production pipeline. */
   rasterMs: number;
   cpuGeometryMs: number;
   renderSubmitMs: number;
@@ -80,7 +71,6 @@ export class GsplatWebRenderer {
   zoom(distanceScale: number): void;
   pan(normalizedDeltaX: number, normalizedDeltaY: number): void;
   setSortInterval(interval: number): void;
-  setGeometryPath(path: "direct" | "packed" | "paged"): void;
   rasterPath(): string;
   renderFrame(): GsplatFrameStats;
   sceneSummary(): GsplatSceneSummary;

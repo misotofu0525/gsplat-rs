@@ -1,40 +1,15 @@
 //! WGPU renderer with a SortedAlpha reference path.
 
-mod direct_gpu_order;
 mod draw_pass;
-mod packed_atlas;
-mod packed_gpu;
-mod page_atlas;
-mod page_scheduler;
-mod page_source;
-mod paged_active_set;
-mod paged_gpu;
-mod residency;
-mod spatial_pages;
+mod resident_gpu_order;
 mod surface_presenter;
 mod surface_session;
 
-pub use packed_atlas::{
-    DEGREE3_SIDECAR_BYTES, DIRECT_DEGREE3_ATTRIBUTE_BYTES, FULL_DEGREE3_ATTRIBUTE_BYTES,
-    HOT_RECORD_BYTES, HotStream, LogScaleRange, PackedAtlasCpuBuffers, PackedHotRecord,
-    PackedSceneCpu, PackedShSidecar, SceneBounds, atlas_dimensions, decode_opacity_u8,
-    dequantize_sh_rest, measured_hot_texture_bytes, measured_sh_sidecar_texture_bytes,
-    pack_color_rgb10, pack_quat_smallest_three, pack_scene, pack_scene_with_encoding,
-    sh_sidecar_atlas_dimensions, slot_to_texel, unpack_color_rgb10, unpack_quat_smallest_three,
-};
-pub(crate) use page_scheduler::{SchedulerConfig, SchedulerView, schedule_pages};
-pub(crate) use paged_gpu::PagedAtlasGpu;
-pub(crate) use residency::{AttributeLod, ResidencyBudgets, ResidencyManager};
-pub(crate) use spatial_pages::{DEFAULT_PAGE_CAPACITY, SpatialPageSet};
 pub use surface_presenter::SurfacePresenter;
-#[cfg(test)]
-use surface_presenter::{SurfacePagedRuntime, surface_resource_plan, try_prepare_then_commit};
 pub use surface_session::{
     SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceFrameTimings, SurfaceOrderBackend,
     SurfaceOrderBackendUsed, SurfaceRenderSession, SurfaceSortSchedule,
 };
-
-const DEFAULT_PAGED_ATLAS_SLOTS: usize = 4;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -88,15 +63,6 @@ pub(crate) const fn wgpu_label(label: &'static str) -> Option<&'static str> {
     Some(label)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GeometryPath {
-    #[default]
-    SortedIndexDirect,
-    PackedAtlas,
-    /// Phase D experimental path: spatial pages uploaded into a fixed GPU atlas.
-    PagedActiveAtlas,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreprocessOutput {
     pub depth_keys: Vec<u32>,
@@ -131,10 +97,8 @@ pub enum RendererError {
     GpuWait,
     #[error("surface background worker failed")]
     SurfaceWorker,
-    #[error("direct scene resource error: {0}")]
-    DirectScene(#[from] DirectSceneError),
-    #[error("paged atlas error: {0:?}")]
-    PagedAtlas(String),
+    #[error("resident scene resource error: {0}")]
+    ResidentScene(#[from] ResidentSceneError),
     #[error("sort backend error: {0}")]
     Sort(#[from] SortError),
     #[error("surface presenter error: {0}")]
@@ -151,13 +115,15 @@ impl RendererError {
             Self::GpuRasterizerUnavailable
             | Self::GpuDeviceCreation
             | Self::GpuDimensionsUnsupported { .. }
-            | Self::DirectScene(DirectSceneError::ResourceLimitExceeded(_))
-            | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))
-            | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
+            | Self::ResidentScene(ResidentSceneError::ResourceLimitExceeded(_))
+            | Self::ResidentScene(ResidentSceneError::ResourceSizeOverflow) => {
+                ErrorCode::Unsupported
+            }
             Self::GpuReadback | Self::GpuWait | Self::SurfaceWorker => ErrorCode::Internal,
-            Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
-            | Self::DirectScene(DirectSceneError::GpuOrderInitialization(_))
-            | Self::PagedAtlas(_) => ErrorCode::Internal,
+            Self::ResidentScene(ResidentSceneError::SortedIndexCapacityExceeded)
+            | Self::ResidentScene(ResidentSceneError::GpuOrderInitialization(_)) => {
+                ErrorCode::Internal
+            }
             Self::Sort(_) => ErrorCode::Internal,
             Self::SurfacePresenter(err) => err.code(),
         }
@@ -165,7 +131,7 @@ impl RendererError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectSceneResource {
+pub enum ResidentSceneResource {
     SortedIndices,
     Source,
     ShRest,
@@ -173,50 +139,48 @@ pub enum DirectSceneResource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DirectSceneResourceRequirement {
-    pub resource: DirectSceneResource,
+pub struct ResidentSceneResourceRequirement {
+    pub resource: ResidentSceneResource,
     pub required_bytes: u64,
     pub limit_bytes: u64,
     pub fits: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectScenePath {
-    Direct,
-    ActiveAtlasRequired,
+pub enum ResidentScenePath {
+    Resident,
+    CapacityExceeded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectSceneRemediation {
+pub enum ResidentSceneRemediation {
     None,
-    UseActiveAtlasOrReduce { max_direct_splats: u64 },
+    ReduceScene { max_resident_splats: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DirectScenePreflight {
+pub struct ResidentScenePreflight {
     pub splat_count: u64,
     pub sh_degree: u8,
-    pub path: DirectScenePath,
+    pub path: ResidentScenePath,
     pub effective_storage_binding_limit: u64,
     pub effective_max_buffer_size: u64,
-    pub requirements: [DirectSceneResourceRequirement; 3],
-    pub limiting_resource: DirectSceneResource,
-    pub max_direct_splats: u64,
-    pub remediation: DirectSceneRemediation,
+    pub requirements: [ResidentSceneResourceRequirement; 3],
+    pub limiting_resource: ResidentSceneResource,
+    pub max_resident_splats: u64,
+    pub remediation: ResidentSceneRemediation,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum DirectSceneError {
+pub enum ResidentSceneError {
     #[error("sorted index buffer capacity exceeded")]
     SortedIndexCapacityExceeded,
     #[error("gpu order initialization failed: {0}")]
     GpuOrderInitialization(String),
-    #[error("direct scene resource size overflow")]
+    #[error("resident scene resource size overflow")]
     ResourceSizeOverflow,
-    #[error("direct scene resources exceed effective device limits: {0:?}")]
-    ResourceLimitExceeded(Box<DirectScenePreflight>),
-    #[error("packed scene resources require paging or exceed effective device limits: {0:?}")]
-    PackedResourceLimitExceeded(Box<PackedScenePreflight>),
+    #[error("resident scene resources exceed effective device limits: {0:?}")]
+    ResourceLimitExceeded(Box<ResidentScenePreflight>),
 }
 
 #[derive(Debug, Error)]
@@ -239,36 +203,30 @@ pub enum SurfacePresenterError {
     SurfaceAcquire(String),
     #[error("surface out of memory")]
     SurfaceOutOfMemory,
-    #[error("direct scene resource error: {0}")]
-    DirectScene(#[from] DirectSceneError),
-    #[error("paged atlas error: {0}")]
-    PagedAtlas(String),
-    #[error("paged active atlas is not yet supported on surface presenters")]
-    PagedAtlasUnsupported,
-    #[error("gpu ordering is only available for the direct geometry path")]
-    GpuOrderUnsupported,
+    #[error("resident scene resource error: {0}")]
+    ResidentScene(#[from] ResidentSceneError),
 }
 
 impl SurfacePresenterError {
     pub const fn code(&self) -> ErrorCode {
         match self {
             Self::InvalidSurfaceSize => ErrorCode::InvalidArgument,
-            Self::SurfaceCreation
-            | Self::NoAdapter
-            | Self::DeviceCreation(_)
-            | Self::PagedAtlasUnsupported
-            | Self::GpuOrderUnsupported => ErrorCode::Unsupported,
+            Self::SurfaceCreation | Self::NoAdapter | Self::DeviceCreation(_) => {
+                ErrorCode::Unsupported
+            }
             Self::SceneNotLoaded => ErrorCode::SceneNotLoaded,
             Self::NoSurfaceFormat
             | Self::SurfaceConfigure(_)
             | Self::SurfaceAcquire(_)
-            | Self::SurfaceOutOfMemory
-            | Self::PagedAtlas(_) => ErrorCode::Internal,
-            Self::DirectScene(DirectSceneError::ResourceLimitExceeded(_))
-            | Self::DirectScene(DirectSceneError::PackedResourceLimitExceeded(_))
-            | Self::DirectScene(DirectSceneError::ResourceSizeOverflow) => ErrorCode::Unsupported,
-            Self::DirectScene(DirectSceneError::SortedIndexCapacityExceeded)
-            | Self::DirectScene(DirectSceneError::GpuOrderInitialization(_)) => ErrorCode::Internal,
+            | Self::SurfaceOutOfMemory => ErrorCode::Internal,
+            Self::ResidentScene(ResidentSceneError::ResourceLimitExceeded(_))
+            | Self::ResidentScene(ResidentSceneError::ResourceSizeOverflow) => {
+                ErrorCode::Unsupported
+            }
+            Self::ResidentScene(ResidentSceneError::SortedIndexCapacityExceeded)
+            | Self::ResidentScene(ResidentSceneError::GpuOrderInitialization(_)) => {
+                ErrorCode::Internal
+            }
         }
     }
 }
@@ -276,13 +234,10 @@ impl SurfacePresenterError {
 pub struct Renderer {
     mode: RenderMode,
     config: RendererConfig,
-    geometry_path: GeometryPath,
     cpu_sort_backend: CpuSortBackend,
     #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
     scene: Option<SceneBuffers>,
-    /// Spatial page metadata for [`GeometryPath::PagedActiveAtlas`].
-    spatial_pages: Option<SpatialPageSet>,
     world_covariances: Option<Vec<[[f32; 3]; 3]>>,
     world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
     alpha_values: Option<Vec<f32>>,
@@ -342,12 +297,10 @@ impl Renderer {
         Self {
             mode: config.mode,
             config,
-            geometry_path: GeometryPath::SortedIndexDirect,
             cpu_sort_backend: CpuSortBackend::default(),
             #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer: None,
             scene: None,
-            spatial_pages: None,
             world_covariances: None,
             world_covariance_terms: None,
             alpha_values: None,
@@ -361,10 +314,6 @@ impl Renderer {
         self.config
     }
 
-    pub fn geometry_path(&self) -> GeometryPath {
-        self.geometry_path
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub fn device(&self) -> Option<&wgpu::Device> {
         self.gpu_rasterizer.as_ref().map(|gpu| &gpu.device)
@@ -373,17 +322,6 @@ impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn queue(&self) -> Option<&wgpu::Queue> {
         self.gpu_rasterizer.as_ref().map(|gpu| &gpu.queue)
-    }
-
-    pub fn set_geometry_path(&mut self, path: GeometryPath) {
-        if self.geometry_path != path {
-            self.geometry_path = path;
-            self.rebuild_path_specific_cpu_data();
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
-                rasterizer.clear_scene_resources();
-            }
-        }
     }
 
     pub fn set_size(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
@@ -440,12 +378,14 @@ impl Renderer {
         }
     }
 
-    /// Reports whether the loaded scene fits the Direct path on this renderer's
+    /// Reports whether the loaded scene fits the resident path on this renderer's
     /// effective offscreen device limits.
     ///
     /// Surface-only renderers do not own a device, so callers must query the
     /// presenter path separately instead of assuming adapter or default limits.
-    pub fn current_direct_scene_preflight(&self) -> Result<DirectScenePreflight, RendererError> {
+    pub fn current_resident_scene_preflight(
+        &self,
+    ) -> Result<ResidentScenePreflight, RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -454,7 +394,7 @@ impl Renderer {
                 .gpu_rasterizer
                 .as_ref()
                 .ok_or(RendererError::GpuRasterizerUnavailable)?;
-            direct_scene_preflight(scene.len(), scene.sh_degree, &rasterizer.device.limits())
+            resident_scene_preflight(scene.len(), scene.sh_degree, &rasterizer.device.limits())
                 .map_err(RendererError::from)
         }
 
@@ -488,7 +428,7 @@ impl Renderer {
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
         scene.validate().map_err(|_| RendererError::InvalidScene)?;
         self.scene = Some(scene);
-        self.rebuild_path_specific_cpu_data();
+        self.rebuild_resident_cpu_data();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
             rasterizer.clear_scene_resources();
@@ -496,34 +436,23 @@ impl Renderer {
         Ok(())
     }
 
-    fn rebuild_path_specific_cpu_data(&mut self) {
-        match (self.geometry_path, self.scene.as_ref()) {
-            (GeometryPath::SortedIndexDirect, Some(scene)) => {
-                let world_covariances = precompute_world_covariances(scene);
-                let world_covariance_terms = world_covariances
-                    .iter()
-                    .copied()
-                    .map(CameraCovarianceTerms::from_matrix)
-                    .collect();
-                let alpha_values = precompute_alpha_values(scene);
-                self.world_covariances = Some(world_covariances);
-                self.world_covariance_terms = Some(world_covariance_terms);
-                self.alpha_values = Some(alpha_values);
-                self.spatial_pages = None;
-            }
-            (GeometryPath::PagedActiveAtlas, Some(scene)) => {
-                self.world_covariances = None;
-                self.world_covariance_terms = None;
-                self.alpha_values = None;
-                self.spatial_pages = Some(default_spatial_pages(scene));
-            }
-            _ => {
-                self.world_covariances = None;
-                self.world_covariance_terms = None;
-                self.alpha_values = None;
-                self.spatial_pages = None;
-            }
-        }
+    fn rebuild_resident_cpu_data(&mut self) {
+        let Some(scene) = self.scene.as_ref() else {
+            self.world_covariances = None;
+            self.world_covariance_terms = None;
+            self.alpha_values = None;
+            return;
+        };
+        let world_covariances = precompute_world_covariances(scene);
+        let world_covariance_terms = world_covariances
+            .iter()
+            .copied()
+            .map(CameraCovarianceTerms::from_matrix)
+            .collect();
+        let alpha_values = precompute_alpha_values(scene);
+        self.world_covariances = Some(world_covariances);
+        self.world_covariance_terms = Some(world_covariance_terms);
+        self.alpha_values = Some(alpha_values);
     }
 
     pub fn scene(&self) -> Option<&SceneBuffers> {
@@ -646,27 +575,8 @@ impl Renderer {
         indices: Vec<u32>,
     ) -> Result<(), RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        match self.geometry_path {
-            GeometryPath::PagedActiveAtlas => {
-                let max_index = self
-                    .spatial_pages
-                    .as_ref()
-                    .map(|pages| {
-                        pages
-                            .page_count()
-                            .saturating_mul(pages.page_capacity)
-                            .saturating_sub(1)
-                    })
-                    .unwrap_or(0) as u32;
-                if indices.iter().any(|&idx| idx > max_index) {
-                    return Err(RendererError::InvalidScene);
-                }
-            }
-            GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => {
-                if indices.iter().any(|&idx| idx as usize >= scene.len()) {
-                    return Err(RendererError::InvalidScene);
-                }
-            }
+        if indices.iter().any(|&idx| idx as usize >= scene.len()) {
+            return Err(RendererError::InvalidScene);
         }
 
         self.preprocess_depth_keys.clear();
@@ -698,26 +608,18 @@ impl Renderer {
             .gpu_rasterizer
             .as_mut()
             .ok_or(RendererError::GpuRasterizerUnavailable)?;
-        match self.geometry_path {
-            GeometryPath::SortedIndexDirect => rasterizer.render_direct_sorted_indices(
-                self.config,
-                sorted_indices,
-                camera,
-                scene,
-                self.world_covariance_terms
-                    .as_deref()
-                    .ok_or(RendererError::InvalidScene)?,
-                self.alpha_values
-                    .as_deref()
-                    .ok_or(RendererError::InvalidScene)?,
-            ),
-            GeometryPath::PackedAtlas => {
-                rasterizer.render_packed_sorted_indices(self.config, sorted_indices, camera, scene)
-            }
-            GeometryPath::PagedActiveAtlas => {
-                rasterizer.render_paged_sorted_indices(self.config, sorted_indices, camera, scene)
-            }
-        }
+        rasterizer.render_resident_sorted_indices(
+            self.config,
+            sorted_indices,
+            camera,
+            scene,
+            self.world_covariance_terms
+                .as_deref()
+                .ok_or(RendererError::InvalidScene)?,
+            self.alpha_values
+                .as_deref()
+                .ok_or(RendererError::InvalidScene)?,
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -800,46 +702,12 @@ impl Renderer {
 
     fn preprocess_visible_scratch(&mut self, camera: &Camera) -> Result<(), RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        match self.geometry_path {
-            GeometryPath::PagedActiveAtlas => {
-                let pages = self
-                    .spatial_pages
-                    .as_ref()
-                    .ok_or(RendererError::InvalidScene)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let rasterizer = self
-                        .gpu_rasterizer
-                        .as_mut()
-                        .ok_or(RendererError::GpuRasterizerUnavailable)?;
-                    rasterizer.ensure_paged_active_set(scene, pages, camera)?;
-                    let entries = rasterizer
-                        .paged_active_set
-                        .as_ref()
-                        .ok_or(RendererError::InvalidScene)?
-                        .atlas
-                        .active_entries();
-                    preprocess_paged_visible_into(
-                        scene,
-                        &entries,
-                        camera,
-                        &mut self.preprocess_depth_keys,
-                        &mut self.preprocess_indices,
-                    )
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let _ = (pages, camera);
-                    Err(RendererError::GpuRasterizerUnavailable)
-                }
-            }
-            GeometryPath::SortedIndexDirect | GeometryPath::PackedAtlas => preprocess_visible_into(
-                scene,
-                camera,
-                &mut self.preprocess_depth_keys,
-                &mut self.preprocess_indices,
-            ),
-        }
+        preprocess_visible_into(
+            scene,
+            camera,
+            &mut self.preprocess_depth_keys,
+            &mut self.preprocess_indices,
+        )
     }
 
     fn sort_preprocessed_scratch(&mut self) -> Result<(), RendererError> {
@@ -1295,54 +1163,6 @@ fn preprocess_visible_into(
     Ok(())
 }
 
-fn preprocess_paged_visible_into(
-    scene: &SceneBuffers,
-    entries: &[(u32, u32)],
-    camera: &Camera,
-    depth_keys: &mut Vec<u32>,
-    indices: &mut Vec<u32>,
-) -> Result<(), RendererError> {
-    camera
-        .validate()
-        .map_err(|_| RendererError::InvalidCamera)?;
-    depth_keys.clear();
-    indices.clear();
-    if depth_keys.capacity() < entries.len() {
-        depth_keys.reserve(entries.len() - depth_keys.capacity());
-    }
-    if indices.capacity() < entries.len() {
-        indices.reserve(entries.len() - indices.capacity());
-    }
-
-    let camera_inv_q = quat_inverse(camera.pose.rotation_xyzw);
-    let view_rot = quat_to_mat3(camera_inv_q);
-    let depth_row = view_rot[2];
-    let camera_position = camera.pose.position;
-
-    for &(global_index, scene_index) in entries {
-        let Some(position) = scene.positions.get(scene_index as usize).copied() else {
-            continue;
-        };
-        let depth_z = world_to_camera_depth_with_view_row(position, camera_position, depth_row);
-        if is_visible(depth_z, camera) {
-            indices.push(global_index);
-            depth_keys.push(depth_to_key(depth_z));
-        }
-    }
-    Ok(())
-}
-
-fn default_spatial_pages(scene: &SceneBuffers) -> SpatialPageSet {
-    let page_capacity = (scene.len() / 4).clamp(1, DEFAULT_PAGE_CAPACITY);
-    let grid_axis = ((scene.len() as f32).cbrt().ceil() as usize).clamp(1, 8);
-    spatial_pages::partition_scene_pages_with_coarse_cover(
-        scene,
-        page_capacity,
-        grid_axis,
-        DEFAULT_PAGED_ATLAS_SLOTS,
-    )
-}
-
 fn world_to_camera_depth_with_view_row(
     pos_world: Vec3f,
     camera_position: Vec3f,
@@ -1746,202 +1566,6 @@ unsafe fn sh_color_unchecked(
     ]
 }
 
-fn normalize_dir(dx: f32, dy: f32, dz: f32) -> [f32; 3] {
-    let len2 = dx * dx + dy * dy + dz * dz;
-    if len2 <= 1e-20 {
-        return [0.0, 0.0, 1.0];
-    }
-    let inv = 1.0 / len2.sqrt();
-    [dx * inv, dy * inv, dz * inv]
-}
-
-fn packed_color_word(
-    scene: &SceneBuffers,
-    index: usize,
-    camera_position: [f32; 3],
-    layout: ShColorLayout<'_>,
-) -> u32 {
-    let position = scene.positions[index];
-    let dir = normalize_dir(
-        position.x - camera_position[0],
-        position.y - camera_position[1],
-        position.z - camera_position[2],
-    );
-    let rgb = unsafe { sh_color_unchecked(scene, index, dir, layout) };
-    pack_color_rgb10([
-        rgb[0].clamp(0.0, 1.0),
-        rgb[1].clamp(0.0, 1.0),
-        rgb[2].clamp(0.0, 1.0),
-    ])
-}
-
-/// Color-refresh: evaluate float SH into the packed hot RGB10 stream.
-fn refresh_packed_hot_colors(
-    queue: &wgpu::Queue,
-    packed: &mut packed_gpu::PackedAtlasResources,
-    scene: &SceneBuffers,
-    camera: &Camera,
-) {
-    refresh_packed_hot_colors_range(queue, packed, scene, camera, 0, scene.len());
-}
-
-/// Refresh a half-open splat range so orbit p95 is not dominated by one full-scene
-/// SH evaluation + upload spike.
-fn refresh_packed_hot_colors_range(
-    queue: &wgpu::Queue,
-    packed: &mut packed_gpu::PackedAtlasResources,
-    scene: &SceneBuffers,
-    camera: &Camera,
-    start: usize,
-    end: usize,
-) {
-    if start >= end || end > scene.len() {
-        return;
-    }
-    let layout = ShColorLayout::new(scene);
-    let cam = [
-        camera.pose.position.x,
-        camera.pose.position.y,
-        camera.pose.position.z,
-    ];
-    let mut colors = vec![0_u32; end - start];
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use rayon::prelude::*;
-        colors
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(offset, slot)| {
-                let index = start + offset;
-                *slot = packed_color_word(scene, index, cam, layout);
-            });
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        for (offset, slot) in colors.iter_mut().enumerate() {
-            let index = start + offset;
-            *slot = packed_color_word(scene, index, cam, layout);
-        }
-    }
-
-    packed.write_hot_colors_at(queue, start, &colors);
-}
-
-fn refresh_paged_hot_colors(
-    queue: &wgpu::Queue,
-    paged: &mut paged_gpu::PagedAtlasGpu,
-    scene: &SceneBuffers,
-    camera: &Camera,
-) {
-    let entries = paged.active_entries();
-    if entries.is_empty() {
-        return;
-    }
-    let layout = ShColorLayout::new(scene);
-    let cam = [
-        camera.pose.position.x,
-        camera.pose.position.y,
-        camera.pose.position.z,
-    ];
-    let mut run_start = entries[0].0 as usize;
-    let mut expected_global = entries[0].0;
-    let mut colors = Vec::new();
-
-    for (global_index, scene_index) in entries {
-        if global_index != expected_global {
-            paged
-                .resources
-                .write_hot_colors_at(queue, run_start, &colors);
-            colors.clear();
-            run_start = global_index as usize;
-        }
-        let index = scene_index as usize;
-        colors.push(packed_color_word(scene, index, cam, layout));
-        expected_global = global_index.saturating_add(1);
-    }
-    paged
-        .resources
-        .write_hot_colors_at(queue, run_start, &colors);
-}
-
-/// Upper bound on splats refreshed per frame during steady-state motion.
-/// Keeps synchronous orbit p95 from absorbing a full-scene SH spike.
-fn packed_color_refresh_band_size(splat_count: usize) -> usize {
-    const MIN_BAND: usize = 8_192;
-    const MAX_BAND: usize = 24_576;
-    let eighth = splat_count.div_ceil(8);
-    eighth.clamp(MIN_BAND, MAX_BAND).min(splat_count.max(1))
-}
-
-fn packed_color_refresh_position_key(camera: &Camera) -> [f32; 3] {
-    [
-        camera.pose.position.x,
-        camera.pose.position.y,
-        camera.pose.position.z,
-    ]
-}
-
-/// Refresh when accumulated camera translation can change any scene-point view
-/// direction by roughly ten degrees. Camera rotation alone never changes SH
-/// color because SH is evaluated from source position to camera position.
-const PACKED_COLOR_REFRESH_COS_THRESHOLD: f32 = 0.984_807_8; // cos(10°)
-
-fn packed_color_refresh_needed(
-    previous: Option<[f32; 3]>,
-    camera: &Camera,
-    bounds_min: [f32; 3],
-    bounds_extent: [f32; 3],
-) -> bool {
-    let Some(prev_pos) = previous else {
-        return true;
-    };
-    let pos = [
-        camera.pose.position.x,
-        camera.pose.position.y,
-        camera.pose.position.z,
-    ];
-    let dp = [
-        pos[0] - prev_pos[0],
-        pos[1] - prev_pos[1],
-        pos[2] - prev_pos[2],
-    ];
-    let displacement_sq = dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2];
-    if displacement_sq <= f32::EPSILON {
-        return false;
-    }
-
-    let center = [
-        bounds_min[0] + bounds_extent[0] * 0.5,
-        bounds_min[1] + bounds_extent[1] * 0.5,
-        bounds_min[2] + bounds_extent[2] * 0.5,
-    ];
-    let radius = 0.5
-        * (bounds_extent[0] * bounds_extent[0]
-            + bounds_extent[1] * bounds_extent[1]
-            + bounds_extent[2] * bounds_extent[2])
-            .sqrt();
-    let center_delta = [
-        prev_pos[0] - center[0],
-        prev_pos[1] - center[1],
-        prev_pos[2] - center[2],
-    ];
-    let center_distance_sq = center_delta[0] * center_delta[0]
-        + center_delta[1] * center_delta[1]
-        + center_delta[2] * center_delta[2];
-    let clearance = center_distance_sq.sqrt() - radius;
-    if clearance <= 1e-6 {
-        return true;
-    }
-    let sin_threshold = (1.0
-        - PACKED_COLOR_REFRESH_COS_THRESHOLD * PACKED_COLOR_REFRESH_COS_THRESHOLD)
-        .max(0.0)
-        .sqrt();
-    let allowed_displacement = clearance * sin_threshold;
-    displacement_sq > allowed_displacement * allowed_displacement
-}
-
 fn sh_color_rest_deg3(dir: [f32; 3], rest: &[f32]) -> [f32; 3] {
     debug_assert!(rest.len() >= 45);
 
@@ -2199,13 +1823,13 @@ unsafe fn dot_sh_terms_neon(basis: &[f32; 24], rest: &[f32], count: usize) -> f3
     result
 }
 
-pub fn direct_scene_preflight(
+pub fn resident_scene_preflight(
     splat_count: usize,
     sh_degree: u8,
     limits: &wgpu::Limits,
-) -> Result<DirectScenePreflight, DirectSceneError> {
+) -> Result<ResidentScenePreflight, ResidentSceneError> {
     let splat_count =
-        u64::try_from(splat_count).map_err(|_| DirectSceneError::ResourceSizeOverflow)?;
+        u64::try_from(splat_count).map_err(|_| ResidentSceneError::ResourceSizeOverflow)?;
     let capacity = splat_count.max(1);
     let binding_limit = u64::from(limits.max_storage_buffer_binding_size);
     let buffer_limit = limits.max_buffer_size;
@@ -2220,37 +1844,37 @@ pub fn direct_scene_preflight(
         .and_then(|value| value.checked_sub(1))
         .and_then(|value| value.checked_mul(3))
         .and_then(|value| value.checked_mul(std::mem::size_of::<f32>() as u64))
-        .ok_or(DirectSceneError::ResourceSizeOverflow)?;
+        .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
 
     let order_bytes = capacity
         .checked_mul(order_stride)
-        .ok_or(DirectSceneError::ResourceSizeOverflow)?;
+        .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
     let source_bytes = capacity
         .checked_mul(source_stride)
-        .ok_or(DirectSceneError::ResourceSizeOverflow)?;
+        .ok_or(ResidentSceneError::ResourceSizeOverflow)?;
     let sh_bytes = if sh_stride == 0 {
         std::mem::size_of::<f32>() as u64
     } else {
         splat_count
             .checked_mul(sh_stride)
-            .ok_or(DirectSceneError::ResourceSizeOverflow)?
+            .ok_or(ResidentSceneError::ResourceSizeOverflow)?
     };
 
     let requirements = [
-        DirectSceneResourceRequirement {
-            resource: DirectSceneResource::SortedIndices,
+        ResidentSceneResourceRequirement {
+            resource: ResidentSceneResource::SortedIndices,
             required_bytes: order_bytes,
             limit_bytes: effective_limit,
             fits: order_bytes <= effective_limit,
         },
-        DirectSceneResourceRequirement {
-            resource: DirectSceneResource::Source,
+        ResidentSceneResourceRequirement {
+            resource: ResidentSceneResource::Source,
             required_bytes: source_bytes,
             limit_bytes: effective_limit,
             fits: source_bytes <= effective_limit,
         },
-        DirectSceneResourceRequirement {
-            resource: DirectSceneResource::ShRest,
+        ResidentSceneResourceRequirement {
+            resource: ResidentSceneResource::ShRest,
             required_bytes: sh_bytes,
             limit_bytes: effective_limit,
             fits: sh_bytes <= effective_limit,
@@ -2259,38 +1883,43 @@ pub fn direct_scene_preflight(
 
     let capacities = [
         (
-            DirectSceneResource::SortedIndices,
+            ResidentSceneResource::SortedIndices,
             effective_limit / order_stride,
         ),
-        (DirectSceneResource::Source, effective_limit / source_stride),
         (
-            DirectSceneResource::ShRest,
+            ResidentSceneResource::Source,
+            effective_limit / source_stride,
+        ),
+        (
+            ResidentSceneResource::ShRest,
             if sh_stride == 0 {
                 u64::MAX
             } else {
                 effective_limit / sh_stride
             },
         ),
-        (DirectSceneResource::DrawInstances, u64::from(u32::MAX)),
+        (ResidentSceneResource::DrawInstances, u64::from(u32::MAX)),
     ];
-    let (limiting_resource, max_direct_splats) = capacities
+    let (limiting_resource, max_resident_splats) = capacities
         .into_iter()
         .min_by_key(|(_, capacity)| *capacity)
-        .expect("direct resource capacity list is non-empty");
+        .expect("resident resource capacity list is non-empty");
     let fits = requirements.iter().all(|requirement| requirement.fits)
         && splat_count <= u64::from(u32::MAX);
     let path = if fits {
-        DirectScenePath::Direct
+        ResidentScenePath::Resident
     } else {
-        DirectScenePath::ActiveAtlasRequired
+        ResidentScenePath::CapacityExceeded
     };
     let remediation = if fits {
-        DirectSceneRemediation::None
+        ResidentSceneRemediation::None
     } else {
-        DirectSceneRemediation::UseActiveAtlasOrReduce { max_direct_splats }
+        ResidentSceneRemediation::ReduceScene {
+            max_resident_splats,
+        }
     };
 
-    Ok(DirectScenePreflight {
+    Ok(ResidentScenePreflight {
         splat_count,
         sh_degree,
         path,
@@ -2298,79 +1927,12 @@ pub fn direct_scene_preflight(
         effective_max_buffer_size: buffer_limit,
         requirements,
         limiting_resource,
-        max_direct_splats,
+        max_resident_splats,
         remediation,
     })
 }
 
-/// Whether the packed path can host a scene without a single attribute
-/// storage-buffer binding (the direct-path Nandi failure mode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackedScenePath {
-    PackedAtlas,
-    /// A compact storage binding exceeds the device limit; paging is required.
-    PagingRequired,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PackedScenePreflight {
-    pub splat_count: u64,
-    pub sh_degree: u8,
-    pub path: PackedScenePath,
-    pub sorted_indices_bytes: u64,
-    /// Exact bytes requested by the packed hot-record GPU descriptor.
-    /// Full SH remains in the CPU scene for view-dependent color refresh and
-    /// is not duplicated into an unread GPU texture.
-    pub declared_attribute_resource_bytes: u64,
-    /// Tightly packed hot-record storage bytes (`20 * splat_count`).
-    pub hot_record_storage_bytes: u64,
-    pub sorted_indices_fits_storage_binding: bool,
-    pub hot_record_fits_storage_binding: bool,
-    /// True when full degree-3 SH attributes are not placed in a storage binding
-    /// (the direct-path Nandi failure mode). Hot records may use compact storage.
-    pub attributes_avoid_storage_binding: bool,
-}
-
-/// Packed-path resource preflight without allocating scene data.
-pub fn packed_scene_preflight(
-    splat_count: usize,
-    sh_degree: u8,
-    max_storage_buffer_binding_size: u64,
-) -> Result<PackedScenePreflight, DirectSceneError> {
-    let splat_count_u64 =
-        u64::try_from(splat_count).map_err(|_| DirectSceneError::ResourceSizeOverflow)?;
-    let sorted_indices_bytes = splat_count_u64
-        .max(1)
-        .checked_mul(std::mem::size_of::<u32>() as u64)
-        .ok_or(DirectSceneError::ResourceSizeOverflow)?;
-    let hot_record_storage_bytes = splat_count_u64
-        .max(1)
-        .checked_mul(HOT_RECORD_BYTES as u64)
-        .ok_or(DirectSceneError::ResourceSizeOverflow)?;
-    let declared_attribute_resource_bytes = hot_record_storage_bytes;
-    let storage_bindings_fit = sorted_indices_bytes <= max_storage_buffer_binding_size
-        && hot_record_storage_bytes <= max_storage_buffer_binding_size;
-    Ok(PackedScenePreflight {
-        splat_count: splat_count_u64,
-        sh_degree,
-        path: if storage_bindings_fit {
-            PackedScenePath::PackedAtlas
-        } else {
-            PackedScenePath::PagingRequired
-        },
-        sorted_indices_bytes,
-        declared_attribute_resource_bytes,
-        hot_record_storage_bytes,
-        sorted_indices_fits_storage_binding: sorted_indices_bytes
-            <= max_storage_buffer_binding_size,
-        hot_record_fits_storage_binding: hot_record_storage_bytes
-            <= max_storage_buffer_binding_size,
-        // Full SH stays out of storage bindings; hot records use compact storage.
-        attributes_avoid_storage_binding: true,
-    })
-}
-
-struct DirectSceneResources {
+struct ResidentSceneResources {
     sorted_indices_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
     cpu_bind_group: wgpu::BindGroup,
@@ -2379,55 +1941,57 @@ struct DirectSceneResources {
     sh_degree: u32,
     source_buffer: wgpu::Buffer,
     sh_rest_buffer: wgpu::Buffer,
-    gpu_order: Option<DirectGpuSceneOrder>,
+    gpu_order: Option<ResidentGpuSceneOrder>,
 }
 
-struct DirectGpuSceneOrder {
-    sorter: direct_gpu_order::DirectGpuOrder,
+struct ResidentGpuSceneOrder {
+    sorter: resident_gpu_order::ResidentGpuOrder,
     bind_group: wgpu::BindGroup,
 }
 
-impl DirectSceneResources {
+impl ResidentSceneResources {
     fn new(
         device: &wgpu::Device,
         bind_group_layout: &wgpu::BindGroupLayout,
         scene: &SceneBuffers,
         world_covariance_terms: &[CameraCovarianceTerms],
         alpha_values: &[f32],
-    ) -> Result<Self, DirectSceneError> {
-        let preflight = direct_scene_preflight(scene.len(), scene.sh_degree, &device.limits())?;
-        if preflight.path != DirectScenePath::Direct {
-            return Err(DirectSceneError::ResourceLimitExceeded(Box::new(preflight)));
+    ) -> Result<Self, ResidentSceneError> {
+        let preflight = resident_scene_preflight(scene.len(), scene.sh_degree, &device.limits())?;
+        if preflight.path != ResidentScenePath::Resident {
+            return Err(ResidentSceneError::ResourceLimitExceeded(Box::new(
+                preflight,
+            )));
         }
         let capacity = scene.len().max(1);
         let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: wgpu_label("gsplat-direct-sorted-indices"),
+            label: wgpu_label("gsplat-resident-sorted-indices"),
             size: (capacity as u64) * (std::mem::size_of::<u32>() as u64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-direct-params"),
+            label: wgpu_label("gsplat-resident-params"),
             contents: bytemuck::bytes_of(&GpuSurfaceRenderParams::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let source_elems = make_surface_source_elems(scene, world_covariance_terms, alpha_values);
         let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-direct-source"),
+            label: wgpu_label("gsplat-resident-source"),
             contents: bytemuck::cast_slice(&source_elems),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let sh_rest_fallback = [0.0_f32];
         let sh_rest = scene.sh_rest.as_deref().unwrap_or(&sh_rest_fallback);
         let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: wgpu_label("gsplat-direct-sh-rest"),
+            label: wgpu_label("gsplat-resident-sh-rest"),
             contents: bytemuck::cast_slice(sh_rest),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let cpu_bind_group = create_direct_bind_group(
+        let cpu_bind_group = create_resident_bind_group(
             device,
             bind_group_layout,
-            "gsplat-direct-cpu-order-bind-group",
+            "gsplat-resident-cpu-order-bind-group",
             &sorted_indices_buffer,
             &source_buffer,
             &sh_rest_buffer,
@@ -2455,9 +2019,9 @@ impl DirectSceneResources {
         width: u32,
         height: u32,
         upload_order: bool,
-    ) -> Result<u32, DirectSceneError> {
+    ) -> Result<u32, ResidentSceneError> {
         if sorted_indices.len() > self.capacity {
-            return Err(DirectSceneError::SortedIndexCapacityExceeded);
+            return Err(ResidentSceneError::SortedIndexCapacityExceeded);
         }
         if upload_order && !sorted_indices.is_empty() {
             queue.write_buffer(
@@ -2477,32 +2041,32 @@ impl DirectSceneResources {
         &mut self,
         device: &wgpu::Device,
         bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> Result<(), DirectSceneError> {
+    ) -> Result<(), ResidentSceneError> {
         if self.gpu_order.is_some() {
             return Ok(());
         }
-        let count =
-            u32::try_from(self.count).map_err(|_| DirectSceneError::SortedIndexCapacityExceeded)?;
+        let count = u32::try_from(self.count)
+            .map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
         let capacity = u32::try_from(self.capacity)
-            .map_err(|_| DirectSceneError::SortedIndexCapacityExceeded)?;
-        direct_gpu_order::DirectGpuOrder::validate_dispatch_limits(device, capacity, count)?;
+            .map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
+        resident_gpu_order::ResidentGpuOrder::validate_dispatch_limits(device, capacity, count)?;
         #[cfg(not(target_arch = "wasm32"))]
         let (validation_scope, oom_scope, internal_scope) = (
             device.push_error_scope(wgpu::ErrorFilter::Validation),
             device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
             device.push_error_scope(wgpu::ErrorFilter::Internal),
         );
-        let sorter = direct_gpu_order::DirectGpuOrder::new(
+        let sorter = resident_gpu_order::ResidentGpuOrder::new(
             device,
             &self.source_buffer,
             &self.params_buffer,
             capacity,
             count,
         )?;
-        let bind_group = create_direct_bind_group(
+        let bind_group = create_resident_bind_group(
             device,
             bind_group_layout,
-            "gsplat-direct-gpu-order-bind-group",
+            "gsplat-resident-gpu-order-bind-group",
             sorter.final_pairs(),
             &self.source_buffer,
             &self.sh_rest_buffer,
@@ -2518,9 +2082,11 @@ impl DirectSceneResources {
         .flatten()
         .next()
         {
-            return Err(DirectSceneError::GpuOrderInitialization(error.to_string()));
+            return Err(ResidentSceneError::GpuOrderInitialization(
+                error.to_string(),
+            ));
         }
-        self.gpu_order = Some(DirectGpuSceneOrder { sorter, bind_group });
+        self.gpu_order = Some(ResidentGpuSceneOrder { sorter, bind_group });
         Ok(())
     }
 
@@ -2532,10 +2098,10 @@ impl DirectSceneResources {
         camera: &Camera,
         width: u32,
         height: u32,
-    ) -> Result<u32, DirectSceneError> {
+    ) -> Result<u32, ResidentSceneError> {
         self.ensure_gpu_order(device, bind_group_layout)?;
-        let instance_count =
-            u32::try_from(self.count).map_err(|_| DirectSceneError::SortedIndexCapacityExceeded)?;
+        let instance_count = u32::try_from(self.count)
+            .map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
         let mut params =
             make_surface_render_params(camera, width, height, instance_count, self.sh_degree);
         params.order_stride_words = 2;
@@ -2544,12 +2110,12 @@ impl DirectSceneResources {
         Ok(instance_count)
     }
 
-    fn gpu_order(&self) -> Option<&DirectGpuSceneOrder> {
+    fn gpu_order(&self) -> Option<&ResidentGpuSceneOrder> {
         self.gpu_order.as_ref()
     }
 }
 
-fn create_direct_bind_group(
+fn create_resident_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     label: &'static str,
@@ -2582,11 +2148,11 @@ fn create_direct_bind_group(
     })
 }
 
-fn create_direct_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    draw_pass::create_splat_bind_group_layout(device, "gsplat-direct-bgl", 3)
+fn create_resident_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    draw_pass::create_splat_bind_group_layout(device, "gsplat-resident-bgl", 3)
 }
 
-fn create_direct_pipeline(
+fn create_resident_pipeline(
     device: &wgpu::Device,
     bind_group_layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
@@ -2596,10 +2162,10 @@ fn create_direct_pipeline(
         bind_group_layout,
         format,
         draw_pass::SplatPipeline {
-            shader_label: "gsplat-direct-shader",
-            shader_source: include_str!("../shaders/splat_surface_direct.wgsl"),
-            layout_label: "gsplat-direct-pipeline-layout",
-            pipeline_label: "gsplat-direct-pipeline",
+            shader_label: "gsplat-resident-shader",
+            shader_source: include_str!("../shaders/splat_surface_resident.wgsl"),
+            layout_label: "gsplat-resident-pipeline-layout",
+            pipeline_label: "gsplat-resident-pipeline",
             topology: wgpu::PrimitiveTopology::TriangleList,
         },
     )
@@ -2614,15 +2180,9 @@ struct GpuRasterizer {
     output_view: wgpu::TextureView,
     output_size: (u32, u32),
     max_texture_dimension_2d: u32,
-    direct_pipeline: wgpu::RenderPipeline,
-    direct_bind_group_layout: wgpu::BindGroupLayout,
-    direct_scene: Option<DirectSceneResources>,
-    packed_pipeline: wgpu::RenderPipeline,
-    packed_bind_group_layout: wgpu::BindGroupLayout,
-    packed_scene: Option<packed_gpu::PackedAtlasResources>,
-    paged_active_set: Option<paged_active_set::PagedActiveSet>,
-    /// Last camera position used for packed hot-color refresh.
-    packed_color_refresh_position: Option<[f32; 3]>,
+    resident_pipeline: wgpu::RenderPipeline,
+    resident_bind_group_layout: wgpu::BindGroupLayout,
+    resident_scene: Option<ResidentSceneResources>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2665,15 +2225,9 @@ impl GpuRasterizer {
             config.height,
             max_texture_dimension_2d,
         )?;
-        let direct_bind_group_layout = create_direct_bind_group_layout(&device);
-        let direct_pipeline =
-            create_direct_pipeline(&device, &direct_bind_group_layout, RENDER_TARGET_FORMAT);
-        let packed_bind_group_layout = packed_gpu::create_packed_bind_group_layout(&device);
-        let packed_pipeline = packed_gpu::create_packed_pipeline(
-            &device,
-            &packed_bind_group_layout,
-            RENDER_TARGET_FORMAT,
-        );
+        let resident_bind_group_layout = create_resident_bind_group_layout(&device);
+        let resident_pipeline =
+            create_resident_pipeline(&device, &resident_bind_group_layout, RENDER_TARGET_FORMAT);
 
         Ok(Self {
             adapter_info,
@@ -2683,25 +2237,17 @@ impl GpuRasterizer {
             output_view,
             output_size: (config.width, config.height),
             max_texture_dimension_2d,
-            direct_pipeline,
-            direct_bind_group_layout,
-            direct_scene: None,
-            packed_pipeline,
-            packed_bind_group_layout,
-            packed_scene: None,
-            paged_active_set: None,
-            packed_color_refresh_position: None,
+            resident_pipeline,
+            resident_bind_group_layout,
+            resident_scene: None,
         })
     }
 
     fn clear_scene_resources(&mut self) {
-        self.direct_scene = None;
-        self.packed_scene = None;
-        self.paged_active_set = None;
-        self.packed_color_refresh_position = None;
+        self.resident_scene = None;
     }
 
-    fn render_direct_sorted_indices(
+    fn render_resident_sorted_indices(
         &mut self,
         config: RendererConfig,
         sorted_indices: &[u32],
@@ -2711,20 +2257,20 @@ impl GpuRasterizer {
         alpha_values: &[f32],
     ) -> Result<(), RendererError> {
         self.ensure_output_target(config.width, config.height)?;
-        if self.direct_scene.is_none() {
-            self.direct_scene = Some(DirectSceneResources::new(
+        if self.resident_scene.is_none() {
+            self.resident_scene = Some(ResidentSceneResources::new(
                 &self.device,
-                &self.direct_bind_group_layout,
+                &self.resident_bind_group_layout,
                 scene,
                 world_covariance_terms,
                 alpha_values,
             )?);
         }
-        let direct_scene = self
-            .direct_scene
+        let resident_scene = self
+            .resident_scene
             .as_ref()
             .ok_or(RendererError::GpuDeviceCreation)?;
-        let instance_count = direct_scene
+        let instance_count = resident_scene
             .prepare_cpu(
                 &self.queue,
                 sorted_indices,
@@ -2738,157 +2284,13 @@ impl GpuRasterizer {
         let commands = draw_pass::encode_splat_draw(
             &self.device,
             draw_pass::SplatDraw {
-                encoder_label: "gsplat-offscreen-direct-encoder",
-                pass_label: "gsplat-offscreen-direct-pass",
+                encoder_label: "gsplat-offscreen-resident-encoder",
+                pass_label: "gsplat-offscreen-resident-pass",
                 view: &self.output_view,
-                pipeline: &self.direct_pipeline,
-                bind_group: &direct_scene.cpu_bind_group,
+                pipeline: &self.resident_pipeline,
+                bind_group: &resident_scene.cpu_bind_group,
                 clear: wgpu::Color::TRANSPARENT,
                 vertex_count: 6,
-                instance_count,
-            },
-        );
-        self.queue.submit(Some(commands));
-        Ok(())
-    }
-
-    fn render_packed_sorted_indices(
-        &mut self,
-        config: RendererConfig,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        scene: &SceneBuffers,
-    ) -> Result<(), RendererError> {
-        self.ensure_output_target(config.width, config.height)?;
-        let mut force_refresh = false;
-        if self.packed_scene.is_none() {
-            self.packed_scene = Some(packed_gpu::PackedAtlasResources::from_scene(
-                &self.device,
-                &self.packed_bind_group_layout,
-                scene,
-            )?);
-            force_refresh = true;
-            self.packed_color_refresh_position = None;
-        }
-        let position_key = packed_color_refresh_position_key(camera);
-        let packed_scene = self
-            .packed_scene
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        let needs_refresh = force_refresh
-            || packed_color_refresh_needed(
-                self.packed_color_refresh_position,
-                camera,
-                packed_scene.bounds_min,
-                packed_scene.bounds_extent,
-            );
-        // Design: color-refresh writes view-evaluated RGB into the hot record;
-        // the main draw then reads only the hot streams.
-        if needs_refresh {
-            let queue = self.queue.clone();
-            let packed_scene = self
-                .packed_scene
-                .as_mut()
-                .ok_or(RendererError::GpuDeviceCreation)?;
-            refresh_packed_hot_colors(&queue, packed_scene, scene, camera);
-            self.packed_color_refresh_position = Some(position_key);
-        }
-        let instance_count = self
-            .packed_scene
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?
-            .prepare(
-                &self.queue,
-                sorted_indices,
-                camera,
-                config.width,
-                config.height,
-                true,
-            )
-            .map_err(|_| RendererError::GpuDeviceCreation)?;
-
-        let packed_scene = self
-            .packed_scene
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        let commands = draw_pass::encode_splat_draw(
-            &self.device,
-            draw_pass::SplatDraw {
-                encoder_label: "gsplat-offscreen-packed-encoder",
-                pass_label: "gsplat-offscreen-packed-pass",
-                view: &self.output_view,
-                pipeline: &self.packed_pipeline,
-                bind_group: &packed_scene.bind_group,
-                clear: wgpu::Color::TRANSPARENT,
-                vertex_count: packed_gpu::PACKED_QUAD_VERTEX_COUNT,
-                instance_count,
-            },
-        );
-        self.queue.submit(Some(commands));
-        Ok(())
-    }
-
-    fn ensure_paged_active_set(
-        &mut self,
-        scene: &SceneBuffers,
-        pages: &SpatialPageSet,
-        camera: &Camera,
-    ) -> Result<(), RendererError> {
-        if self.paged_active_set.is_none() {
-            self.paged_active_set = Some(paged_active_set::PagedActiveSet::new(
-                &self.device,
-                &self.packed_bind_group_layout,
-                scene,
-                pages.clone(),
-            )?);
-        }
-
-        self.paged_active_set
-            .as_mut()
-            .ok_or(RendererError::InvalidScene)?
-            .sync(&self.queue, scene, camera)
-    }
-
-    fn render_paged_sorted_indices(
-        &mut self,
-        config: RendererConfig,
-        sorted_indices: &[u32],
-        camera: &Camera,
-        scene: &SceneBuffers,
-    ) -> Result<(), RendererError> {
-        self.ensure_output_target(config.width, config.height)?;
-        let paged = self
-            .paged_active_set
-            .as_mut()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        refresh_paged_hot_colors(&self.queue, &mut paged.atlas, scene, camera);
-        let instance_count = paged
-            .atlas
-            .resources
-            .prepare(
-                &self.queue,
-                sorted_indices,
-                camera,
-                config.width,
-                config.height,
-                true,
-            )
-            .map_err(|_| RendererError::GpuDeviceCreation)?;
-
-        let paged = self
-            .paged_active_set
-            .as_ref()
-            .ok_or(RendererError::GpuDeviceCreation)?;
-        let commands = draw_pass::encode_splat_draw(
-            &self.device,
-            draw_pass::SplatDraw {
-                encoder_label: "gsplat-offscreen-paged-encoder",
-                pass_label: "gsplat-offscreen-paged-pass",
-                view: &self.output_view,
-                pipeline: &self.packed_pipeline,
-                bind_group: &paged.atlas.resources.bind_group,
-                clear: wgpu::Color::TRANSPARENT,
-                vertex_count: packed_gpu::PACKED_QUAD_VERTEX_COUNT,
                 instance_count,
             },
         );
@@ -3009,9 +2411,8 @@ fn offscreen_device_limits(
     }
 
     let mut required_limits = wgpu::Limits::downlevel_defaults();
-    // The offscreen renderer can switch to PackedAtlas after device creation,
-    // so retain the adapter's available 2D texture ceiling for later scene
-    // sidecars instead of freezing the device to the render-target size.
+    // Preserve resize headroom instead of freezing the device to the initial
+    // render-target size.
     required_limits.max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
     if !required_limits.check_limits(adapter_limits) {
         return Err(RendererError::GpuDeviceCreation);
@@ -3055,18 +2456,14 @@ fn create_output_target(
 
 #[cfg(test)]
 mod tests {
-    use crate::spatial_pages::PageId;
-    use gsplat_core::{
-        Camera, ErrorCode, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f,
-    };
+    use gsplat_core::{Camera, ErrorCode, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 
     #[cfg(not(target_arch = "wasm32"))]
     use super::offscreen_device_limits;
     use super::{
-        DirectSceneError, DirectScenePath, DirectSceneRemediation, DirectSceneResource,
-        GeometryPath, PackedScenePath, Renderer, RendererError, build_instances,
-        direct_scene_preflight, ellipse_axes_from_covariance, packed_scene_preflight,
-        project_covariance_to_ndc, quat_inverse, try_prepare_then_commit,
+        Renderer, RendererError, ResidentSceneError, ResidentScenePath, ResidentSceneRemediation,
+        ResidentSceneResource, build_instances, ellipse_axes_from_covariance,
+        project_covariance_to_ndc, quat_inverse, resident_scene_preflight,
     };
 
     fn build_scene() -> SceneBuffers {
@@ -3101,91 +2498,6 @@ mod tests {
         }
     }
 
-    struct RenderPair {
-        first_stats: FrameStats,
-        second_stats: FrameStats,
-        first_rgba: Vec<u8>,
-        second_rgba: Vec<u8>,
-    }
-
-    fn render_path_pair(
-        scene: SceneBuffers,
-        config: RendererConfig,
-        camera: &Camera,
-        first_path: GeometryPath,
-        second_path: GeometryPath,
-        label: &str,
-    ) -> Option<RenderPair> {
-        let mut first = test_renderer(config, label)?;
-        let mut second = Renderer::with_config(config).expect("second renderer");
-        first.set_geometry_path(first_path);
-        second.set_geometry_path(second_path);
-        first.load_scene(scene.clone()).unwrap();
-        second.load_scene(scene).unwrap();
-        let first_stats = first.render_frame(camera).unwrap();
-        let second_stats = second.render_frame(camera).unwrap();
-        Some(RenderPair {
-            first_stats,
-            second_stats,
-            first_rgba: first.readback_rgba8().unwrap(),
-            second_rgba: second.readback_rgba8().unwrap(),
-        })
-    }
-
-    fn render_direct_packed(scene: SceneBuffers, size: u32, label: &str) -> Option<RenderPair> {
-        render_path_pair(
-            scene,
-            test_config(size),
-            &Camera::default(),
-            GeometryPath::SortedIndexDirect,
-            GeometryPath::PackedAtlas,
-            label,
-        )
-    }
-
-    fn render_packed_paged(scene: SceneBuffers, size: u32, label: &str) -> Option<RenderPair> {
-        render_path_pair(
-            scene,
-            test_config(size),
-            &Camera::default(),
-            GeometryPath::PackedAtlas,
-            GeometryPath::PagedActiveAtlas,
-            label,
-        )
-    }
-
-    #[test]
-    fn failed_geometry_resource_prepare_does_not_commit_partial_state() {
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        struct State {
-            path: GeometryPath,
-            direct: Option<&'static str>,
-            packed: Option<&'static str>,
-            paged: Option<&'static str>,
-        }
-
-        let mut state = State {
-            path: GeometryPath::SortedIndexDirect,
-            direct: Some("working-direct"),
-            packed: None,
-            paged: None,
-        };
-        let original = state.clone();
-        let result = try_prepare_then_commit(
-            &mut state,
-            |_| Err::<(Option<&str>, Option<&str>, Option<&str>), _>("injected allocation failure"),
-            |state, (direct, packed, paged)| {
-                state.path = GeometryPath::PagedActiveAtlas;
-                state.direct = direct;
-                state.packed = packed;
-                state.paged = paged;
-            },
-        );
-
-        assert_eq!(result, Err("injected allocation failure"));
-        assert_eq!(state, original);
-    }
-
     #[test]
     fn sorted_alpha_pipeline_builds_visible_gaussians() {
         let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
@@ -3198,289 +2510,6 @@ mod tests {
         assert_eq!(instances.len(), 2);
     }
 
-    #[test]
-    fn packed_atlas_offscreen_smoke_preserves_counts() {
-        let config = test_config(64);
-        let Some(mut renderer) = test_renderer(config, "packed atlas GPU smoke") else {
-            return;
-        };
-        renderer.set_geometry_path(super::GeometryPath::PackedAtlas);
-        renderer.load_scene(build_scene()).unwrap();
-        let stats = renderer.render_frame(&Camera::default()).unwrap();
-        assert_eq!(stats.visible_count, 2);
-        assert_eq!(stats.drawn_count, 2);
-        let rgba = renderer.readback_rgba8().unwrap();
-        assert!(
-            rgba.chunks_exact(4).any(|pixel| pixel[3] > 0),
-            "packed path must produce at least one non-transparent pixel"
-        );
-    }
-
-    #[test]
-    fn packed_vs_direct_count_parity_on_minimal_scene() {
-        let Some(pair) = render_direct_packed(build_scene(), 64, "packed-vs-direct parity") else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        assert_eq!(pair.first_stats.visible_count, 2);
-    }
-
-    #[test]
-    fn paged_vs_packed_count_parity_on_minimal_scene() {
-        let Some(pair) = render_packed_paged(build_scene(), 64, "paged-vs-packed parity") else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        assert_eq!(pair.first_stats.visible_count, 2);
-        assert_image_parity(
-            "paged vs packed parity",
-            &pair.first_rgba,
-            &pair.second_rgba,
-        );
-    }
-
-    #[test]
-    fn paged_vs_packed_image_parity_gate_on_qualification_small_degree3() {
-        let scene = synthetic_degree3_scene();
-        let pages = super::default_spatial_pages(&scene);
-        assert_eq!(
-            pages.page_count(),
-            super::DEFAULT_PAGED_ATLAS_SLOTS,
-            "qualification-small scene must fill the fixed multi-page budget"
-        );
-        assert_eq!(pages.total_splats(), scene.len());
-        let Some(pair) = render_packed_paged(scene, 128, "paged qualification parity") else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        assert!(
-            pair.first_stats.visible_count > 0,
-            "qualification-small parity camera must see splats"
-        );
-        assert_image_parity(
-            "qualification-small paged parity",
-            &pair.first_rgba,
-            &pair.second_rgba,
-        );
-    }
-
-    #[test]
-    fn paged_fixed_budget_evicts_and_excludes_nonresident_pages_from_draw() {
-        let scene = paged_eviction_scene();
-        let pages = super::default_spatial_pages(&scene);
-        assert!(pages.page_count() > super::DEFAULT_PAGED_ATLAS_SLOTS);
-        let config = test_config(64);
-        let Some(mut renderer) = test_renderer(config, "paged fixed-budget gate") else {
-            return;
-        };
-        renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        renderer.load_scene(scene).unwrap();
-
-        let mut first_camera = Camera::default();
-        first_camera.pose.position = Vec3f::new(0.0, 0.0, -30.0);
-        let first_stats = renderer.render_frame(&first_camera).unwrap();
-        let (first_residents, first_entries) = {
-            let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
-            let atlas = &active_set.atlas;
-            let manager = &active_set.residency;
-            assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
-            assert_eq!(
-                atlas.occupied_slot_count(),
-                super::DEFAULT_PAGED_ATLAS_SLOTS
-            );
-            assert_eq!(manager.resident_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
-            (manager.resident_page_ids(), atlas.active_entries())
-        };
-        assert_eq!(first_stats.drawn_count as usize, first_entries.len());
-        assert_active_entries_are_resident(&pages, &first_residents, &first_entries);
-        assert!(first_entries.len() < pages.total_splats());
-
-        let mut jumped_camera = Camera::default();
-        jumped_camera.pose.position = Vec3f::new(0.0, 0.0, 30.0);
-        jumped_camera.pose.rotation_xyzw = [0.0, 1.0, 0.0, 0.0];
-        let jumped_stats = renderer.render_frame(&jumped_camera).unwrap();
-        let (jumped_residents, jumped_entries) = {
-            let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
-            let atlas = &active_set.atlas;
-            let manager = &active_set.residency;
-            assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
-            assert_eq!(
-                atlas.occupied_slot_count(),
-                super::DEFAULT_PAGED_ATLAS_SLOTS
-            );
-            assert_eq!(manager.resident_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
-            (manager.resident_page_ids(), atlas.active_entries())
-        };
-        assert_ne!(
-            first_residents, jumped_residents,
-            "camera jump must evict pages"
-        );
-        assert_eq!(jumped_stats.drawn_count as usize, jumped_entries.len());
-        assert_active_entries_are_resident(&pages, &jumped_residents, &jumped_entries);
-        assert!(jumped_entries.len() < pages.total_splats());
-    }
-
-    #[test]
-    fn paged_small_motion_trace_retains_cover_without_zero_draw_holes() {
-        let scene = paged_eviction_scene();
-        let config = test_config(64);
-        let Some(mut renderer) = test_renderer(config, "paged small-motion trace") else {
-            return;
-        };
-        renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        renderer.load_scene(scene).unwrap();
-
-        let trace = [
-            Vec3f::new(-3.0, -3.0, 0.0),
-            Vec3f::new(-2.9, -3.0, 0.0),
-            Vec3f::new(-2.8, -2.9, 0.0),
-            Vec3f::new(-2.7, -2.8, 0.0),
-        ];
-        let mut baseline_residents = None;
-        for (frame, position) in trace.into_iter().enumerate() {
-            let mut camera = Camera::default();
-            camera.pose.position = position;
-            let stats = renderer.render_frame(&camera).unwrap();
-            assert!(stats.drawn_count > 0, "trace frame {frame} must draw");
-            assert!(
-                renderer
-                    .readback_rgba8()
-                    .unwrap()
-                    .chunks_exact(4)
-                    .any(|pixel| pixel[3] > 0),
-                "trace frame {frame} must retain visible coverage"
-            );
-            let mut residents = renderer
-                .gpu_rasterizer
-                .as_ref()
-                .unwrap()
-                .paged_active_set
-                .as_ref()
-                .unwrap()
-                .residency
-                .resident_page_ids();
-            residents.sort_by_key(|page_id| page_id.0);
-            if let Some(baseline) = &baseline_residents {
-                assert_eq!(
-                    &residents, baseline,
-                    "small motion must retain the coarse resident cover"
-                );
-            } else {
-                baseline_residents = Some(residents);
-            }
-        }
-    }
-
-    #[test]
-    fn surface_paged_local_runtime_prepares_stable_nonzero_draws() {
-        let scene = paged_eviction_scene();
-        let config = test_config(64);
-        let Some(renderer) = test_renderer(config, "Surface paged runtime gate") else {
-            return;
-        };
-        let device = renderer.device().unwrap().clone();
-        let queue = renderer.queue().unwrap().clone();
-        let layout = super::packed_gpu::create_packed_bind_group_layout(&device);
-        let pages = super::default_spatial_pages(&scene);
-        let page_count = pages.page_count();
-        let page_capacity = pages.page_capacity;
-        assert!(page_count > super::DEFAULT_PAGED_ATLAS_SLOTS);
-        let mut runtime = super::SurfacePagedRuntime::new(&device, &layout, &scene, pages).unwrap();
-        assert_eq!(
-            runtime.active_set.atlas.resources.capacity,
-            4 * page_capacity
-        );
-        assert!(runtime.active_set.atlas.resources.capacity < scene.len());
-
-        for position in [
-            Vec3f::new(-3.0, -3.0, 0.0),
-            Vec3f::new(-2.9, -3.0, 0.0),
-            Vec3f::new(-2.8, -2.9, 0.0),
-        ] {
-            let mut camera = Camera::default();
-            camera.pose.position = position;
-            let drawn = runtime
-                .prepare(&queue, &scene, &camera, config.width, config.height)
-                .unwrap();
-            assert!(
-                drawn > 0,
-                "Surface paged runtime must prepare non-zero draw"
-            );
-            assert_eq!(
-                runtime.active_set.atlas.slot_count(),
-                super::DEFAULT_PAGED_ATLAS_SLOTS
-            );
-            assert_eq!(
-                runtime.active_set.atlas.occupied_slot_count(),
-                super::DEFAULT_PAGED_ATLAS_SLOTS
-            );
-        }
-    }
-
-    #[test]
-    fn paged_bounded_trace_keeps_slot_resident_and_active_counts_fixed() {
-        let scene = paged_eviction_scene();
-        let config = test_config(64);
-        let Some(mut renderer) = test_renderer(config, "paged bounded trace") else {
-            return;
-        };
-        renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        renderer.load_scene(scene).unwrap();
-
-        for frame in 0..512 {
-            let phase = frame as f32 / 511.0 * std::f32::consts::TAU;
-            let mut camera = Camera::default();
-            camera.pose.position = Vec3f::new(phase.sin() * 3.0, phase.cos() * 3.0, 0.0);
-            let stats = renderer.render_frame(&camera).unwrap();
-            let rasterizer = renderer.gpu_rasterizer.as_ref().unwrap();
-            let active_set = rasterizer.paged_active_set.as_ref().unwrap();
-            let atlas = &active_set.atlas;
-            let manager = &active_set.residency;
-            let active = atlas.active_entries().len();
-            assert_eq!(atlas.slot_count(), super::DEFAULT_PAGED_ATLAS_SLOTS);
-            assert!(atlas.occupied_slot_count() <= super::DEFAULT_PAGED_ATLAS_SLOTS);
-            assert!(manager.resident_count() <= super::DEFAULT_PAGED_ATLAS_SLOTS);
-            assert!(active <= atlas.slot_count().saturating_mul(atlas.page_capacity));
-            assert_eq!(active, atlas.resident_splat_count());
-            assert_eq!(stats.drawn_count as usize, active);
-            assert!(
-                stats.drawn_count > 0,
-                "bounded trace frame {frame} must draw"
-            );
-        }
-    }
-
-    fn assert_active_entries_are_resident(
-        pages: &super::SpatialPageSet,
-        resident_pages: &[PageId],
-        active_entries: &[(u32, u32)],
-    ) {
-        let resident_scene_indices: std::collections::HashSet<u32> = resident_pages
-            .iter()
-            .flat_map(|&page_id| pages.page(page_id).unwrap().splat_indices.iter().copied())
-            .collect();
-        assert!(
-            active_entries
-                .iter()
-                .all(|&(_, scene_index)| resident_scene_indices.contains(&scene_index)),
-            "non-resident source splats must never enter the active draw set"
-        );
-    }
-
     #[derive(Debug, Clone, Copy)]
     struct ImageParityMetrics {
         mean_abs_rgb: f64,
@@ -3488,10 +2517,10 @@ mod tests {
         max_abs_rgb: f64,
     }
 
-    fn rgba_image_parity_metrics(direct: &[u8], packed: &[u8]) -> ImageParityMetrics {
-        assert_eq!(direct.len(), packed.len());
-        assert_eq!(direct.len() % 4, 0);
-        let pixels = direct.len() / 4;
+    fn rgba_image_parity_metrics(first: &[u8], second: &[u8]) -> ImageParityMetrics {
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first.len() % 4, 0);
+        let pixels = first.len() / 4;
         let mut sum = 0.0_f64;
         let mut pixels_over = 0_u64;
         let mut max_abs = 0.0_f64;
@@ -3499,8 +2528,8 @@ mod tests {
             let base = index * 4;
             let mut pixel_over = false;
             for channel in 0..3 {
-                let a = f64::from(direct[base + channel]) / 255.0;
-                let b = f64::from(packed[base + channel]) / 255.0;
+                let a = f64::from(first[base + channel]) / 255.0;
+                let b = f64::from(second[base + channel]) / 255.0;
                 let err = (a - b).abs();
                 sum += err;
                 max_abs = max_abs.max(err);
@@ -3517,30 +2546,11 @@ mod tests {
         }
     }
 
-    fn assert_image_parity(label: &str, first: &[u8], second: &[u8]) -> ImageParityMetrics {
-        let metrics = rgba_image_parity_metrics(first, second);
-        eprintln!(
-            "{label}: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6}",
-            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb
-        );
-        assert!(
-            metrics.mean_abs_rgb <= 1.0 / 255.0,
-            "{label} mean abs RGB {:.6} exceeded 1/255",
-            metrics.mean_abs_rgb
-        );
-        assert!(
-            metrics.frac_pixels_over_3_255 <= 0.001,
-            "{label} frac over 3/255 {:.6} exceeded 0.1%",
-            metrics.frac_pixels_over_3_255
-        );
-        metrics
-    }
-
     #[test]
     fn image_parity_threshold_counts_pixels_not_channels() {
-        let direct = [0_u8, 0, 0, 255, 0, 0, 0, 255];
-        let packed = [4_u8, 0, 0, 255, 0, 0, 0, 255];
-        let metrics = rgba_image_parity_metrics(&direct, &packed);
+        let first = [0_u8, 0, 0, 255, 0, 0, 0, 255];
+        let second = [4_u8, 0, 0, 255, 0, 0, 0, 255];
+        let metrics = rgba_image_parity_metrics(&first, &second);
         assert_eq!(metrics.frac_pixels_over_3_255, 0.5);
     }
 
@@ -3588,9 +2598,7 @@ mod tests {
         let Some(mut reference) = test_renderer(config, "{label} stale-order quality") else {
             return;
         };
-        reference.set_geometry_path(super::GeometryPath::PackedAtlas);
         let mut stale = Renderer::with_config(config).expect("second renderer");
-        stale.set_geometry_path(super::GeometryPath::PackedAtlas);
         let old_camera = orbit_camera_for_scene(&scene, config, 0.0);
         let current_camera = orbit_camera_for_scene(&scene, config, 0.002);
         reference.load_scene(scene.clone()).unwrap();
@@ -3649,119 +2657,6 @@ mod tests {
                 .unwrap_or_else(|error| panic!("load {label} at {}: {error}", path.display()));
             assert_two_revision_stale_order_quality(loaded.scene, label);
         }
-    }
-
-    #[test]
-    fn packed_color_refresh_uses_scene_relative_translation_bound() {
-        let bounds_min = [-1.0, -1.0, -1.0];
-        let bounds_extent = [2.0, 2.0, 2.0];
-        let previous = [0.0, 0.0, -5.0];
-        let mut camera = Camera::default();
-        camera.pose.position = Vec3f::new(0.5, 0.0, -4.97);
-        assert!(!super::packed_color_refresh_needed(
-            Some(previous),
-            &camera,
-            bounds_min,
-            bounds_extent,
-        ));
-        camera.pose.position = Vec3f::new(0.8, 0.0, -4.93);
-        assert!(super::packed_color_refresh_needed(
-            Some(previous),
-            &camera,
-            bounds_min,
-            bounds_extent,
-        ));
-    }
-
-    #[test]
-    fn packed_color_refresh_ignores_rotation_at_fixed_position() {
-        let mut camera = Camera::default();
-        let previous = super::packed_color_refresh_position_key(&camera);
-        camera.pose.rotation_xyzw = [0.0, 0.707_106_77, 0.0, 0.707_106_77];
-        assert!(!super::packed_color_refresh_needed(
-            Some(previous),
-            &camera,
-            [-1.0; 3],
-            [2.0; 3],
-        ));
-    }
-
-    #[test]
-    fn packed_renderer_does_not_retain_direct_cpu_covariance_caches() {
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.set_geometry_path(super::GeometryPath::PackedAtlas);
-        renderer.load_scene(build_scene()).unwrap();
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
-
-        renderer.set_geometry_path(super::GeometryPath::SortedIndexDirect);
-        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
-        assert_eq!(
-            renderer.world_covariance_terms.as_ref().map(Vec::len),
-            Some(2)
-        );
-        assert_eq!(renderer.alpha_values.as_ref().map(Vec::len), Some(2));
-
-        renderer.set_geometry_path(super::GeometryPath::PackedAtlas);
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
-    }
-
-    #[test]
-    fn paged_renderer_preselection_builds_pages_without_direct_cpu_caches() {
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.set_geometry_path(super::GeometryPath::PagedActiveAtlas);
-        renderer.load_scene(build_scene()).unwrap();
-
-        assert_eq!(
-            renderer.geometry_path(),
-            super::GeometryPath::PagedActiveAtlas
-        );
-        assert!(renderer.world_covariances.is_none());
-        assert!(renderer.world_covariance_terms.is_none());
-        assert!(renderer.alpha_values.is_none());
-        assert!(
-            renderer
-                .spatial_pages
-                .as_ref()
-                .is_some_and(|pages| !pages.pages.is_empty())
-        );
-    }
-
-    #[test]
-    fn packed_vs_direct_image_parity_gate_on_degree0_scene() {
-        let Some(pair) = render_direct_packed(build_scene(), 128, "packed image parity") else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        assert_image_parity("packed image parity", &pair.first_rgba, &pair.second_rgba);
-    }
-
-    #[test]
-    fn packed_vs_direct_image_parity_gate_on_minimal_ascii() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/datasets/minimal_ascii.ply");
-        let loaded = gsplat_io_ply::load_ply(&path).expect("load minimal_ascii");
-        let Some(pair) = render_direct_packed(loaded.scene, 128, "minimal_ascii image parity")
-        else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        assert_image_parity(
-            "minimal_ascii packed parity",
-            &pair.first_rgba,
-            &pair.second_rgba,
-        );
     }
 
     fn scene_to_rdf_ply_for_spz_parity(scene: &SceneBuffers) -> String {
@@ -3914,151 +2809,6 @@ mod tests {
         eprintln!("wrote {}", out_path.display());
     }
 
-    fn synthetic_degree3_scene() -> SceneBuffers {
-        let count = 64usize;
-        SceneBuffers {
-            positions: (0..count)
-                .map(|i| {
-                    let t = i as f32 / count as f32;
-                    Vec3f::new((t - 0.5) * 2.0, 0.0, 1.5 + (i / 16) as f32 * 0.1)
-                })
-                .collect(),
-            opacity: vec![2.0; count],
-            scale_xyz: vec![[-3.0, -3.0, -3.0]; count],
-            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
-            color_dc: (0..count)
-                .map(|i| [0.1 + (i % 5) as f32 * 0.05, -0.05, 0.2])
-                .collect(),
-            sh_degree: 3,
-            sh_rest: Some(
-                (0..count * 45)
-                    .map(|i| ((i % 11) as f32 - 5.0) * 0.03)
-                    .collect(),
-            ),
-        }
-    }
-
-    fn paged_eviction_scene() -> SceneBuffers {
-        let positions: Vec<_> = (0..3)
-            .flat_map(|z| {
-                (0..3).flat_map(move |y| {
-                    (0..3).map(move |x| {
-                        Vec3f::new(x as f32 * 2.0 - 2.0, y as f32 * 2.0 - 2.0, z as f32 + 1.0)
-                    })
-                })
-            })
-            .collect();
-        let count = positions.len();
-        SceneBuffers {
-            positions,
-            opacity: vec![2.0; count],
-            scale_xyz: vec![[-3.0, -3.0, -3.0]; count],
-            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
-            color_dc: vec![[0.2, 0.0, -0.1]; count],
-            sh_degree: 0,
-            sh_rest: None,
-        }
-    }
-
-    #[test]
-    fn packed_vs_direct_image_parity_gate_on_synthetic_degree3() {
-        let Some(pair) =
-            render_direct_packed(synthetic_degree3_scene(), 128, "synthetic degree3 parity")
-        else {
-            return;
-        };
-        assert_image_parity(
-            "synthetic degree3 packed parity",
-            &pair.first_rgba,
-            &pair.second_rgba,
-        );
-    }
-
-    #[test]
-    fn packed_vs_direct_image_parity_gate_on_kitsune_degree3() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/datasets/external/wakufactory_kitune/kitune1.ply");
-        if !path.is_file() {
-            eprintln!("skipping kitsune image parity; dataset missing");
-            return;
-        }
-        let loaded = gsplat_io_ply::load_ply(&path).expect("load kitsune");
-        assert_eq!(loaded.scene.sh_degree, 3);
-        let Some(pair) = render_direct_packed(loaded.scene, 128, "kitsune image parity") else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        let metrics = assert_image_parity(
-            "kitsune degree-3 parity",
-            &pair.first_rgba,
-            &pair.second_rgba,
-        );
-        // Also report alpha-channel MAE to separate coverage vs color error.
-        let mut sum_a = 0.0_f64;
-        let mut n = 0_u64;
-        for (d, p) in pair
-            .first_rgba
-            .chunks_exact(4)
-            .zip(pair.second_rgba.chunks_exact(4))
-        {
-            sum_a += (d[3] as f64 - p[3] as f64).abs() / 255.0;
-            n += 1;
-        }
-        let mut sum_direct_a = 0.0_f64;
-        let mut sum_packed_a = 0.0_f64;
-        for (d, p) in pair
-            .first_rgba
-            .chunks_exact(4)
-            .zip(pair.second_rgba.chunks_exact(4))
-        {
-            sum_direct_a += d[3] as f64 / 255.0;
-            sum_packed_a += p[3] as f64 / 255.0;
-        }
-        eprintln!(
-            "kitsune packed parity: mean_abs_rgb={:.6} mean_abs_a={:.6} mean_a_direct={:.6} mean_a_packed={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} visible={}",
-            metrics.mean_abs_rgb,
-            sum_a / n as f64,
-            sum_direct_a / n as f64,
-            sum_packed_a / n as f64,
-            metrics.frac_pixels_over_3_255,
-            metrics.max_abs_rgb,
-            pair.first_stats.visible_count
-        );
-    }
-
-    #[test]
-    fn packed_vs_direct_image_parity_gate_on_flowers_degree3() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply");
-        if !path.is_file() {
-            eprintln!("skipping Flowers image parity; dataset missing");
-            return;
-        }
-        let loaded = gsplat_io_ply::load_ply(&path).expect("load Flowers");
-        assert_eq!(loaded.scene.sh_degree, 3);
-        let Some(pair) = render_direct_packed(loaded.scene, 128, "Flowers image parity") else {
-            return;
-        };
-        assert_eq!(
-            pair.first_stats.visible_count,
-            pair.second_stats.visible_count
-        );
-        assert_eq!(pair.first_stats.drawn_count, pair.second_stats.drawn_count);
-        assert!(
-            pair.first_stats.visible_count > 0,
-            "Flowers parity camera must see splats"
-        );
-        assert_image_parity(
-            "Flowers degree-3 parity",
-            &pair.first_rgba,
-            &pair.second_rgba,
-        );
-    }
-
     #[test]
     fn sorted_alpha_orders_visible_indices_back_to_front() {
         let scene = SceneBuffers {
@@ -4122,20 +2872,20 @@ mod tests {
     }
 
     #[test]
-    fn direct_scene_preflight_accessor_requires_a_loaded_scene() {
+    fn resident_scene_preflight_accessor_requires_a_loaded_scene() {
         let renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
 
-        let error = renderer.current_direct_scene_preflight().unwrap_err();
+        let error = renderer.current_resident_scene_preflight().unwrap_err();
 
         assert!(matches!(error, super::RendererError::SceneNotLoaded));
     }
 
     #[test]
-    fn direct_scene_preflight_accessor_does_not_guess_surface_device_limits() {
+    fn resident_scene_preflight_accessor_does_not_guess_surface_device_limits() {
         let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
         renderer.load_scene(build_scene()).unwrap();
 
-        let error = renderer.current_direct_scene_preflight().unwrap_err();
+        let error = renderer.current_resident_scene_preflight().unwrap_err();
 
         assert!(matches!(
             error,
@@ -4180,7 +2930,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn offscreen_limits_preserve_adapter_texture_dimension_for_later_packed_scenes() {
+    fn offscreen_limits_preserve_adapter_texture_dimension_for_later_resident_scenes() {
         let mut adapter_limits = wgpu::Limits::downlevel_defaults();
         adapter_limits.max_texture_dimension_2d = 8192;
         let config = RendererConfig {
@@ -4202,219 +2952,82 @@ mod tests {
     }
 
     #[test]
-    fn direct_scene_preflight_accounts_for_empty_scene_fallback_buffers() {
+    fn resident_scene_preflight_accounts_for_empty_scene_fallback_buffers() {
         let report =
-            direct_scene_preflight(0, 0, &limits_with_storage_binding_limit(128 * 1024 * 1024))
+            resident_scene_preflight(0, 0, &limits_with_storage_binding_limit(128 * 1024 * 1024))
                 .unwrap();
 
-        assert_eq!(report.path, DirectScenePath::Direct);
+        assert_eq!(report.path, ResidentScenePath::Resident);
         assert_eq!(report.requirements[0].required_bytes, 4);
         assert_eq!(report.requirements[1].required_bytes, 64);
         assert_eq!(report.requirements[2].required_bytes, 4);
     }
 
     #[test]
-    fn direct_scene_preflight_enforces_source_binding_boundary() {
+    fn resident_scene_preflight_enforces_source_binding_boundary() {
         let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
-        let at_limit = direct_scene_preflight(2_097_152, 0, &limits).unwrap();
-        let above_limit = direct_scene_preflight(2_097_153, 0, &limits).unwrap();
+        let at_limit = resident_scene_preflight(2_097_152, 0, &limits).unwrap();
+        let above_limit = resident_scene_preflight(2_097_153, 0, &limits).unwrap();
 
-        assert_eq!(at_limit.path, DirectScenePath::Direct);
-        assert_eq!(at_limit.limiting_resource, DirectSceneResource::Source);
-        assert_eq!(above_limit.path, DirectScenePath::ActiveAtlasRequired);
+        assert_eq!(at_limit.path, ResidentScenePath::Resident);
+        assert_eq!(at_limit.limiting_resource, ResidentSceneResource::Source);
+        assert_eq!(above_limit.path, ResidentScenePath::CapacityExceeded);
         assert_eq!(above_limit.requirements[1].required_bytes, 134_217_792);
         assert_eq!(
             above_limit.remediation,
-            DirectSceneRemediation::UseActiveAtlasOrReduce {
-                max_direct_splats: 2_097_152,
+            ResidentSceneRemediation::ReduceScene {
+                max_resident_splats: 2_097_152,
             }
         );
     }
 
     #[test]
-    fn direct_scene_preflight_enforces_degree_three_sh_boundary() {
+    fn resident_scene_preflight_enforces_degree_three_sh_boundary() {
         let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
-        let at_limit = direct_scene_preflight(745_654, 3, &limits).unwrap();
-        let above_limit = direct_scene_preflight(745_655, 3, &limits).unwrap();
+        let at_limit = resident_scene_preflight(745_654, 3, &limits).unwrap();
+        let above_limit = resident_scene_preflight(745_655, 3, &limits).unwrap();
 
-        assert_eq!(at_limit.path, DirectScenePath::Direct);
-        assert_eq!(at_limit.limiting_resource, DirectSceneResource::ShRest);
-        assert_eq!(above_limit.path, DirectScenePath::ActiveAtlasRequired);
+        assert_eq!(at_limit.path, ResidentScenePath::Resident);
+        assert_eq!(at_limit.limiting_resource, ResidentSceneResource::ShRest);
+        assert_eq!(above_limit.path, ResidentScenePath::CapacityExceeded);
         assert_eq!(above_limit.requirements[2].required_bytes, 134_217_900);
     }
 
     #[test]
-    fn direct_scene_preflight_reports_nandi_without_allocating_scene_data() {
+    fn resident_scene_preflight_reports_nandi_without_allocating_scene_data() {
         let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
-        let dc = direct_scene_preflight(3_454_040, 0, &limits).unwrap();
-        let degree_three = direct_scene_preflight(3_454_040, 3, &limits).unwrap();
+        let dc = resident_scene_preflight(3_454_040, 0, &limits).unwrap();
+        let degree_three = resident_scene_preflight(3_454_040, 3, &limits).unwrap();
 
-        assert_eq!(dc.path, DirectScenePath::ActiveAtlasRequired);
-        assert_eq!(dc.limiting_resource, DirectSceneResource::Source);
+        assert_eq!(dc.path, ResidentScenePath::CapacityExceeded);
+        assert_eq!(dc.limiting_resource, ResidentSceneResource::Source);
         assert_eq!(dc.requirements[1].required_bytes, 221_058_560);
-        assert_eq!(degree_three.path, DirectScenePath::ActiveAtlasRequired);
-        assert_eq!(degree_three.limiting_resource, DirectSceneResource::ShRest);
+        assert_eq!(degree_three.path, ResidentScenePath::CapacityExceeded);
+        assert_eq!(
+            degree_three.limiting_resource,
+            ResidentSceneResource::ShRest
+        );
         assert_eq!(degree_three.requirements[2].required_bytes, 621_727_200);
         assert!(!degree_three.requirements[1].fits);
         assert!(!degree_three.requirements[2].fits);
     }
 
-    #[test]
-    fn default_surface_path_stays_direct_while_preflight_reports_oversized_scenes() {
-        let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
-        let small = direct_scene_preflight(279_199, 3, &limits).unwrap();
-        assert_eq!(small.path, DirectScenePath::Direct);
-        assert_eq!(GeometryPath::default(), GeometryPath::SortedIndexDirect);
-
-        let oversized = direct_scene_preflight(3_454_040, 3, &limits).unwrap();
-        assert_eq!(oversized.path, DirectScenePath::ActiveAtlasRequired);
-        assert_eq!(GeometryPath::default(), GeometryPath::SortedIndexDirect);
-    }
-
-    #[test]
-    fn surface_resource_plan_selects_fixed_slots_for_over_direct_limit_nandi() {
-        let mut limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
-        limits.max_texture_dimension_2d = 8192;
-        let scene_splats = 3_454_040_usize;
-        let page_capacity = 65_536_usize;
-        let page_count = scene_splats.div_ceil(page_capacity);
-
-        let direct = super::surface_resource_plan(
-            GeometryPath::SortedIndexDirect,
-            scene_splats,
-            3,
-            0,
-            0,
-            640,
-            480,
-            &limits,
-        )
-        .unwrap();
-        assert_eq!(
-            direct.direct_preflight.path,
-            DirectScenePath::ActiveAtlasRequired
-        );
-        assert_eq!(
-            direct.direct_preflight.limiting_resource,
-            DirectSceneResource::ShRest
-        );
-        assert_eq!(
-            direct.direct_preflight.requirements[2].required_bytes,
-            621_727_200
-        );
-        assert!(matches!(
-            direct.validate_selected_path(),
-            Err(DirectSceneError::ResourceLimitExceeded(_))
-        ));
-
-        let paged = super::surface_resource_plan(
-            GeometryPath::PagedActiveAtlas,
-            scene_splats,
-            3,
-            page_count,
-            page_capacity,
-            640,
-            480,
-            &limits,
-        )
-        .unwrap();
-        assert_eq!(page_count, 53);
-        assert_eq!(page_capacity, 65_536);
-        let slot_count = page_count.min(super::DEFAULT_PAGED_ATLAS_SLOTS);
-        assert_eq!(slot_count, 4);
-        assert!(slot_count < page_count);
-        let resident_capacity = slot_count.saturating_mul(page_capacity);
-        assert_eq!(resident_capacity / page_capacity, slot_count);
-        assert_eq!(resident_capacity, 262_144);
-        assert!(resident_capacity < scene_splats);
-        assert_eq!(paged.packed_preflight.path, PackedScenePath::PackedAtlas);
-        assert_eq!(paged.packed_preflight.sorted_indices_bytes, 1_048_576);
-        assert_eq!(paged.packed_preflight.hot_record_storage_bytes, 5_242_880);
-        assert!(paged.required_texture_dimension <= 8192);
-        paged.validate_selected_path().unwrap();
-    }
-
-    #[test]
-    fn packed_scene_preflight_removes_nandi_attribute_binding_failure() {
-        let binding_limit = 128 * 1024 * 1024_u64;
-        let kitsune = packed_scene_preflight(279_199, 3, binding_limit).unwrap();
-        let nandi = packed_scene_preflight(3_454_040, 3, binding_limit).unwrap();
-        let direct_nandi = direct_scene_preflight(
-            3_454_040,
-            3,
-            &limits_with_storage_binding_limit(128 * 1024 * 1024),
-        )
-        .unwrap();
-
-        // Direct Nandi fails because SH rest alone exceeds the storage binding.
-        assert_eq!(direct_nandi.path, DirectScenePath::ActiveAtlasRequired);
-        assert_eq!(direct_nandi.limiting_resource, DirectSceneResource::ShRest);
-        assert!(!direct_nandi.requirements[2].fits);
-
-        // Packed keeps full degree-3 SH out of storage bindings (direct Nandi failure).
-        // Hot records use a compact 20 B/splat storage buffer that still fits Nandi.
-        assert!(kitsune.attributes_avoid_storage_binding);
-        assert!(nandi.attributes_avoid_storage_binding);
-        assert!(kitsune.hot_record_fits_storage_binding);
-        assert!(nandi.hot_record_fits_storage_binding);
-        assert_eq!(
-            nandi.hot_record_storage_bytes,
-            3_454_040_u64 * 20,
-            "Nandi hot storage must stay under the 128 MiB binding limit"
-        );
-        assert!(kitsune.sorted_indices_fits_storage_binding);
-        assert!(nandi.sorted_indices_fits_storage_binding);
-        assert_eq!(kitsune.path, PackedScenePath::PackedAtlas);
-        // The packed shader reads only the 20 B hot storage record. Full SH is
-        // evaluated on the CPU, so no hypothetical texture dimension may
-        // force this otherwise-valid scene into the slower paged path.
-        assert_eq!(nandi.path, PackedScenePath::PackedAtlas);
-        assert_eq!(
-            nandi.declared_attribute_resource_bytes,
-            nandi.hot_record_storage_bytes
-        );
-        assert!(
-            nandi.declared_attribute_resource_bytes
-                < direct_nandi.requirements[1].required_bytes
-                    + direct_nandi.requirements[2].required_bytes
-        );
-        let reduction = (direct_nandi.requirements[1].required_bytes
-            + direct_nandi.requirements[2].required_bytes) as f64
-            / nandi.declared_attribute_resource_bytes as f64;
-        assert!(
-            reduction >= 3.0,
-            "packed Nandi attribute bytes should be ≥3x smaller than direct source+SH: {reduction}"
-        );
-    }
-
-    #[test]
-    fn packed_scene_preflight_accepts_kitsune_and_flowers_on_mobile_binding_limits() {
-        let binding_limit = 128 * 1024 * 1024_u64;
-        for count in [279_199_usize, 562_974_usize] {
-            let report = packed_scene_preflight(count, 3, binding_limit).unwrap();
-            assert_eq!(report.path, PackedScenePath::PackedAtlas);
-            assert!(report.attributes_avoid_storage_binding);
-            assert!(report.hot_record_fits_storage_binding);
-            assert!(report.sorted_indices_fits_storage_binding);
-        }
-    }
-
     #[cfg(target_pointer_width = "64")]
     #[test]
-    fn direct_scene_preflight_rejects_more_than_u32_draw_instances() {
+    fn resident_scene_preflight_rejects_more_than_u32_draw_instances() {
         let count = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
-        let report = direct_scene_preflight(count, 0, &wgpu::Limits::default()).unwrap();
+        let report = resident_scene_preflight(count, 0, &wgpu::Limits::default()).unwrap();
 
-        assert_eq!(report.path, DirectScenePath::ActiveAtlasRequired);
+        assert_eq!(report.path, ResidentScenePath::CapacityExceeded);
         assert!(report.splat_count > u64::from(u32::MAX));
     }
 
     #[cfg(target_pointer_width = "64")]
     #[test]
-    fn direct_scene_preflight_rejects_byte_arithmetic_overflow() {
-        let error = direct_scene_preflight(usize::MAX, 3, &wgpu::Limits::default()).unwrap_err();
+    fn resident_scene_preflight_rejects_byte_arithmetic_overflow() {
+        let error = resident_scene_preflight(usize::MAX, 3, &wgpu::Limits::default()).unwrap_err();
 
-        assert_eq!(error, DirectSceneError::ResourceSizeOverflow);
+        assert_eq!(error, ResidentSceneError::ResourceSizeOverflow);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

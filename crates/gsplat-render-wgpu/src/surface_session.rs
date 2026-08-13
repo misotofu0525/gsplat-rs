@@ -12,7 +12,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{GeometryPath, Renderer, RendererError, SurfacePresenter, timer_elapsed_ms, timer_now};
+use crate::{Renderer, RendererError, SurfacePresenter, timer_elapsed_ms, timer_now};
 
 const DEFAULT_SURFACE_SORT_INTERVAL: u32 = 2;
 /// Maximum number of camera revisions an asynchronously produced order may lag
@@ -37,7 +37,7 @@ pub enum SurfaceSortSchedule {
     AsyncLatest { interval: u32 },
 }
 
-/// Selects where a required Direct order refresh is computed. This is
+/// Selects where a required resident-scene order refresh is computed. This is
 /// independent from [`SurfaceSortSchedule`], which decides *when* to refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceOrderBackend {
@@ -491,7 +491,7 @@ impl Drop for SurfaceAsyncSorter {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceFrameTimings {
-    /// Retained for API compatibility. Direct rendering performs no CPU geometry expansion.
+    /// Retained for API compatibility. Resident rendering performs no CPU geometry expansion.
     pub cpu_geometry_ms: f32,
     /// CPU wall time spent updating GPU resources, encoding, submitting, and presenting.
     pub render_submit_ms: f32,
@@ -595,7 +595,7 @@ impl SurfaceFrameState {
     }
 }
 
-/// Owns the ordering + direct GPU draw lifecycle shared by every Surface client.
+/// Owns the ordering + resident GPU draw lifecycle shared by every Surface client.
 ///
 /// PLY-derived scene attributes stay GPU-resident. CPU refreshes upload compact
 /// source IDs, while GPU refreshes keep stable `(depth_key, source_id)` pairs on
@@ -623,24 +623,6 @@ pub struct SurfaceRenderSession {
     async_sorter: Option<SurfaceAsyncSorter>,
 }
 
-fn try_switch_renderer_geometry_path<Error>(
-    renderer: &mut Renderer,
-    target: GeometryPath,
-    prepare_presenter: impl FnOnce(&Renderer) -> Result<(), Error>,
-) -> Result<bool, Error> {
-    let previous = renderer.geometry_path();
-    if previous == target {
-        return Ok(false);
-    }
-
-    renderer.set_geometry_path(target);
-    if let Err(error) = prepare_presenter(renderer) {
-        renderer.set_geometry_path(previous);
-        return Err(error);
-    }
-    Ok(true)
-}
-
 impl SurfaceRenderSession {
     pub fn new(
         renderer: Renderer,
@@ -652,9 +634,6 @@ impl SurfaceRenderSession {
             .map_err(|_| RendererError::InvalidCamera)?;
         if renderer.scene().is_none() {
             return Err(RendererError::SceneNotLoaded);
-        }
-        if renderer.geometry_path() != presenter.geometry_path() {
-            return Err(RendererError::InvalidConfig);
         }
         let scene = renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
         let mut min = [f32::INFINITY; 3];
@@ -698,35 +677,6 @@ impl SurfaceRenderSession {
         &self.renderer
     }
 
-    pub fn geometry_path(&self) -> GeometryPath {
-        self.renderer.geometry_path()
-    }
-
-    /// Switches the shared renderer and presenter to a different geometry
-    /// path (experimental A/B benchmark knob; default remains
-    /// [`GeometryPath::SortedIndexDirect`]).
-    pub fn set_geometry_path(&mut self, path: GeometryPath) -> Result<(), RendererError> {
-        if path != GeometryPath::SortedIndexDirect && self.order_backend != SurfaceOrderBackend::Cpu
-        {
-            return Err(RendererError::InvalidConfig);
-        }
-        let changed = try_switch_renderer_geometry_path(&mut self.renderer, path, |renderer| {
-            self.presenter.set_geometry_path(path, renderer)
-        })?;
-        if !changed {
-            return Ok(());
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if path == GeometryPath::PagedActiveAtlas {
-            self.disable_async_sort();
-        }
-        self.gpu_order_initialized = false;
-        self.adaptive_policy.reset();
-        self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
-        self.frame_state.force_sort();
-        Ok(())
-    }
-
     pub fn camera(&self) -> Camera {
         self.camera
     }
@@ -765,11 +715,6 @@ impl SurfaceRenderSession {
         if self.order_backend == backend {
             return Ok(());
         }
-        if backend != SurfaceOrderBackend::Cpu
-            && self.geometry_path() != GeometryPath::SortedIndexDirect
-        {
-            return Err(RendererError::InvalidConfig);
-        }
         #[cfg(not(target_arch = "wasm32"))]
         if backend != SurfaceOrderBackend::Cpu && self.async_sort_enabled {
             return Err(RendererError::InvalidConfig);
@@ -777,7 +722,7 @@ impl SurfaceRenderSession {
         let gpu_prepare_error = if backend == SurfaceOrderBackend::Cpu {
             None
         } else {
-            self.presenter.prepare_direct_gpu_order().err()
+            self.presenter.prepare_resident_gpu_order().err()
         };
         let gpu_prepare_failed = match (backend, gpu_prepare_error) {
             (SurfaceOrderBackend::Gpu, Some(error)) => return Err(error.into()),
@@ -902,10 +847,7 @@ impl SurfaceRenderSession {
 
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.async_sort_enabled
-            && self.order_backend == SurfaceOrderBackend::Cpu
-            && self.geometry_path() != GeometryPath::PagedActiveAtlas
-        {
+        if self.async_sort_enabled && self.order_backend == SurfaceOrderBackend::Cpu {
             return self.render_frame_async_sort();
         }
         self.render_frame_sync()
@@ -928,9 +870,7 @@ impl SurfaceRenderSession {
             }
         };
         let mut gpu_failed = false;
-        let mut output = if requested_backend == SurfaceOrderBackendUsed::Gpu
-            && self.geometry_path() == GeometryPath::SortedIndexDirect
-        {
+        let mut output = if requested_backend == SurfaceOrderBackendUsed::Gpu {
             match self.render_gpu_with_plan(plan) {
                 Ok(output) => output,
                 Err(_) => {
@@ -986,7 +926,7 @@ impl SurfaceRenderSession {
         let frame_start = timer_now();
         let render_start = timer_now();
         self.presenter
-            .render_direct_gpu_order(&self.camera, plan.refresh_sort)?;
+            .render_resident_gpu_order(&self.camera, plan.refresh_sort)?;
         let render_submit_ms = timer_elapsed_ms(render_start);
         let frame_wall_ms = timer_elapsed_ms(frame_start);
         let count = self
@@ -1041,37 +981,21 @@ impl SurfaceRenderSession {
         sort_refreshed: bool,
     ) -> Result<SurfaceFrameOutput, RendererError> {
         let frame_start = timer_now();
-        let paged = self.geometry_path() == GeometryPath::PagedActiveAtlas;
-        let mut stats = if paged {
-            FrameStats::zero()
-        } else {
-            self.renderer
-                .build_surface_sorted_indices_with_sort_refresh(&self.camera, plan.refresh_sort)?
-        };
+        let mut stats = self
+            .renderer
+            .build_surface_sorted_indices_with_sort_refresh(&self.camera, plan.refresh_sort)?;
         let render_start = timer_now();
-        let scene = self.renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
-        if paged {
-            self.presenter
-                .render_sorted_indices(scene, &[], &self.camera, true)?;
-            let (visible_count, drawn_count) =
-                paged_surface_counts(scene.len(), self.presenter.instance_count());
-            stats.visible_count = visible_count;
-            stats.drawn_count = drawn_count;
-        } else {
-            self.presenter.render_sorted_indices(
-                scene,
-                self.renderer.current_sorted_indices(),
-                &self.camera,
-                plan.upload_order,
-            )?;
-        }
+        self.presenter.render_sorted_indices(
+            self.renderer.current_sorted_indices(),
+            &self.camera,
+            plan.upload_order,
+        )?;
         let render_submit_ms = timer_elapsed_ms(render_start);
         let frame_wall_ms = timer_elapsed_ms(frame_start);
         stats.frame_ms = frame_wall_ms;
         self.last_stats = stats;
         self.presented_order_backend = SurfaceOrderBackendUsed::Cpu;
-        self.frame_state
-            .finish_frame(plan, paged || plan.upload_order);
+        self.frame_state.finish_frame(plan, plan.upload_order);
         Ok(SurfaceFrameOutput {
             stats,
             timings: SurfaceFrameTimings {
@@ -1079,8 +1003,8 @@ impl SurfaceRenderSession {
                 render_submit_ms,
                 frame_wall_ms,
             },
-            sort_refreshed: paged || sort_refreshed,
-            order_uploaded: paged || plan.upload_order,
+            sort_refreshed,
+            order_uploaded: plan.upload_order,
             async_sort_revision_lag: None,
             stale_async_sort_dropped: false,
             async_sort_scheduled: false,
@@ -1205,10 +1129,6 @@ impl SurfaceRenderSession {
     }
 }
 
-fn paged_surface_counts(source_count: usize, drawn_count: u32) -> (u32, u32) {
-    (u32::try_from(source_count).unwrap_or(u32::MAX), drawn_count)
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn sort_positions_for_camera(
     positions: &[Vec3f],
@@ -1279,10 +1199,9 @@ mod tests {
         ADAPTIVE_REPROBE_INTERVAL, AdaptiveOrderPolicy, AdaptivePhase, AdaptiveTimingEstimate,
         MAX_ASYNC_SORT_REVISION_LAG, SurfaceAdaptiveState, SurfaceFrameState,
         SurfaceOrderBackendUsed, SurfaceSortSchedule, async_order_pose_compatible,
-        async_schedule_threshold, paged_surface_counts, try_switch_renderer_geometry_path,
+        async_schedule_threshold,
     };
-    use crate::{GeometryPath, Renderer};
-    use gsplat_core::{Camera, RendererConfig, SceneBuffers, Vec3f};
+    use gsplat_core::{Camera, Vec3f};
 
     #[test]
     fn sort_schedule_exposes_interval_for_sync_and_async_policies() {
@@ -1291,43 +1210,6 @@ mod tests {
             SurfaceSortSchedule::AsyncLatest { interval: 3 }.interval(),
             3
         );
-    }
-
-    #[test]
-    fn paged_surface_counts_report_source_total_and_active_drawn() {
-        assert_eq!(paged_surface_counts(279_199, 262_144), (279_199, 262_144));
-    }
-
-    #[test]
-    fn failed_presenter_prepare_rolls_renderer_back_to_working_path() {
-        let scene = SceneBuffers {
-            positions: vec![Vec3f::new(0.0, 0.0, 1.0), Vec3f::new(0.1, 0.0, 1.2)],
-            opacity: vec![1.0; 2],
-            scale_xyz: vec![[-3.0; 3]; 2],
-            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 2],
-            color_dc: vec![[0.0; 3]; 2],
-            sh_degree: 0,
-            sh_rest: None,
-        };
-        let mut renderer = Renderer::with_config_for_surface(RendererConfig::default()).unwrap();
-        renderer.load_scene(scene).unwrap();
-        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
-
-        let result = try_switch_renderer_geometry_path(
-            &mut renderer,
-            GeometryPath::PagedActiveAtlas,
-            |prepared| {
-                assert_eq!(prepared.geometry_path(), GeometryPath::PagedActiveAtlas);
-                assert!(prepared.world_covariances.is_none());
-                assert!(prepared.spatial_pages.is_some());
-                Err::<(), _>("injected presenter allocation failure")
-            },
-        );
-
-        assert_eq!(result, Err("injected presenter allocation failure"));
-        assert_eq!(renderer.geometry_path(), GeometryPath::SortedIndexDirect);
-        assert_eq!(renderer.world_covariances.as_ref().map(Vec::len), Some(2));
-        assert!(renderer.spatial_pages.is_none());
     }
 
     #[test]

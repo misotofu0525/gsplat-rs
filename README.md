@@ -8,9 +8,9 @@
 and `wgpu`. The project focuses on a small, verifiable core: bounded PLY
 import, in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and
 example surfaces that validate the stack on desktop, Android, iOS, and browser
-paths without overstating SDK maturity. A bounded SPZ v4 loader and alternate
-Packed/Paged geometry paths are experimental and stay outside the v0.1
-integration contract.
+paths without overstating SDK maturity. A bounded SPZ v4 loader remains
+experimental and outside the v0.1 integration contract; rendering uses one
+resident-scene, sorted-index render pipeline on every platform.
 
 ![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
 
@@ -164,8 +164,8 @@ The current mobile-facing contract is the C ABI in
 - Browser Rust/WASM integration and the local `@gsplat-rs/web` ESM wrapper are
   demonstrated by `examples/web`.
 - The local Web SDK wrapper is built with `bash packages/web/scripts/build.sh`.
-- Not in the v0.1 contract: SPZ consumer wiring, automatic geometry-path
-  selection, scene-from-memory loading, runtime render-mode switching, Maven
+- Not in the v0.1 contract: SPZ consumer wiring, streaming residency,
+  scene-from-memory loading, runtime render-mode switching, Maven
   publishing, multi-ABI Android distribution, and published binary
   SwiftPM/XCFramework or npm distribution.
 

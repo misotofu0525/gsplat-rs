@@ -74,8 +74,8 @@ def matching_scope(left: dict[str, Any], right: dict[str, Any], pair_id: str) ->
     )
     require(
         right["renderer"]["implementation"] == "gsplat-rs"
-        and right["renderer"]["path"] == "wasm_sorted_index_direct",
-        f"{pair_id}: gsplat-rs direct path receipt mismatch",
+        and right["renderer"]["path"] == "resident_sorted_indices",
+        f"{pair_id}: gsplat-rs resident path receipt mismatch",
     )
 
 

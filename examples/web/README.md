@@ -89,9 +89,9 @@ run the same benchmark against
 
 The Rust/WASM Surface path always uses GPU-resident scene data plus compact
 sorted IDs while keeping CPU sorting. Benchmark output reports
-`renderer=wasm_sorted_index_direct`. When motion stops, leave the page
+`renderer=resident_sorted_indices`. When motion stops, leave the page
 visible for at least three frames and confirm the canvas remains non-black with
-non-zero Visible/Drawn counts; this guards the direct-path cached-redraw
+non-zero Visible/Drawn counts; this guards the resident-path cached-redraw
 regression.
 
 ## Scope
@@ -110,7 +110,7 @@ regression.
   and routes renderer creation through `packages/web/src/index.js` before
   falling back to the WebGL2 point-splat path.
 - Supports benchmark orbit runs with `sort_interval` A/B checks.
-- Uses resident scene buffers plus direct sorted-index rendering whenever the
+- Uses resident scene buffers plus sorted-index rendering whenever the
   Rust/WASM Surface path is active.
 - Renders a WebGL2 point-splat preview rather than the full `wgpu` ellipse
   pipeline when the generated wasm package is missing or cannot create a

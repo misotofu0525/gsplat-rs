@@ -126,7 +126,7 @@ pub struct ResourcePreflight {
     pub storage_binding_limit_bytes: u64,
     pub max_buffer_size_bytes: u64,
     pub limiting_resource: String,
-    pub max_direct_splats: u64,
+    pub max_resident_splats: u64,
     pub remediation: String,
     pub requirements: Vec<ResourceRequirement>,
 }
@@ -649,7 +649,7 @@ mod tests {
             },
             renderer: Renderer {
                 implementation: "gsplat-rs".to_owned(),
-                path: "sorted_index_direct".to_owned(),
+                path: "resident_sorted_indices".to_owned(),
                 backend: "test".to_owned(),
                 sort_policy: "cpu_every_frame".to_owned(),
                 resource_preflight: None,

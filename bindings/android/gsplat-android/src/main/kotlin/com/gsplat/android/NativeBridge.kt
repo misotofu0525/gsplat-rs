@@ -32,16 +32,6 @@ object NativeBridge {
     ): Long
 
     @JvmStatic
-    external fun createSurfaceRendererWithGeometryPath(
-        surface: Surface,
-        datasetPath: String,
-        width: Int,
-        height: Int,
-        geometryPath: Int,
-        outError: IntArray
-    ): Long
-
-    @JvmStatic
     external fun resizeSurfaceRenderer(nativeHandle: Long, width: Int, height: Int): Int
 
     @JvmStatic
@@ -49,9 +39,6 @@ object NativeBridge {
 
     @JvmStatic
     external fun setSurfaceAsyncSortEnabled(nativeHandle: Long, enabled: Boolean): Int
-
-    @JvmStatic
-    external fun setSurfaceGeometryPath(nativeHandle: Long, path: Int): Int
 
     @JvmStatic
     external fun setSurfaceFrameLatency(nativeHandle: Long, latency: Int): Int
