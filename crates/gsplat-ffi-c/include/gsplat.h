@@ -96,6 +96,11 @@ int32_t gsplat_context_create(GsplatConfig config, GsplatContext **out_ctx);
 void gsplat_context_destroy(GsplatContext *ctx);
 int32_t gsplat_context_set_camera(GsplatContext *ctx, GsplatCamera camera);
 int32_t gsplat_context_set_auto_camera(GsplatContext *ctx);
+/*
+ * Load a whole-scene 3DGS PLY or Niantic SPZ v4 file. Format comes from the
+ * extension (`.ply`, `.spz`) or, if the extension is absent or unknown, from
+ * file magic. Decode produces one resident scene; this is not streaming.
+ */
 int32_t gsplat_context_load_scene_path(GsplatContext *ctx, const char *path);
 int32_t gsplat_context_render_frame(GsplatContext *ctx);
 int32_t gsplat_context_get_stats(const GsplatContext *ctx, GsplatStats *out_stats);

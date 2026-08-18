@@ -18,7 +18,7 @@ That writes:
 The wrapper exposes:
 
 - `initGsplatWeb()` for loading the wasm-bindgen module
-- `createGsplatRenderer()` for creating a canvas renderer from PLY bytes
+- `createGsplatRenderer()` for creating a canvas renderer from PLY or SPZ v4 bytes
 - `createGsplatRendererFromUrl()` for fetch-and-render flows
 - `GsplatWebRenderer` for camera controls, resize, stats, and disposal
 - GPU-resident sorted-index rendering; `rasterPath()` reports

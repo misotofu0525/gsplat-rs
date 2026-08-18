@@ -123,7 +123,7 @@ name = "bench-runner"
 version = "0.1.3"
 dependencies = [
  "gsplat-core",
- "gsplat-io-ply",
+ "gsplat-io",
  "gsplat-render-wgpu",
  "serde",
  "serde_json",
@@ -437,7 +437,7 @@ name = "desktop-example"
 version = "0.1.3"
 dependencies = [
  "gsplat-core",
- "gsplat-io-ply",
+ "gsplat-io",
  "gsplat-render-wgpu",
  "png",
  "pollster",
@@ -709,9 +709,19 @@ name = "gsplat-ffi-c"
 version = "0.1.3"
 dependencies = [
  "gsplat-core",
- "gsplat-io-ply",
+ "gsplat-io",
  "gsplat-render-wgpu",
  "wgpu",
+]
+
+[[package]]
+name = "gsplat-io"
+version = "0.1.3"
+dependencies = [
+ "gsplat-core",
+ "gsplat-io-ply",
+ "gsplat-io-spz",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -761,7 +771,7 @@ name = "gsplat-web"
 version = "0.1.3"
 dependencies = [
  "gsplat-core",
- "gsplat-io-ply",
+ "gsplat-io",
  "gsplat-render-wgpu",
  "js-sys",
  "wasm-bindgen",

@@ -2,7 +2,7 @@ use gsplat_core::{
     Camera, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR, GSPLAT_API_VERSION_MINOR, RenderMode,
     RendererConfig, SceneBuffers, Vec3f,
 };
-use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
+use gsplat_io::parse_scene_bytes;
 use gsplat_render_wgpu::{
     Renderer, ResidentStorageProfile, SurfaceFrameTimings, SurfaceOrderBackend, SurfacePresenter,
     SurfaceRenderSession,
@@ -43,7 +43,7 @@ async fn create_renderer_for_surface(
     storage_profile: Option<&str>,
 ) -> Result<GsplatWebRenderer, JsValue> {
     let raw = ply_bytes.to_vec();
-    let loaded = parse_ply_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
+    let loaded = parse_scene_bytes(&raw).map_err(|err| js_error(err.to_string()))?;
     let summary = loaded.summary;
     let mut renderer = Renderer::with_config_for_surface(RendererConfig {
         width,
@@ -79,7 +79,7 @@ pub struct GsplatWebRenderer {
     session: SurfaceRenderSession,
     camera_control: SurfaceCameraControl,
     camera_override: Option<Camera>,
-    summary: PlySceneSummary,
+    summary: gsplat_io::SceneSummary,
 }
 
 #[wasm_bindgen]
@@ -247,6 +247,7 @@ impl GsplatWebRenderer {
         set_u32(&object, "gaussians", self.summary.gaussians as u32)?;
         set_u32(&object, "shDegree", self.summary.sh_degree as u32)?;
         set_bool(&object, "hasShRest", self.summary.has_sh_rest)?;
+        set_string(&object, "format", self.summary.format.as_str())?;
         Ok(object.into())
     }
 
@@ -486,6 +487,10 @@ fn set_u32(object: &Object, key: &str, value: u32) -> Result<(), JsValue> {
 
 fn set_bool(object: &Object, key: &str, value: bool) -> Result<(), JsValue> {
     Reflect::set(object, &JsValue::from_str(key), &JsValue::from_bool(value)).map(|_| ())
+}
+
+fn set_string(object: &Object, key: &str, value: &str) -> Result<(), JsValue> {
+    Reflect::set(object, &JsValue::from_str(key), &JsValue::from_str(value)).map(|_| ())
 }
 
 fn parse_storage_profile(token: Option<&str>) -> Result<ResidentStorageProfile, JsValue> {

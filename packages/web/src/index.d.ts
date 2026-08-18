@@ -24,6 +24,7 @@ export interface GsplatApiVersion {
 
 export interface CreateRendererOptions {
   canvas: HTMLCanvasElement;
+  /** Whole-scene PLY or Niantic SPZ v4 bytes. */
   plyBytes: Uint8Array | ArrayBuffer | ArrayBufferView;
   width?: number;
   height?: number;
@@ -45,6 +46,8 @@ export interface GsplatSceneSummary {
   gaussians: number;
   shDegree: number;
   hasShRest: boolean;
+  /** `ply` or `spz-v4`. */
+  format?: string;
 }
 
 export interface GsplatSurfaceSize {

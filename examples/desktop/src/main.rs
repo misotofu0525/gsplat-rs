@@ -14,7 +14,7 @@ use std::{
 use gsplat_core::{Camera, RenderMode, RendererConfig, Vec3f};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_core::{CameraIntrinsics, CameraPose};
-use gsplat_io_ply::load_ply;
+use gsplat_io::load_scene_path;
 use gsplat_render_wgpu::Renderer;
 #[cfg(feature = "interactive-viewer")]
 use gsplat_render_wgpu::{SurfacePresenter, SurfaceRenderSession};
@@ -144,7 +144,7 @@ impl Args {
 
 fn usage() -> String {
     let lines = [
-        "usage: cargo run -p desktop-example -- [dataset.ply] [flags]",
+        "usage: cargo run -p desktop-example -- [dataset.ply|.spz] [flags]",
         "",
         "flags:",
         "  --frames N       render N frames (default: 1)",
@@ -160,7 +160,7 @@ fn usage() -> String {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let loaded = load_ply(Path::new(&args.dataset_path)).map_err(|err| err.to_string())?;
+    let loaded = load_scene_path(Path::new(&args.dataset_path)).map_err(|err| err.to_string())?;
 
     let mut renderer = if args.interactive {
         Renderer::with_config_for_surface(args.config)

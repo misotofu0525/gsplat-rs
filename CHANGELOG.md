@@ -10,8 +10,10 @@ and this project adheres to
 
 ### Added
 
-- Added an experimental, bounded Niantic SPZ v4 loader with cancellation,
-  coordinate/SH conversion, and isolated source-residency helpers.
+- Promoted Niantic SPZ v4 whole-scene import through `gsplat-io`. Desktop,
+  bench-runner, `gsplat_context_load_scene_path`, Android/iOS Surface
+  path-create, and wasm `createRenderer` accept `.ply` / `.spz` (or magic).
+  This is still one resident `SceneBuffers` after decode, not streaming.
 - Added versioned benchmark artifacts, dataset manifests, a shared camera
   trace contract, extraction tools for Web/Android/iOS, and a pinned
   PlayCanvas comparison harness with paired statistics and SSIM checks.

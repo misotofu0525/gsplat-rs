@@ -14,8 +14,8 @@
 ## Runtime Topology
 
 - Core data types live in `crates/gsplat-core`.
-- Stable scene import starts in `crates/gsplat-io-ply`; the isolated
-  experimental SPZ v4 loader lives in `crates/gsplat-io-spz`.
+- Stable scene import starts in `crates/gsplat-io`, which dispatches to
+  `crates/gsplat-io-ply` or `crates/gsplat-io-spz`.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
   `lib.rs` owns `Renderer` and public re-exports. Focused internal modules
@@ -62,17 +62,18 @@
 
 - PLY render flow:
   starts at external `.ply` data or `tests/datasets/minimal_ascii.ply`
-  passes through the bounded default or explicit `PlyLoadLimits` APIs in
-  `crates/gsplat-io-ply/src/lib.rs`
+  passes through `crates/gsplat-io/src/lib.rs` into `gsplat-io-ply`
   continues into `crates/gsplat-render-wgpu/src/lib.rs`
   is exercised by `examples/desktop/src/main.rs`, `tools/bench-runner/src/main.rs`, and `crates/gsplat-ffi-c/src/lib.rs`
 
-- Experimental SPZ import flow:
-  starts from plaintext-header Niantic SPZ v4 bytes
-  passes through bounded/cancellable APIs in `crates/gsplat-io-spz/src/lib.rs`
+- SPZ v4 whole-scene import flow:
+  starts from plaintext-header Niantic SPZ v4 bytes or `.spz` paths
+  passes through `crates/gsplat-io/src/lib.rs` into bounded APIs in
+  `crates/gsplat-io-spz/src/lib.rs`
   converts RUB positions, rotations, and SH data into runtime RUF
-  produces the same validated `SceneBuffers` shape as PLY, but currently has
-  no C, Web, mobile, or default application consumer
+  produces the same validated `SceneBuffers` shape as PLY
+  is exercised by desktop/bench-runner/C path load/wasm `createRenderer`
+  this is resident whole-scene import, not streaming or LOD
 
 - Renderer construction flow:
   native offscreen `Renderer::new` and `Renderer::with_config` acquire a GPU
@@ -137,8 +138,9 @@
 
 - Web WASM renderer flow:
   starts at browser JavaScript that imports the local `packages/web` wrapper or generated `gsplat-web` wasm package
-  passes an `HtmlCanvasElement`, PLY bytes, and dimensions through `wasm-bindgen`
-  parses the PLY with `gsplat-io-ply::parse_ply_bytes`
+  passes an `HtmlCanvasElement`, PLY or SPZ v4 bytes, and dimensions through
+  `wasm-bindgen`
+  parses the scene with `gsplat-io::parse_scene_bytes`
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
   hands both objects to `SurfaceRenderSession`, so the browser wrapper does not
@@ -160,7 +162,7 @@
   imports generated `examples/web/pkg/gsplat_web.js` when present, routes it
   through `packages/web/src/index.js`, and attempts the
   Rust/WASM Surface renderer first
-  fetches or uploads a `.ply` file in the browser
+  fetches or uploads a `.ply` or `.spz` file in the browser
   parses ASCII or binary PLY data into frontend buffers
   applies the same RDF-to-RUF Y-axis flip, DC color, and opacity conventions as the Rust import/render path
   CPU-sorts visible indices back-to-front and presents a WebGL2 point-splat preview
@@ -185,8 +187,9 @@
 - CPU depth sorting is shared by the release-gated resident geometry pipeline
   across Web, desktop, Android, and Apple. Projection and SH evaluation stay on
   the GPU.
-- The SPZ loader is an experimental import component, not part of the v0.1 C,
-  Web, or mobile integration contract.
+- The SPZ v4 parser remains in `gsplat-io-spz`; product loaders consume it
+  through `gsplat-io` as whole-scene import. Streaming/LOD is a later
+  architecture.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
 - Mobile examples are integration validators. Android and Apple packaging live
   under `bindings/`, but neither path is a published product SDK yet.
@@ -208,6 +211,7 @@
   CPU/GPU order policy
 - `crates/gsplat-render-wgpu/src/surface_async.rs`: native async CPU sort worker
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
+- `crates/gsplat-io/src/lib.rs`: PLY / SPZ v4 whole-scene import facade
 - `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
 - `crates/gsplat-web/src/`: browser `wasm-bindgen` API over the shared Surface renderer
@@ -223,8 +227,8 @@
 - Read first for renderer changes: `crates/gsplat-render-wgpu/src/lib.rs`
   (orchestration) and `resident.rs` / `project.rs` / `quantized.rs` /
   `preprocess.rs` / `math.rs` for the matching internal stage
-- Read first for import changes: `crates/gsplat-io-ply/src/lib.rs` or
-  `crates/gsplat-io-spz/src/lib.rs`, depending on the format
+- Read first for import changes: `crates/gsplat-io/src/lib.rs`, then
+  `crates/gsplat-io-ply/src/lib.rs` or `crates/gsplat-io-spz/src/lib.rs`
 - Read first for native integration changes: `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`
 - Read first for verification flow: `VERIFICATION.md`
 - Read first for release/tag changes: `../RELEASING.md`

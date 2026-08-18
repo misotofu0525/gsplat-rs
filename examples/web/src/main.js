@@ -26,6 +26,7 @@ const DEFAULT_FRAME_BUDGET_MS = 1000 / 60;
 const DATASETS = {
   showcase: "/tests/datasets/external/wakufactory_kitune/kitune1.ply",
   minimal: "/tests/datasets/minimal_ascii.ply",
+  minimalSpz: "/tests/datasets/minimal_v4_degree0.spz",
   flowers: "/tests/datasets/external/nvidia_flowers_1/flowers_1/flowers_1.ply",
   diagnostic: "generated:raster_diagnostic_v1",
 };
@@ -120,6 +121,7 @@ const els = {
   canvas: document.getElementById("viewport"),
   loadShowcase: document.getElementById("loadShowcase"),
   loadMinimal: document.getElementById("loadMinimal"),
+  loadMinimalSpz: document.getElementById("loadMinimalSpz"),
   loadFlowers: document.getElementById("loadFlowers"),
   fileInput: document.getElementById("fileInput"),
   resetCamera: document.getElementById("resetCamera"),
@@ -409,6 +411,12 @@ async function createWasmRenderer(scene) {
     const summary = renderer.sceneSummary();
     const surface = renderer.surfaceSize();
     state.surfaceSizeLabel = `${surface.width}x${surface.height}`;
+    if (Number.isFinite(summary.gaussians)) {
+      scene.count = summary.gaussians;
+    }
+    if (Number.isFinite(summary.shDegree)) {
+      scene.shDegree = summary.shDegree;
+    }
     els.gpuStatus.textContent = "wgpu";
     els.gaussianCount.textContent = formatNumber(summary.gaussians ?? scene.count);
     els.shDegree.textContent = String(summary.shDegree ?? scene.shDegree);
@@ -418,7 +426,9 @@ async function createWasmRenderer(scene) {
   } catch (error) {
     state.wasmUnavailableReason = compactMessage(error);
     disposeWasmRenderer();
-    ensureFallbackRenderer();
+    if (!scene.requiresWasm) {
+      ensureFallbackRenderer();
+    }
     updateBackendControls();
     setStatus(`state=wasm_create_failed fallback=webgl error=${state.wasmUnavailableReason}`);
     return false;
@@ -452,6 +462,9 @@ function bindEvents() {
     void loadDataset(DATASETS.showcase, "kitune1.ply"),
   );
   els.loadMinimal.addEventListener("click", () => void loadDataset(DATASETS.minimal, "minimal_ascii.ply"));
+  els.loadMinimalSpz?.addEventListener("click", () =>
+    void loadDataset(DATASETS.minimalSpz, "minimal_v4_degree0.spz"),
+  );
   els.loadFlowers.addEventListener("click", () => void loadDataset(DATASETS.flowers, "flowers_1.ply"));
   els.fileInput.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
@@ -680,12 +693,14 @@ async function loadDataset(path, name, options = {}) {
     const bytes = await readResponseBytes(response, name);
     const datasetSha256 = await sha256Hex(bytes);
     setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
-    const scene = parsePly(bytes, name, path);
+    const scene = decodeScene(bytes, name, path);
     scene.sourceBytes = bytes.byteLength;
     scene.sourceSha256 = datasetSha256;
     setLoadingProgress(
       "Building the scene",
-      `${formatNumber(scene.count)} Gaussians ready for the GPU.`,
+      scene.requiresWasm
+        ? "SPZ v4 will decode in the wasm renderer."
+        : `${formatNumber(scene.count)} Gaussians ready for the GPU.`,
       0.86,
     );
     await applyScene(scene);
@@ -707,24 +722,27 @@ async function loadDataset(path, name, options = {}) {
 }
 
 async function loadFile(file) {
-  setLoadingProgress(`Opening ${file.name}`, "Reading the local PLY in your browser.", 0.12);
+  setLoadingProgress(`Opening ${file.name}`, "Reading the local scene in your browser.", 0.12);
   setStatus(`state=loading dataset=${file.name}`);
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const datasetSha256 = await sha256Hex(bytes);
     setLoadingProgress("Reading captured light", `${formatBytes(bytes.byteLength)} received.`, 0.76);
-    const scene = parsePly(bytes, file.name, `browser:${file.name}`);
+    const scene = decodeScene(bytes, file.name, `browser:${file.name}`);
     scene.sourceBytes = bytes.byteLength;
     scene.sourceSha256 = datasetSha256;
     await applyScene(scene);
   } catch (error) {
     setStatus(`state=parse_failed dataset=${file.name} error=${compactMessage(error)}`);
-    setLoadingProgress("PLY could not open", compactMessage(error), 0);
+    setLoadingProgress("Scene could not open", compactMessage(error), 0);
     window.setTimeout(hideLoading, 1400);
   }
 }
 
 async function applyScene(scene) {
+  if (scene.requiresWasm && !state.wasmModule) {
+    throw new Error("SPZ v4 requires the wasm renderer");
+  }
   state.scene = scene;
   state.datasetPath = scene.sourcePath;
   state.frameCounter = 0;
@@ -747,11 +765,18 @@ async function applyScene(scene) {
 
   if (state.wasmModule) {
     setLoadingProgress("Uploading to the GPU", "Preparing the realtime surface.", 0.92);
-    await createWasmRenderer(scene);
+    const ok = await createWasmRenderer(scene);
+    if (scene.requiresWasm && !ok) {
+      throw new Error(state.wasmUnavailableReason || "SPZ wasm renderer failed");
+    }
   } else {
     ensureFallbackRenderer();
     updateBackendControls();
   }
+
+  els.gaussianCount.textContent = formatNumber(scene.count);
+  els.shDegree.textContent = String(scene.shDegree);
+  els.sceneMeta.textContent = `${formatNumber(scene.count)} gaussians · ${formatLabel(scene.format)}`;
 
   setStatus(`state=scene_ready backend=${usingWasm() ? "wasm" : "webgl"}`);
   setLoadingProgress("Scene ready", "Drag anywhere to explore.", 1);
@@ -764,6 +789,43 @@ async function applyScene(scene) {
       startBenchmark();
     }
   }
+}
+
+function decodeScene(bytes, name, sourcePath) {
+  const spzByName = typeof name === "string" && name.toLowerCase().endsWith(".spz");
+  if (spzByName || isSpzBytes(bytes)) {
+    if (spzByName && !isSpzBytes(bytes)) {
+      throw new Error("file extension is .spz but the payload is not SPZ v4");
+    }
+    return allocateSpzScene(bytes, name, sourcePath);
+  }
+  return parsePly(bytes, name, sourcePath);
+}
+
+function isSpzBytes(bytes) {
+  return bytes.length >= 4
+    && bytes[0] === 0x4e
+    && bytes[1] === 0x47
+    && bytes[2] === 0x53
+    && bytes[3] === 0x50;
+}
+
+function allocateSpzScene(bytes, name, sourcePath) {
+  return {
+    name,
+    sourcePath,
+    format: "spz_v4",
+    shDegree: 0,
+    rawBytes: bytes,
+    count: 0,
+    positions: new Float32Array(0),
+    colors: new Float32Array(0),
+    alphas: new Float32Array(0),
+    radii: new Float32Array(0),
+    boundsMin: [-1, -1, -1],
+    boundsMax: [1, 1, 1],
+    requiresWasm: true,
+  };
 }
 
 function parsePly(bytes, name, sourcePath) {
@@ -1849,6 +1911,9 @@ function sceneTitle(name) {
   }
   if (name === "minimal_ascii.ply") {
     return "Minimal smoke scene";
+  }
+  if (name === "minimal_v4_degree0.spz") {
+    return "Minimal SPZ v4";
   }
   return name;
 }

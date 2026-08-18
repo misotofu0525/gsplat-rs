@@ -27,9 +27,9 @@ transient research belong under `docs/plans/`.
 
 ## Stable v0.1 Release Boundary
 
-- The stable contract is bounded PLY import into validated in-memory
-  `SceneBuffers`, resident `SortedAlpha` rendering, structured errors, and the
-  small C ABI.
+- The stable contract is bounded PLY or SPZ v4 whole-scene import into
+  validated in-memory `SceneBuffers`, resident `SortedAlpha` rendering,
+  structured errors, and the small C ABI.
 - One resident-scene representation serves every platform. Capacity preflight
   fails explicitly instead of selecting another storage or residency mode.
 - CPU radix ordering is the default production ordering backend. GPU and
@@ -221,9 +221,15 @@ Android, Apple, desktop, and browser adapters.
 
 ### 4. Ecosystem-aligned streaming and level of detail
 
-- Promote the bounded SPZ v4 loader into the product surface: select and
-  verify concrete desktop, C ABI scene-from-memory, mobile, and Web
-  consumers.
+Slice 1 (landed 2026-08-18): promote whole-scene SPZ v4 import through
+`gsplat-io`. Desktop, bench-runner, `gsplat_context_load_scene_path`,
+Android/iOS Surface path-create, and wasm `createRenderer` dispatch `.ply` /
+`.spz` (or magic). This is still one resident `SceneBuffers` after decode.
+
+Remaining in this item:
+
+- C ABI scene-from-memory (`gsplat_context_load_scene_bytes`) is a separate
+  release-boundary decision; path load already accepts `.spz`.
 - Add read support for PlayCanvas Streamed SOG (spatial-tree metadata plus
   chunked payloads) so assets produced by the open `splat-transform`
   toolchain stream directly.
@@ -351,15 +357,17 @@ stability gates are documented in `handbook/VERIFICATION.md` and promoted here.
   polished Apple product API remain future work.
 - Web distribution: npm publication waits for target-browser Surface smoke and
   explicit promotion of the package API.
-- SPZ product integration: select and verify a real desktop, native, or Web
-  consumer before widening public APIs.
+- SPZ product integration: whole-scene path/bytes load is in the import
+  facade. C ABI scene-from-memory, Streamed SOG, and metadata-first streaming
+  remain separate work.
 
 ## Explicitly Not Active Right Now
 
 - A custom internal binary scene/cache format
 - Reintroducing the retired Packed/Paged modes
-- Metadata-first or remote streaming before the resident GPU pipeline and
-  real-dataset evidence matrix are established
+- Metadata-first or remote streaming is ROADMAP item 4 remaining work. Do
+  not disguise whole-scene `SceneBuffers` as streaming, and do not revive
+  Packed/Paged.
 - Additional experimental blending/rendering backends, including sort-free or
   stochastic approximations that change image semantics or require retrained
   assets

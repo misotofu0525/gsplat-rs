@@ -1,0 +1,19 @@
+[package]
+name = "gsplat-io"
+version = "0.1.3"
+description = "PLY and SPZ v4 scene import facade for gsplat-rs."
+readme = "README.md"
+keywords = ["gaussian-splatting", "ply", "spz", "parser"]
+categories = ["parser-implementations", "graphics"]
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gsplat-core = { path = "../gsplat-core", version = "0.1.3" }
+gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.3" }
+gsplat-io-spz = { path = "../gsplat-io-spz", version = "0.1.3" }
+thiserror.workspace = true

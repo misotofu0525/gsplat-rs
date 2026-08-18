@@ -11,7 +11,7 @@ use gsplat_core::{
     Camera, CameraIntrinsics, CameraPose, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR,
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
-use gsplat_io_ply::load_ply;
+use gsplat_io::load_scene_path;
 #[cfg(target_os = "android")]
 use gsplat_render_wgpu::ResidentStorageProfile;
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -456,7 +456,10 @@ pub unsafe extern "C" fn gsplat_context_set_auto_camera(ctx: *mut GsplatContext)
     })
 }
 
-/// Load a scene from a filesystem path.
+/// Load a whole-scene PLY or SPZ v4 file from a filesystem path.
+///
+/// Format comes from the extension (`.ply`, `.spz`) or, if the extension is
+/// absent or unknown, from file magic. This is resident import, not streaming.
 ///
 /// # Safety
 ///
@@ -495,7 +498,7 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
             }
         };
 
-        let loaded = match load_ply(Path::new(path_str)) {
+        let loaded = match load_scene_path(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
                 return ffi_error_display(err.code(), "gsplat_context_load_scene_path", err);
@@ -639,7 +642,7 @@ unsafe fn create_android_surface_renderer(
                 return ffi_error_display(err.code(), operation, err);
             }
         };
-        let loaded = match load_ply(Path::new(path_str)) {
+        let loaded = match load_scene_path(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
                 return ffi_error_display(err.code(), operation, err);
@@ -745,7 +748,7 @@ unsafe fn create_uikit_surface_renderer(
                 return ffi_error_display(err.code(), operation, err);
             }
         };
-        let loaded = match load_ply(Path::new(path_str)) {
+        let loaded = match load_scene_path(Path::new(path_str)) {
             Ok(result) => result,
             Err(err) => {
                 return ffi_error_display(err.code(), operation, err);

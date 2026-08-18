@@ -10,7 +10,7 @@ use artifact::{
     ResourcePreflight, ResourceRequirement,
 };
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_io_ply::load_ply;
+use gsplat_io::load_scene_path;
 use gsplat_render_wgpu::{Renderer, ResidentStorageProfile, SurfaceOrderBackend};
 
 fn main() {
@@ -32,7 +32,7 @@ fn run() -> Result<(), String> {
         .as_ref()
         .map(|_| artifact::file_identity(dataset_path))
         .transpose()?;
-    let loaded = load_ply(dataset_path).map_err(|err| err.to_string())?;
+    let loaded = load_scene_path(dataset_path).map_err(|err| err.to_string())?;
     if let Some(expected) = dataset_identity.as_ref() {
         let actual = artifact::file_identity(dataset_path)?;
         if &actual != expected {

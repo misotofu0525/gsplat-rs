@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 gsplat-core = { path = "../gsplat-core", version = "0.1.3" }
-gsplat-io-ply = { path = "../gsplat-io-ply", version = "0.1.3" }
+gsplat-io = { path = "../gsplat-io", version = "0.1.3" }
 gsplat-render-wgpu = { path = "../gsplat-render-wgpu", version = "0.1.3" }
 js-sys = "0.3.98"
 wasm-bindgen = "0.2.121"

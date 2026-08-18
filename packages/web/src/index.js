@@ -76,7 +76,7 @@ export async function createGsplatRendererFromUrl(options) {
 
   const response = await fetch(url, fetchOptions);
   if (!response.ok) {
-    throw new Error(`failed to fetch PLY: ${response.status} ${response.statusText}`);
+    throw new Error(`failed to fetch scene: ${response.status} ${response.statusText}`);
   }
 
   return createGsplatRenderer({

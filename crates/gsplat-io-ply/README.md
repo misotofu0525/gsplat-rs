@@ -43,8 +43,7 @@ let loaded = load_ply_with_limits(Path::new("scene.ply"), limits)?;
 
 ## Position in the workspace
 
-Produces the `SceneBuffers` consumed by `gsplat-render-wgpu` and exposed
-through `gsplat-ffi-c` and `gsplat-web`.
+Produces the `SceneBuffers` consumed by `gsplat-io` and `gsplat-render-wgpu`.
 
 ## License
 

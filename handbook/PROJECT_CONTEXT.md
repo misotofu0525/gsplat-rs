@@ -26,15 +26,16 @@
 - The workspace builds and tests cleanly on the supported CI paths.
 - `SortedAlpha` remains the only quality-guaranteed render mode.
 - FFI smoke paths and mobile smoke integrations stay working.
-- Untrusted PLY input and the experimental SPZ loader fail with bounded,
-  structured errors before unchecked allocation.
+- Untrusted PLY or SPZ v4 inputs fail with bounded, structured errors before
+  unchecked allocation.
 - Desktop and mobile examples remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
 
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
-- `crates/gsplat-io-spz`: experimental bounded SPZ v4 parsing and scene buffer construction
+- `crates/gsplat-io-spz`: bounded SPZ v4 parsing and scene buffer construction
+- `crates/gsplat-io`: PLY / SPZ v4 whole-scene import facade
 - `crates/gsplat-sort`: CPU radix sort backend and ordering utilities
 - `crates/gsplat-render-wgpu`: resident scene resources, preprocessing, ordering policy, and shared Surface/offscreen rendering
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
@@ -80,6 +81,9 @@ For the broader command matrix, use `VERIFICATION.md`.
   storage is an explicit Rust-only profile with per-degree SH sidecars and
   sample/collector extras on Android and Web. Mobile sort cadence remains
   interval 2 with async sort off (both already on the C ABI / wrappers).
+  Item 4 slice 1 promotes whole-scene SPZ v4 import through `gsplat-io`
+  (desktop, C path load, wasm, mobile path-create). Packed on-disk SPZ is
+  still one resident `SceneBuffers` after decode; it is not streaming.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
@@ -119,8 +123,9 @@ For the broader command matrix, use `VERIFICATION.md`.
   is active in `crates/gsplat-web`, and `packages/web` provides
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the
   v0.1 contract yet.
-- The bounded SPZ v4 loader is isolated in `crates/gsplat-io-spz`; no C, Web,
-  mobile, or default application entrypoint consumes it yet.
+- The bounded SPZ v4 loader is consumed through `gsplat-io` as whole-scene
+  import (path or bytes). Streamed SOG, C ABI scene-from-memory, and LOD are
+  not in this contract.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.
 - Input 3DGS coordinates are treated as `RDF` and converted at load time to runtime `RUF`, including quaternion and SH sign transforms.
 
@@ -133,8 +138,9 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Web external distribution: the GitHub prerelease attaches an npm-compatible
   tarball, but `@gsplat-rs/web` is not published to npm or treated as a stable
   v0.1 public API.
-- SPZ product integration: the loader is tested, but choosing where it enters
-  desktop, C, mobile, or Web APIs remains a separate product decision.
+- SPZ product integration: whole-scene path/bytes load is in the product
+  import facade. C ABI scene-from-memory, Streamed SOG, and metadata-first
+  streaming remain separate decisions.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
   Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app

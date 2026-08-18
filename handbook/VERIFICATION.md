@@ -441,9 +441,9 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   for realtime Surface or touch changes, also run
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
-- If you touch PLY import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`.
-- If you touch SPZ import (`crates/gsplat-io-spz/`), run
-  `cargo test -p gsplat-io-spz` and
+- If you touch PLY/SPZ import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`. For SPZ product loaders also run `cargo test -p gsplat-io`, `bash tests/ffi/run-ffi-smoke.sh tests/datasets/minimal_v4_degree0.spz`, and `cargo run -p desktop-example -- tests/datasets/minimal_v4_degree0.spz --png target/out-spz.png`.
+- If you touch SPZ import (`crates/gsplat-io-spz/` or `crates/gsplat-io/`), run
+  `cargo test -p gsplat-io-spz -p gsplat-io` and
   `cargo test -p gsplat-render-wgpu ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture`.
   Load metrics land under `target/benchmarks/phase-c/`
   (`minimal-spz-vs-ply-load-metrics.json`, `minimal-spz-vs-ply-ttff.json`).

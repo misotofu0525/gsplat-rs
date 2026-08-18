@@ -55,6 +55,11 @@ widening the per-load `SpzLoadLimits` contract.
 - Version 1–3 gzip files and version 4 files with extension ILV records are
   rejected explicitly.
 
+## Position in the workspace
+
+Product loaders go through `gsplat-io`. This crate remains the SPZ v4 parser
+and the home of `SourceResidencyCaches`. Whole-scene decode is not streaming.
+
 ## Format and license
 
 SPZ is an interoperable format from Niantic Labs, distributed under the MIT

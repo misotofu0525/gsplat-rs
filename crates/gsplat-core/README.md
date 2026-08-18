@@ -13,9 +13,9 @@ This crate is dependency-free and defines the vocabulary of the project:
 
 ## Position in the workspace
 
-`gsplat-core` sits at the bottom of the crate graph. `gsplat-io-ply` produces
-`SceneBuffers`, `gsplat-render-wgpu` consumes them, and `gsplat-ffi-c` maps the
-types onto the C ABI.
+`gsplat-core` sits at the bottom of the crate graph. `gsplat-io` produces
+`SceneBuffers` from PLY or SPZ v4, `gsplat-render-wgpu` consumes them, and
+`gsplat-ffi-c` maps the types onto the C ABI.
 
 See the [repository README](https://github.com/misotofu0525/gsplat-rs) for the
 project-level picture.

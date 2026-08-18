@@ -33,7 +33,7 @@ Shader sources live in [`shaders/`](shaders/) and are documented in
 
 ## Position in the workspace
 
-Consumes `gsplat_core::SceneBuffers` (typically produced by `gsplat-io-ply`)
+Consumes `gsplat_core::SceneBuffers` (typically produced by `gsplat-io`)
 and powers `gsplat-ffi-c` (C ABI), `gsplat-web` (WASM), and the example apps.
 
 ## License

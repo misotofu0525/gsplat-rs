@@ -5,12 +5,12 @@
 [![MSRV: 1.93](https://img.shields.io/badge/MSRV-1.93-orange.svg)](rust-toolchain.toml)
 
 `gsplat-rs` is a cross-platform Gaussian Splatting renderer built with Rust
-and `wgpu`. The project focuses on a small, verifiable core: bounded PLY
-import, in-memory scene buffers, `SortedAlpha` rendering, a narrow C ABI, and
-example surfaces that validate the stack on desktop, Android, iOS, and browser
-paths without overstating SDK maturity. A bounded SPZ v4 loader remains
-experimental and outside the v0.1 integration contract; rendering uses one
-resident-scene, sorted-index render pipeline on every platform.
+and `wgpu`. The project focuses on a small, verifiable core: bounded PLY and
+SPZ v4 whole-scene import, in-memory scene buffers, `SortedAlpha` rendering, a
+narrow C ABI, and example surfaces that validate the stack on desktop, Android,
+iOS, and browser paths without overstating SDK maturity. Rendering uses one
+resident-scene, sorted-index render pipeline on every platform. Streaming and
+LOD are not part of this import surface.
 
 ![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
 
@@ -88,8 +88,10 @@ and fall back to the shared Flowers fixture when Kitsune is unavailable.
 
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
-- `crates/gsplat-io-spz`: experimental bounded Niantic SPZ v4 parsing and
-  scene buffer construction
+- `crates/gsplat-io-spz`: bounded Niantic SPZ v4 parsing and scene buffer
+  construction
+- `crates/gsplat-io`: PLY / SPZ v4 whole-scene import facade used by product
+  loaders
 - `crates/gsplat-sort`: CPU radix sort backend
 - `crates/gsplat-render-wgpu`: preprocessing, raster path, Surface presenter,
   and GPU helper APIs
