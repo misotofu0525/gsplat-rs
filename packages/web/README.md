@@ -25,6 +25,8 @@ The wrapper exposes:
   `resident_sorted_indices`
 - optional `storageProfile: "quantized"` on `createGsplatRenderer` for the
   explicit experimental GPU layout; default remains `full-f32`
+- optional `orderBackend: "gpu"` (or `"adaptive"`) on `createGsplatRenderer`
+  for experimental ordering benchmarks; CPU radix remains the default
 - phase-specific frame stats: `renderSubmitMs` and `frameWallMs`;
   `cpuGeometryMs` and `rasterMs` remain zero-valued compatibility fields
 

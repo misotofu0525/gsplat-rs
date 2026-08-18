@@ -70,6 +70,7 @@ pub struct Renderer {
     preprocess_indices: Vec<u32>,
     last_stats: FrameStats,
     storage_profile: ResidentStorageProfile,
+    order_backend: SurfaceOrderBackend,
 }
 
 impl Renderer {
@@ -134,6 +135,7 @@ impl Renderer {
             preprocess_indices: Vec::new(),
             last_stats: FrameStats::zero(),
             storage_profile: ResidentStorageProfile::FullF32,
+            order_backend: SurfaceOrderBackend::Cpu,
         }
     }
 
@@ -154,6 +156,20 @@ impl Renderer {
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
             rasterizer.clear_scene_resources();
         }
+    }
+
+    pub fn order_backend(&self) -> SurfaceOrderBackend {
+        self.order_backend
+    }
+
+    /// Experimental offscreen order backend. `Adaptive` is Surface-only.
+    /// GPU pipelines are created on the first GPU-order frame (warmup).
+    pub fn set_order_backend(&mut self, backend: SurfaceOrderBackend) -> Result<(), RendererError> {
+        if backend == SurfaceOrderBackend::Adaptive {
+            return Err(RendererError::InvalidConfig);
+        }
+        self.order_backend = backend;
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -279,6 +295,14 @@ impl Renderer {
             .as_mut()
             .ok_or(RendererError::GpuRasterizerUnavailable)?;
         rasterizer.ensure_gpu_order().map_err(RendererError::from)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn render_frame_gpu_order_for_test(
+        &mut self,
+        camera: &Camera,
+    ) -> Result<FrameStats, RendererError> {
+        self.render_frame_gpu_order(camera)
     }
 
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
@@ -483,6 +507,9 @@ impl Renderer {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_frame(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
+        if self.order_backend == SurfaceOrderBackend::Gpu {
+            return self.render_frame_gpu_order(camera);
+        }
         if self.gpu_rasterizer.is_none() {
             return Err(RendererError::GpuRasterizerUnavailable);
         }
@@ -500,6 +527,46 @@ impl Renderer {
         let raster_ms = timer_elapsed_ms(raster_start);
 
         Ok(self.record_stats(frame_start, preprocess_ms, sort_ms, raster_ms, drawn_count))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_frame_gpu_order(&mut self, camera: &Camera) -> Result<FrameStats, RendererError> {
+        camera
+            .validate()
+            .map_err(|_| RendererError::InvalidCamera)?;
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_mut()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        let frame_start = timer_now();
+        let raster_start = timer_now();
+        rasterizer.render_resident_gpu_order(
+            self.config,
+            camera,
+            scene,
+            self.world_covariance_terms
+                .as_deref()
+                .ok_or(RendererError::InvalidScene)?,
+            self.alpha_values
+                .as_deref()
+                .ok_or(RendererError::InvalidScene)?,
+            self.storage_profile,
+        )?;
+        let raster_ms = timer_elapsed_ms(raster_start);
+        // GPU order compacts visibility on the GPU; the CPU cannot observe the
+        // compacted count, so both counters report the resident source count.
+        let count = u32::try_from(scene.len()).unwrap_or(u32::MAX);
+        let stats = FrameStats {
+            frame_ms: timer_elapsed_ms(frame_start),
+            preprocess_ms: 0.0,
+            sort_ms: 0.0,
+            raster_ms,
+            visible_count: count,
+            drawn_count: count,
+        };
+        self.last_stats = stats;
+        Ok(stats)
     }
 
     #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1120,6 +1187,186 @@ mod tests {
         renderer
             .ensure_resident_gpu_order_for_test()
             .expect("quantized GPU order should initialize");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn assert_cpu_gpu_order_image_parity(
+        scene: SceneBuffers,
+        camera: &Camera,
+        size: u32,
+        label: &str,
+        profile: ResidentStorageProfile,
+    ) {
+        let Some(mut renderer) = test_renderer(test_config(size), label) else {
+            return;
+        };
+        renderer.set_storage_profile(profile);
+        renderer.load_scene(scene).unwrap();
+        renderer.render_frame(camera).unwrap();
+        let cpu = renderer.readback_rgba8().unwrap();
+        renderer
+            .render_frame_gpu_order_for_test(camera)
+            .unwrap_or_else(|error| panic!("{label} GPU order render: {error}"));
+        let gpu = renderer.readback_rgba8().unwrap();
+        let metrics = rgba_image_parity_metrics(&cpu, &gpu);
+        let ssim = ssim_luma_srgb_window8(&cpu, &gpu, size, size);
+        eprintln!(
+            "{label} ({profile:?}): mean_abs_rgb={:.6} ssim={ssim:.6} max_abs_rgb={:.6}",
+            metrics.mean_abs_rgb, metrics.max_abs_rgb
+        );
+        assert!(
+            ssim >= 0.99,
+            "{label} CPU vs GPU-order SSIM {ssim} below 0.99"
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 2.0 / 255.0,
+            "{label} mean abs RGB {:.6} exceeded 2/255",
+            metrics.mean_abs_rgb
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn empty_scene() -> SceneBuffers {
+        SceneBuffers {
+            positions: vec![],
+            opacity: vec![],
+            scale_xyz: vec![],
+            rotation_xyzw: vec![],
+            color_dc: vec![],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn near_far_mixed_scene() -> SceneBuffers {
+        SceneBuffers {
+            positions: vec![
+                Vec3f::new(0.0, 0.0, -1.0),
+                Vec3f::new(0.0, 0.0, 1.5),
+                Vec3f::new(0.0, 0.0, 50.0),
+            ],
+            opacity: vec![0.9, 0.95, 0.8],
+            scale_xyz: vec![[-1.2, -1.2, -1.2], [-1.1, -1.3, -1.2], [-1.0, -1.0, -1.0]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; 3],
+            color_dc: vec![[0.6, 0.1, 0.1], [0.1, 0.5, 0.2], [0.2, 0.2, 0.6]],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn screen_edge_scene() -> SceneBuffers {
+        SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.5), Vec3f::new(20.0, 0.0, 1.5)],
+            opacity: vec![0.95, 0.95],
+            scale_xyz: vec![[-1.2, -1.2, -1.2], [-1.2, -1.2, -1.2]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.2, 0.5, 0.3], [0.8, 0.1, 0.1]],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn duplicate_depth_scene() -> SceneBuffers {
+        SceneBuffers {
+            positions: vec![Vec3f::new(-0.08, 0.0, 1.5), Vec3f::new(0.08, 0.0, 1.5)],
+            opacity: vec![0.85, 0.85],
+            scale_xyz: vec![[-1.0, -1.0, -1.0], [-1.0, -1.0, -1.0]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.7, 0.1, 0.1], [0.1, 0.1, 0.7]],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn degenerate_covariance_scene() -> SceneBuffers {
+        SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.5)],
+            opacity: vec![0.9],
+            scale_xyz: vec![[0.0, 0.0, 0.0]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.3, 0.4, 0.2]],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn gpu_order_matches_cpu_image_for_empty_near_far_edge_ties_and_degenerate() {
+        let camera = Camera::default();
+        let mut near_far_camera = camera;
+        near_far_camera.intrinsics.far_plane = 10.0;
+        let cases = [
+            (empty_scene(), camera, "empty"),
+            (near_far_mixed_scene(), near_far_camera, "near-far"),
+            (screen_edge_scene(), camera, "screen-edge"),
+            (duplicate_depth_scene(), camera, "duplicate-depth"),
+            (degenerate_covariance_scene(), camera, "degenerate-cov"),
+            (build_degree_three_scene(), camera, "degree-3"),
+        ];
+        for (scene, camera, label) in cases {
+            scene.validate().unwrap();
+            assert_cpu_gpu_order_image_parity(
+                scene,
+                &camera,
+                64,
+                label,
+                ResidentStorageProfile::FullF32,
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quantized_gpu_order_matches_quantized_cpu_image() {
+        assert_cpu_gpu_order_image_parity(
+            build_degree_three_scene(),
+            &Camera::default(),
+            64,
+            "quantized degree-3",
+            ResidentStorageProfile::Quantized,
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn gpu_order_matches_cpu_image_on_real_scenes_when_present() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/datasets");
+        let datasets = [
+            (
+                "Kitsune",
+                root.join("external/wakufactory_kitune/kitune1.ply"),
+            ),
+            (
+                "Flowers",
+                root.join("external/nvidia_flowers_1/flowers_1/flowers_1.ply"),
+            ),
+        ];
+        let mut ran = 0_u32;
+        for (label, path) in datasets {
+            if !path.is_file() {
+                eprintln!("skipping {label} GPU-order parity; dataset missing");
+                continue;
+            }
+            let loaded = gsplat_io_ply::load_ply(&path)
+                .unwrap_or_else(|error| panic!("load {label} at {}: {error}", path.display()));
+            let camera = orbit_camera_for_scene(&loaded.scene, test_config(128), 0.0);
+            assert_cpu_gpu_order_image_parity(
+                loaded.scene,
+                &camera,
+                128,
+                label,
+                ResidentStorageProfile::FullF32,
+            );
+            ran += 1;
+        }
+        if ran == 0 {
+            eprintln!("no local real scenes available for GPU-order parity");
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

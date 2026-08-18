@@ -90,6 +90,11 @@ run the same benchmark against
 resident layout on the Rust/WASM path; the default remains `full-f32`. It is
 an example/collector extra, not a published Web SDK option. The headless
 collector accepts `GSPLAT_STORAGE_PROFILE=quantized`.
+`gsplat_surface_order_backend=gpu` (or `adaptive`) selects the experimental
+ordering backend the same way; CPU radix remains the default and the headless
+collector accepts `GSPLAT_ORDER_BACKEND=gpu`. Synchronous collector timings
+are CPU call/submit walls: a forced-GPU run shows near-zero CPU ordering
+cost by construction and says nothing about GPU-complete frame time.
 
 The Rust/WASM Surface path always uses GPU-resident scene data plus compact
 sorted IDs while keeping CPU sorting. Benchmark output reports

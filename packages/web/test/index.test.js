@@ -39,6 +39,13 @@ function makeNativeRenderer(overrides = {}) {
     storageProfile() {
       return "full-f32";
     },
+    setOrderBackend(backend) {
+      calls.push(["setOrderBackend", backend]);
+    },
+    orderBackend() {
+      const set = calls.filter((call) => call[0] === "setOrderBackend").pop();
+      return set ? set[1] : "cpu";
+    },
     renderFrame() {
       calls.push(["renderFrame"]);
       return {
@@ -223,6 +230,38 @@ test("createGsplatRenderer normalizes bytes and applies render options", async (
   assert.equal(captured.storageProfile, "quantized");
   assert.deepEqual(native.calls[0], ["setSortInterval", 3]);
   assert.equal(native.calls.length, 1);
+});
+
+test("createGsplatRenderer forwards a non-default order backend", async () => {
+  const native = makeNativeRenderer();
+  const module = {
+    async createRenderer() {
+      return native;
+    },
+  };
+
+  const renderer = await createGsplatRenderer({
+    canvas: { width: 320, height: 240 },
+    plyBytes: new Uint8Array([1]),
+    orderBackend: "gpu",
+    module,
+  });
+
+  assert.deepEqual(native.calls, [
+    ["setSortInterval", 2],
+    ["setOrderBackend", "gpu"],
+  ]);
+  assert.equal(renderer.orderBackend(), "gpu");
+
+  await assert.rejects(
+    createGsplatRenderer({
+      canvas: { width: 320, height: 240 },
+      plyBytes: new Uint8Array([1]),
+      orderBackend: "fastest",
+      module,
+    }),
+    RangeError,
+  );
 });
 
 test("createGsplatRenderer uses the resident constructor", async () => {

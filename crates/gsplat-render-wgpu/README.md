@@ -21,7 +21,9 @@ Main entry points:
 
 Internal layout (not a public API split): `math.rs`, `preprocess.rs`,
 `project.rs`, `quantized.rs`, `resident.rs`, `offscreen.rs`, `surface.rs`,
-plus isolated Adaptive/async modules. `ResidentStorageProfile::Quantized` is
+plus isolated Adaptive/async modules. Experimental GPU ordering attaches at
+the existing order/draw stages: shared NDC footprint visibility, compact
+scatter, hierarchical 4-bit radix, and indirect draw. `ResidentStorageProfile::Quantized` is
 an explicit Rust-only GPU layout (32-byte hot record + per-degree u8 SH
 sidecars); the C ABI stays on full-f32. CPU-projected `GpuInstance` helpers
 exist only as a `#[cfg(test)]` conformance oracle.

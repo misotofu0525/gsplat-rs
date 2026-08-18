@@ -4,7 +4,8 @@ use gsplat_core::{
 };
 use gsplat_io_ply::{PlySceneSummary, parse_ply_bytes};
 use gsplat_render_wgpu::{
-    Renderer, ResidentStorageProfile, SurfaceFrameTimings, SurfacePresenter, SurfaceRenderSession,
+    Renderer, ResidentStorageProfile, SurfaceFrameTimings, SurfaceOrderBackend, SurfacePresenter,
+    SurfaceRenderSession,
 };
 use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -212,6 +213,21 @@ impl GsplatWebRenderer {
     #[wasm_bindgen(js_name = storageProfile)]
     pub fn storage_profile(&self) -> String {
         self.session.storage_profile().as_str().to_owned()
+    }
+
+    /// Experimental order-backend token (`cpu`, `gpu`, or `adaptive`). CPU
+    /// radix remains the default; this is a benchmark knob, not a published
+    /// SDK option.
+    #[wasm_bindgen(js_name = setOrderBackend)]
+    pub fn set_order_backend(&mut self, backend: String) -> Result<(), JsValue> {
+        self.session
+            .set_order_backend(parse_order_backend(&backend)?)
+            .map_err(renderer_error)
+    }
+
+    #[wasm_bindgen(js_name = orderBackend)]
+    pub fn order_backend(&self) -> String {
+        self.session.order_backend().as_str().to_owned()
     }
 
     #[wasm_bindgen(js_name = renderFrame)]
@@ -477,6 +493,15 @@ fn parse_storage_profile(token: Option<&str>) -> Result<ResidentStorageProfile, 
         "" | "full-f32" => Ok(ResidentStorageProfile::FullF32),
         "quantized" => Ok(ResidentStorageProfile::Quantized),
         other => Err(js_error(format!("unsupported storage profile: {other}"))),
+    }
+}
+
+fn parse_order_backend(token: &str) -> Result<SurfaceOrderBackend, JsValue> {
+    match token {
+        "" | "cpu" => Ok(SurfaceOrderBackend::Cpu),
+        "gpu" => Ok(SurfaceOrderBackend::Gpu),
+        "adaptive" => Ok(SurfaceOrderBackend::Adaptive),
+        other => Err(js_error(format!("unsupported order backend: {other}"))),
     }
 }
 

@@ -281,6 +281,22 @@ pub(crate) fn encode_project(
     pass.dispatch_workgroups(project_workgroup_count(instance_count), 1, 1);
 }
 
+pub(crate) fn encode_project_indirect(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::ComputePipeline,
+    bind_group: &wgpu::BindGroup,
+    indirect: &wgpu::Buffer,
+    offset: u64,
+) {
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: wgpu_label("gsplat-resident-project-pass"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    pass.dispatch_workgroups_indirect(indirect, offset);
+}
+
 pub(crate) fn create_draw_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: wgpu_label("gsplat-resident-draw-bgl"),

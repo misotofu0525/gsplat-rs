@@ -51,6 +51,15 @@ if (storageProfile !== 'full-f32' && storageProfile !== 'quantized') {
   }));
   process.exit(2);
 }
+const orderBackend = process.env.GSPLAT_ORDER_BACKEND ?? 'cpu';
+if (!['cpu', 'gpu', 'adaptive'].includes(orderBackend)) {
+  console.error(JSON.stringify({
+    status: 'blocked',
+    reason: 'GSPLAT_ORDER_BACKEND must be cpu, gpu, or adaptive',
+    orderBackend
+  }));
+  process.exit(2);
+}
 
 async function findChrome() {
   for (const candidate of chromeCandidates) {
@@ -215,6 +224,7 @@ try {
     gsplat_benchmark_warmup_frames: String(warmup),
     gsplat_surface_sort_interval: '2',
     gsplat_surface_storage_profile: storageProfile,
+    gsplat_surface_order_backend: orderBackend,
     benchmark_yaw_step: qualification ? '0' : '0.001'
   });
   if (dataset) params.set('dataset', dataset);
@@ -246,6 +256,24 @@ try {
     if (manifest.renderer?.backend !== 'webgpu') {
       throw new Error(
         `quantized evidence requires webgpu, got ${JSON.stringify(manifest.renderer?.backend)}`
+      );
+    }
+  }
+  const requestedOrder = manifest.renderer?.order_backend_requested;
+  if (requestedOrder !== orderBackend) {
+    throw new Error(
+      `artifact requested order backend ${JSON.stringify(requestedOrder)}, expected ${JSON.stringify(orderBackend)}`
+    );
+  }
+  if (orderBackend !== 'cpu') {
+    if (manifest.renderer?.path !== 'resident_sorted_indices') {
+      throw new Error(
+        `order-backend evidence requires resident_sorted_indices, got ${JSON.stringify(manifest.renderer?.path)}`
+      );
+    }
+    if (manifest.renderer?.backend !== 'webgpu') {
+      throw new Error(
+        `order-backend evidence requires webgpu, got ${JSON.stringify(manifest.renderer?.backend)}`
       );
     }
   }

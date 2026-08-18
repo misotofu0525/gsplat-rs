@@ -18,6 +18,14 @@ private let showcaseText = UIColor(red: 0.96, green: 0.95, blue: 0.91, alpha: 1)
 private let showcaseMuted = UIColor(red: 0.72, green: 0.70, blue: 0.66, alpha: 1)
 private let showcaseAccent = UIColor(red: 0.83, green: 0.96, blue: 0.45, alpha: 1)
 
+/// Hidden Apple sample-only benchmark knobs exported by `gsplat-ffi-c`; they
+/// are intentionally not part of the published `gsplat.h` surface.
+@_silgen_name("gsplat_apple_benchmark_set_order_backend")
+private func gsplat_apple_benchmark_set_order_backend(
+    _ renderer: OpaquePointer?,
+    _ backend: UInt32
+) -> Int32
+
 private struct RenderCommand {
     var resize: (width: Int, height: Int)?
     var reset: Bool
@@ -41,6 +49,7 @@ struct BenchmarkConfig {
     var sortInterval: UInt32 = 2
     var asyncSort = false
     var frameLatency: UInt32 = 2
+    var orderBackend = "cpu"
 
     static func fromArguments(_ arguments: [String]) -> BenchmarkConfig {
         let args = LaunchArguments(arguments)
@@ -55,6 +64,12 @@ struct BenchmarkConfig {
         config.frameLatency = UInt32(
             min(max(1, args.int("gsplat_surface_frame_latency", default: Int(config.frameLatency))), 4)
         )
+        let orderBackend = args.string(
+            "gsplat_surface_order_backend", default: config.orderBackend
+        ).lowercased()
+        if ["cpu", "gpu", "adaptive"].contains(orderBackend) {
+            config.orderBackend = orderBackend
+        }
         return config
     }
 }
@@ -461,11 +476,17 @@ final class ExampleViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     private func configureRenderer(_ handle: OpaquePointer) -> Int32 {
-        let steps: [(String, Int32)] = [
+        var steps: [(String, Int32)] = [
             ("sort_interval", gsplat_surface_renderer_set_sort_interval(handle, benchmarkConfig.sortInterval)),
             ("async_sort", gsplat_surface_renderer_set_async_sort(handle, benchmarkConfig.asyncSort ? 1 : 0)),
             ("frame_latency", gsplat_surface_renderer_set_frame_latency(handle, benchmarkConfig.frameLatency)),
         ]
+        if benchmarkConfig.orderBackend != "cpu" {
+            let backendCode: UInt32 = benchmarkConfig.orderBackend == "gpu" ? 1 : 2
+            steps.append(
+                ("order_backend", gsplat_apple_benchmark_set_order_backend(handle, backendCode))
+            )
+        }
 
         for (name, rc) in steps where rc != 0 {
             print("IOS_SURFACE_CONFIG_FAILED option=\(name) rc=\(rc) error=\(errorMessage(rc))")

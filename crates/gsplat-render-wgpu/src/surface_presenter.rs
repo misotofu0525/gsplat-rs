@@ -470,6 +470,11 @@ impl SurfacePresenter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let gpu_order = self.resident_scene.gpu_order().ok_or_else(|| {
+            ResidentSceneError::GpuOrderInitialization(
+                "GPU order resources were not initialized".to_owned(),
+            )
+        })?;
         encode_splat_draw_into(
             &mut encoder,
             &SplatDraw {
@@ -480,6 +485,10 @@ impl SurfacePresenter {
                 clear: wgpu::Color::BLACK,
                 vertex_count: 6,
                 instance_count: self.instance_count,
+                indirect: Some((
+                    gpu_order.sorter.indirect_args(),
+                    crate::resident_gpu_order::ORDER_META_DRAW_OFFSET,
+                )),
             },
         );
         self.queue.submit(Some(encoder.finish()));
@@ -511,6 +520,7 @@ impl SurfacePresenter {
                 clear: wgpu::Color::BLACK,
                 vertex_count: 6,
                 instance_count: self.instance_count,
+                indirect: None,
             },
         );
         self.queue.submit(Some(encoder.finish()));

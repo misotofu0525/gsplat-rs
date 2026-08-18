@@ -69,11 +69,17 @@ For the broader command matrix, use `VERIFICATION.md`.
 
 - Keep the day-to-day verification paths passing and the release bar lightweight but real.
 - Expand conformance and perf coverage with real datasets before widening the public API surface.
-- Follow the roadmap execution sequence: GPU-visible compaction, portable
-  radix sorting, and indirect drawing next. Per-splat compute preprocess is
-  on the default path; quantized resident storage is an explicit Rust-only
-  profile with per-degree SH sidecars and sample/collector extras on
-  Android and Web.
+- Follow the roadmap execution sequence: experimental GPU order now
+  compacts visible splats, shares NDC footprint across storage profiles,
+  and draws indirectly. Item 3's device gate closed on 2026-08-18: CPU
+  radix stays the default on Android, desktop Metal, Chrome WebGPU, and
+  iPhone Surface. The GPU path stays experimental, image-exact, and
+  fallback-free. A PlayCanvas-style 16-bit weighted depth key was
+  measured and demoted the same day; production keys stay 32-bit IEEE.
+  Per-splat compute preprocess is on the default path; quantized resident
+  storage is an explicit Rust-only profile with per-degree SH sidecars and
+  sample/collector extras on Android and Web. Mobile sort cadence remains
+  interval 2 with async sort off (both already on the C ABI / wrappers).
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.

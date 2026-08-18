@@ -113,6 +113,7 @@ const state = {
   qualificationDatasetId: null,
   cameraReceipt: null,
   storageProfile: "full-f32",
+  orderBackend: "cpu",
 };
 
 const els = {
@@ -386,6 +387,7 @@ async function createWasmRenderer(scene) {
       height: els.canvas.height,
       sortInterval: Number(els.sortInterval.value),
       storageProfile: state.storageProfile,
+      orderBackend: state.orderBackend,
     });
     state.wasmRenderer = renderer;
     state.backend = "wasm";
@@ -1393,6 +1395,14 @@ function applyUrlConfig() {
   if (storageProfile === "full-f32" || storageProfile === "quantized") {
     state.storageProfile = storageProfile;
   }
+  const orderBackend = (
+    params.get("gsplat_surface_order_backend") ??
+    params.get("order_backend") ??
+    ""
+  ).trim().toLowerCase();
+  if (orderBackend === "cpu" || orderBackend === "gpu" || orderBackend === "adaptive") {
+    state.orderBackend = orderBackend;
+  }
   const dataset = (params.get("dataset") ?? params.get("scene") ?? "").toLowerCase();
   if (dataset === "flowers" || dataset === "flower") {
     state.startDataset = "flowers";
@@ -1502,13 +1512,21 @@ function requestedStorageProfile() {
   return state.storageProfile;
 }
 
+function requestedOrderBackend() {
+  if (usingWasm() && typeof state.wasmRenderer.orderBackend === "function") {
+    return state.wasmRenderer.orderBackend();
+  }
+  return state.orderBackend;
+}
+
 function benchmarkResultLine(benchmark) {
   const averages = legacyAverages(benchmark.collector);
   return (
     `BENCHMARK_RESULT dataset=${state.scene.name} ` +
     `samples=${averages.count} warmup=${benchmark.warmupFrames} ` +
     `sort_interval=${Number(els.sortInterval.value)} ` +
-    `storage_profile=${requestedStorageProfile()} renderer=${wasmRendererLabel()} ` +
+    `storage_profile=${requestedStorageProfile()} order_backend=${requestedOrderBackend()} ` +
+    `renderer=${wasmRendererLabel()} ` +
     `draw_budget=${usingWasm() ? "full" : Number(els.drawBudget.value)} ` +
     `avg_call_ms=${(averages.callMs ?? 0).toFixed(3)} ` +
     `avg_frame_ms=${(averages.frameMs ?? 0).toFixed(3)} ` +
@@ -1576,6 +1594,7 @@ async function emitBenchmarkArtifacts(benchmark) {
       path: rendererPath,
       backend,
       storage_profile_requested: requestedStorageProfile(),
+      order_backend_requested: requestedOrderBackend(),
       sort_policy: `interval_${sortInterval}`,
     },
     timing: {
@@ -1676,6 +1695,7 @@ function buildStatusText() {
     lines.push(`wasm=${state.wasmUnavailableReason}`);
   }
   lines.push(`storage_profile=${requestedStorageProfile()}`);
+  lines.push(`order_backend=${requestedOrderBackend()}`);
   if (state.benchmark?.enabled) {
     lines.push(
       `benchmark=orbit frames=${state.benchmark.frames} warmup=${state.benchmark.warmupFrames}`,

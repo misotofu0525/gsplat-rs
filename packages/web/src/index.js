@@ -42,6 +42,7 @@ export async function createGsplatRenderer(options) {
     height = canvas?.height,
     sortInterval = 2,
     storageProfile = "full-f32",
+    orderBackend = "cpu",
     module,
   } = options ?? {};
 
@@ -49,6 +50,7 @@ export async function createGsplatRenderer(options) {
   assertPositiveInteger(width, "width");
   assertPositiveInteger(height, "height");
   assertStorageProfile(storageProfile);
+  assertOrderBackend(orderBackend);
   const bytes = normalizeBytes(plyBytes);
   const resolvedModule = module ?? loadedModule ?? (await initGsplatWeb());
   const nativeRenderer = await resolvedModule.createRenderer(
@@ -60,6 +62,9 @@ export async function createGsplatRenderer(options) {
   );
   const renderer = new GsplatWebRenderer(nativeRenderer, storageProfile);
   renderer.setSortInterval(sortInterval);
+  if (orderBackend !== "cpu") {
+    renderer.setOrderBackend(orderBackend);
+  }
   return renderer;
 }
 
@@ -187,6 +192,23 @@ export class GsplatWebRenderer {
     return this.#storageProfile;
   }
 
+  setOrderBackend(backend) {
+    const nativeRenderer = this.#requireNativeRenderer();
+    assertOrderBackend(backend);
+    if (typeof nativeRenderer.setOrderBackend !== "function") {
+      throw new TypeError("loaded gsplat module does not support setOrderBackend");
+    }
+    nativeRenderer.setOrderBackend(backend);
+  }
+
+  orderBackend() {
+    const nativeRenderer = this.#requireNativeRenderer();
+    if (typeof nativeRenderer.orderBackend === "function") {
+      return String(nativeRenderer.orderBackend());
+    }
+    return "cpu";
+  }
+
   renderFrame() {
     return normalizeFrameStats(this.#requireNativeRenderer().renderFrame());
   }
@@ -287,6 +309,12 @@ function assertPositiveInteger(value, name) {
 function assertStorageProfile(value) {
   if (value !== "full-f32" && value !== "quantized") {
     throw new RangeError("storageProfile must be full-f32 or quantized");
+  }
+}
+
+function assertOrderBackend(value) {
+  if (value !== "cpu" && value !== "gpu" && value !== "adaptive") {
+    throw new RangeError("orderBackend must be cpu, gpu, or adaptive");
   }
 }
 

@@ -10,7 +10,7 @@ use crate::math::{CameraCovarianceTerms, quat_inverse, quat_to_mat3};
 use crate::project::{
     PROJECTED_RECORD_STRIDE, ProjectBindGroupBuffers, ProjectShBindings, create_draw_bind_group,
     create_project_bind_group, create_project_bind_group_layout, create_project_pipeline,
-    encode_project, project_shader_source, validate_project_dispatch,
+    encode_project, encode_project_indirect, project_shader_source, validate_project_dispatch,
 };
 use crate::quantized::{
     QUANTIZED_SOURCE_STRIDE, QUANTIZED_STORAGE_BUFFERS_PER_STAGE, ResidentStorageProfile,
@@ -525,6 +525,16 @@ impl ResidentSceneResources {
         } else {
             &self.cpu_project_bind_group
         };
+        if use_gpu_order && let Some(order) = &self.gpu_order {
+            encode_project_indirect(
+                encoder,
+                &self.project_pipeline,
+                bind_group,
+                order.sorter.indirect_args(),
+                crate::resident_gpu_order::ORDER_META_DISPATCH_OFFSET,
+            );
+            return;
+        }
         encode_project(encoder, &self.project_pipeline, bind_group, instance_count);
     }
 

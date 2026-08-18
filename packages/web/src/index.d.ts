@@ -30,6 +30,8 @@ export interface CreateRendererOptions {
   sortInterval?: number;
   /** Explicit experimental GPU layout. Default `full-f32`. */
   storageProfile?: "full-f32" | "quantized";
+  /** Experimental order backend for benchmarks. Default `cpu`. */
+  orderBackend?: "cpu" | "gpu" | "adaptive";
   module?: GsplatWebModule;
 }
 
@@ -76,6 +78,8 @@ export class GsplatWebRenderer {
   setSortInterval(interval: number): void;
   rasterPath(): string;
   storageProfile(): "full-f32" | "quantized";
+  setOrderBackend(backend: "cpu" | "gpu" | "adaptive"): void;
+  orderBackend(): "cpu" | "gpu" | "adaptive";
   renderFrame(): GsplatFrameStats;
   sceneSummary(): GsplatSceneSummary;
   surfaceSize(): GsplatSurfaceSize;

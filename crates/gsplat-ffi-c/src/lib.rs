@@ -12,12 +12,14 @@ use gsplat_core::{
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
 use gsplat_io_ply::load_ply;
+#[cfg(target_os = "android")]
+use gsplat_render_wgpu::ResidentStorageProfile;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use gsplat_render_wgpu::SurfaceOrderBackend;
 use gsplat_render_wgpu::{
     Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed, SurfacePresenter,
     SurfaceRenderSession,
 };
-#[cfg(target_os = "android")]
-use gsplat_render_wgpu::{ResidentStorageProfile, SurfaceOrderBackend};
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
 const SURFACE_CAMERA_MIN_DISTANCE_MULTIPLIER: f32 = 0.2;
@@ -979,6 +981,40 @@ pub unsafe extern "C" fn gsplat_surface_renderer_set_async_sort(
     })
 }
 
+/// Shared body for the Android/Apple sample-only forced-backend knobs.
+///
+/// # Safety
+/// `renderer` must be null or a live pointer from a surface-renderer create
+/// call on the same thread/queue that owns it.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+unsafe fn benchmark_set_order_backend(
+    renderer: *mut GsplatSurfaceRenderer,
+    backend: u32,
+    label: &'static str,
+) -> i32 {
+    ffi_catch_i32(label, || {
+        let renderer = match unsafe { renderer.as_mut() } {
+            Some(renderer) => renderer,
+            None => {
+                return ffi_error_display(ErrorCode::InvalidArgument, label, "renderer is null");
+            }
+        };
+        let backend = match backend {
+            0 => SurfaceOrderBackend::Cpu,
+            1 => SurfaceOrderBackend::Gpu,
+            2 => SurfaceOrderBackend::Adaptive,
+            _ => {
+                return ffi_error_display(ErrorCode::InvalidArgument, label, "unsupported backend");
+            }
+        };
+        if let Err(err) = renderer.session.set_order_backend(backend) {
+            return ffi_error_display(err.code(), label, err);
+        }
+        renderer.render_error_logged = false;
+        ffi_ok()
+    })
+}
+
 /// Android sample-only forced backend knob used to collect paired benchmark
 /// evidence without widening the published v0.1 header.
 #[cfg(target_os = "android")]
@@ -987,37 +1023,30 @@ pub unsafe extern "C" fn gsplat_android_benchmark_set_order_backend(
     renderer: *mut GsplatSurfaceRenderer,
     backend: u32,
 ) -> i32 {
-    ffi_catch_i32("gsplat_android_benchmark_set_order_backend", || {
-        let renderer = match unsafe { renderer.as_mut() } {
-            Some(renderer) => renderer,
-            None => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_android_benchmark_set_order_backend: renderer is null",
-                );
-            }
-        };
-        let backend = match backend {
-            0 => SurfaceOrderBackend::Cpu,
-            1 => SurfaceOrderBackend::Gpu,
-            2 => SurfaceOrderBackend::Adaptive,
-            _ => {
-                return ffi_error(
-                    ErrorCode::InvalidArgument,
-                    "gsplat_android_benchmark_set_order_backend: unsupported backend",
-                );
-            }
-        };
-        if let Err(err) = renderer.session.set_order_backend(backend) {
-            return ffi_error_display(
-                err.code(),
-                "gsplat_android_benchmark_set_order_backend",
-                err,
-            );
-        }
-        renderer.render_error_logged = false;
-        ffi_ok()
-    })
+    unsafe {
+        benchmark_set_order_backend(
+            renderer,
+            backend,
+            "gsplat_android_benchmark_set_order_backend",
+        )
+    }
+}
+
+/// Apple sample-only forced backend knob used to collect paired benchmark
+/// evidence without widening the published v0.1 header.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_apple_benchmark_set_order_backend(
+    renderer: *mut GsplatSurfaceRenderer,
+    backend: u32,
+) -> i32 {
+    unsafe {
+        benchmark_set_order_backend(
+            renderer,
+            backend,
+            "gsplat_apple_benchmark_set_order_backend",
+        )
+    }
 }
 
 /// Android sample-only storage-profile knob used to collect paired quantized

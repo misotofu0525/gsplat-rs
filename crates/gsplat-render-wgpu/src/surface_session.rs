@@ -29,6 +29,17 @@ pub enum SurfaceOrderBackend {
     Adaptive,
 }
 
+impl SurfaceOrderBackend {
+    /// Stable CLI/log token. Not part of the C ABI.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+            Self::Adaptive => "adaptive",
+        }
+    }
+}
+
 /// Backend that actually supplied the order presented by one frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceOrderBackendUsed {

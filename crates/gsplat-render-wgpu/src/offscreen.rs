@@ -141,6 +141,7 @@ impl GpuRasterizer {
                 clear: wgpu::Color::TRANSPARENT,
                 vertex_count: 6,
                 instance_count,
+                indirect: None,
             },
         );
         self.queue.submit(Some(encoder.finish()));
@@ -153,6 +154,78 @@ impl GpuRasterizer {
             crate::ResidentSceneError::GpuOrderInitialization("no resident scene".to_owned())
         })?;
         scene.ensure_gpu_order(&self.device)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_resident_gpu_order(
+        &mut self,
+        config: RendererConfig,
+        camera: &Camera,
+        scene: &SceneBuffers,
+        world_covariance_terms: &[CameraCovarianceTerms],
+        alpha_values: &[f32],
+        profile: crate::ResidentStorageProfile,
+    ) -> Result<(), RendererError> {
+        self.ensure_output_target(config.width, config.height)?;
+        if self.resident_scene.is_none() {
+            self.resident_scene = Some(ResidentSceneResources::new(
+                &self.device,
+                &self.resident_bind_group_layout,
+                scene,
+                world_covariance_terms,
+                alpha_values,
+                profile,
+            )?);
+        }
+        let resident_scene = self
+            .resident_scene
+            .as_mut()
+            .ok_or(RendererError::GpuDeviceCreation)?;
+        resident_scene.ensure_gpu_order(&self.device)?;
+        let instance_count = resident_scene.prepare_gpu(
+            &self.device,
+            &self.queue,
+            camera,
+            config.width,
+            config.height,
+        )?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-offscreen-resident-gpu-order-encoder"),
+            });
+        {
+            let gpu_order = resident_scene.gpu_order().ok_or_else(|| {
+                crate::ResidentSceneError::GpuOrderInitialization(
+                    "GPU order resources were not initialized".to_owned(),
+                )
+            })?;
+            gpu_order.sorter.encode(&mut encoder);
+        }
+        resident_scene.encode_project(&mut encoder, instance_count, true);
+        let gpu_order = resident_scene.gpu_order().ok_or_else(|| {
+            crate::ResidentSceneError::GpuOrderInitialization(
+                "GPU order resources were not initialized".to_owned(),
+            )
+        })?;
+        draw_pass::encode_splat_draw_into(
+            &mut encoder,
+            &draw_pass::SplatDraw {
+                pass_label: "gsplat-offscreen-resident-gpu-order-pass",
+                view: &self.output_view,
+                pipeline: &self.resident_pipeline,
+                bind_group: &resident_scene.draw_bind_group,
+                clear: wgpu::Color::TRANSPARENT,
+                vertex_count: 6,
+                instance_count,
+                indirect: Some((
+                    gpu_order.sorter.indirect_args(),
+                    crate::resident_gpu_order::ORDER_META_DRAW_OFFSET,
+                )),
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
     }
 
     pub(crate) fn readback_rgba8(&mut self) -> Result<Vec<u8>, RendererError> {

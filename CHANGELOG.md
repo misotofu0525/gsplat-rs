@@ -35,6 +35,21 @@ and this project adheres to
   select the same layout through a hidden `gsplat_surface_storage_profile`
   extra; the published C ABI stays on full-f32. The Web example/collector
   can select the same layout at wasm Surface create time.
+- Experimental GPU ordering now compacts near/far plus NDC footprint
+  visibility on both full-f32 and quantized keygen, sorts only the
+  compacted count with a two-level hierarchical 4-bit radix scan, and
+  issues indirect sort dispatch plus draw. Host CPU-vs-GPU image parity
+  covers empty, near/far, screen-edge, degenerate covariance,
+  duplicate-depth ties, and exact Kitsune/Flowers renders. The offscreen
+  renderer gains a Rust-only experimental order-backend control
+  (`Renderer::set_order_backend`, `bench-runner --order-backend`) for
+  paired benchmarks, and the Web wasm renderer, example, and headless
+  collector accept the same experimental token
+  (`setOrderBackend` / `gsplat_surface_order_backend` /
+  `GSPLAT_ORDER_BACKEND`). The iOS sample gains the matching hidden
+  Apple knob (`gsplat_apple_benchmark_set_order_backend` plus the
+  `gsplat_surface_order_backend` launch extra). CPU radix stays the
+  default; the published C header is unchanged.
 
 ## [0.1.3] - 2026-07-10
 

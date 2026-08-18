@@ -89,7 +89,10 @@ def adb_args(adb: pathlib.Path | str, serial: str, *args: str) -> list[str]:
 
 
 def build_schedule(
-    backends: Sequence[str], repetitions: int, randomize_order: bool, seed: int
+    backends: Sequence[str],
+    repetitions: int,
+    randomize_order: bool,
+    seed: int,
 ) -> list[RunSpec]:
     rng = random.Random(seed)
     result: list[RunSpec] = []
@@ -442,7 +445,9 @@ def resolve_apk(explicit: pathlib.Path | None = None) -> pathlib.Path:
     return apk
 
 
-def benchmark_launch_args(args: argparse.Namespace, backend: str) -> list[str]:
+def benchmark_launch_args(
+    args: argparse.Namespace, backend: str
+) -> list[str]:
     return [
         "shell",
         "am",
@@ -982,7 +987,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         backends = validate_args(args)
         adb = resolve_adb(args.adb, dry_run=args.dry_run)
         schedule = build_schedule(
-            backends, args.repetitions, args.randomize_order, args.seed
+            backends,
+            args.repetitions,
+            args.randomize_order,
+            args.seed,
         )
         output = (args.output or default_output(args.ply)).expanduser().resolve()
         fresh_output_root(output, dry_run=args.dry_run)

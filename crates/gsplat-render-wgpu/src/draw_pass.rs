@@ -63,6 +63,7 @@ pub(crate) struct SplatDraw<'a> {
     pub(crate) clear: wgpu::Color,
     pub(crate) vertex_count: u32,
     pub(crate) instance_count: u32,
+    pub(crate) indirect: Option<(&'a wgpu::Buffer, u64)>,
 }
 
 pub(crate) fn encode_splat_draw_into(encoder: &mut wgpu::CommandEncoder, draw: &SplatDraw<'_>) {
@@ -85,7 +86,9 @@ pub(crate) fn encode_splat_draw_into(encoder: &mut wgpu::CommandEncoder, draw: &
         });
         pass.set_pipeline(draw.pipeline);
         pass.set_bind_group(0, draw.bind_group, &[]);
-        if draw.instance_count > 0 {
+        if let Some((buffer, offset)) = draw.indirect {
+            pass.draw_indirect(buffer, offset);
+        } else if draw.instance_count > 0 {
             pass.draw(0..draw.vertex_count, 0..draw.instance_count);
         }
     }

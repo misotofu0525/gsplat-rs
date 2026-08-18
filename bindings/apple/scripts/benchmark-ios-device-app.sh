@@ -44,10 +44,15 @@ if [[ -z "$DEVICE_ID" ]]; then
   exit 1
 fi
 
-if [[ ${#DATASET_ARGS[@]} -gt 0 ]]; then
-  bash bindings/apple/scripts/build-ios-device-app.sh "${DATASET_ARGS[@]}"
-else
-  bash bindings/apple/scripts/build-ios-device-app.sh
+if [[ "${IOS_SKIP_BUILD:-0}" != "1" ]]; then
+  if [[ ${#DATASET_ARGS[@]} -gt 0 ]]; then
+    bash bindings/apple/scripts/build-ios-device-app.sh "${DATASET_ARGS[@]}"
+  else
+    bash bindings/apple/scripts/build-ios-device-app.sh
+  fi
+elif [[ ! -d "$ROOT_DIR/target/ios-device-app/GsplatIOSExample.app" ]]; then
+  echo "IOS_SKIP_BUILD=1 but target/ios-device-app/GsplatIOSExample.app is missing" >&2
+  exit 1
 fi
 
 APP_BUNDLE="$ROOT_DIR/target/ios-device-app/GsplatIOSExample.app"

@@ -11,7 +11,7 @@ use artifact::{
 };
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
 use gsplat_io_ply::load_ply;
-use gsplat_render_wgpu::{Renderer, ResidentStorageProfile};
+use gsplat_render_wgpu::{Renderer, ResidentStorageProfile, SurfaceOrderBackend};
 
 fn main() {
     if let Err(err) = run() {
@@ -48,12 +48,16 @@ fn run() -> Result<(), String> {
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
     renderer.set_storage_profile(config.storage_profile);
     renderer
+        .set_order_backend(config.order_backend)
+        .map_err(|err| err.to_string())?;
+    renderer
         .load_scene(loaded.scene)
         .map_err(|err| err.to_string())?;
     println!(
         "resident_storage_profile={}",
         config.storage_profile.as_str()
     );
+    println!("resident_order_backend={}", config.order_backend.as_str());
     print_gpu_metadata(&renderer);
     print_resident_scene_preflight(&renderer)?;
     println!("offscreen_geometry_pipeline=resident_sorted_indices");
@@ -468,7 +472,12 @@ fn artifact_context(
             implementation: "gsplat-rs".to_owned(),
             path: "resident_sorted_indices".to_owned(),
             backend,
-            sort_policy: "cpu_every_frame".to_owned(),
+            sort_policy: match config.order_backend {
+                SurfaceOrderBackend::Gpu => "gpu_every_frame".to_owned(),
+                SurfaceOrderBackend::Cpu | SurfaceOrderBackend::Adaptive => {
+                    "cpu_every_frame".to_owned()
+                }
+            },
             resource_preflight: Some(ResourcePreflight {
                 path: format!("{:?}", preflight.path),
                 splat_count: preflight.splat_count,
@@ -696,6 +705,7 @@ struct BenchConfig {
     rss_growth_limit_kib: u64,
     analysis: Option<SpatialAnalysisConfig>,
     storage_profile: ResidentStorageProfile,
+    order_backend: SurfaceOrderBackend,
 }
 
 impl Default for BenchConfig {
@@ -714,6 +724,7 @@ impl Default for BenchConfig {
             rss_growth_limit_kib: 64 * 1024,
             analysis: None,
             storage_profile: ResidentStorageProfile::FullF32,
+            order_backend: SurfaceOrderBackend::Cpu,
         }
     }
 }
@@ -878,6 +889,17 @@ impl BenchConfig {
                             return Err(
                                 "--storage-profile must be full-f32 or quantized".to_owned()
                             );
+                        }
+                    };
+                }
+                "--order-backend" => {
+                    i += 1;
+                    let value = args.get(i).ok_or("missing value for --order-backend")?;
+                    config.order_backend = match value.as_str() {
+                        "cpu" => SurfaceOrderBackend::Cpu,
+                        "gpu" => SurfaceOrderBackend::Gpu,
+                        _ => {
+                            return Err("--order-backend must be cpu or gpu".to_owned());
                         }
                     };
                 }
@@ -1101,8 +1123,8 @@ mod tests {
     use gsplat_core::{SceneBuffers, Vec3f};
 
     use super::{
-        BenchConfig, ResidentStorageProfile, grid_axis_index, grid_cell_index, merge_max,
-        merge_min, percentile_f32, percentile_index, percentile_u32, scene_bounds,
+        BenchConfig, ResidentStorageProfile, SurfaceOrderBackend, grid_axis_index, grid_cell_index,
+        merge_max, merge_min, percentile_f32, percentile_index, percentile_u32, scene_bounds,
     };
 
     fn scene_with_positions(positions: Vec<Vec3f>) -> SceneBuffers {
@@ -1134,6 +1156,7 @@ mod tests {
         assert_eq!(config.stability_seconds, None);
         assert_eq!(config.rss_growth_limit_kib, 64 * 1024);
         assert!(config.analysis.is_none());
+        assert_eq!(config.order_backend, SurfaceOrderBackend::Cpu);
     }
 
     #[test]
@@ -1197,6 +1220,17 @@ mod tests {
         let err = BenchConfig::parse(vec!["--storage-profile".to_owned(), "packed".to_owned()])
             .unwrap_err();
         assert_eq!(err, "--storage-profile must be full-f32 or quantized");
+    }
+
+    #[test]
+    fn bench_config_parse_order_backend() {
+        let config =
+            BenchConfig::parse(vec!["--order-backend".to_owned(), "gpu".to_owned()]).unwrap();
+        assert_eq!(config.order_backend, SurfaceOrderBackend::Gpu);
+
+        let err = BenchConfig::parse(vec!["--order-backend".to_owned(), "adaptive".to_owned()])
+            .unwrap_err();
+        assert_eq!(err, "--order-backend must be cpu or gpu");
     }
 
     #[test]

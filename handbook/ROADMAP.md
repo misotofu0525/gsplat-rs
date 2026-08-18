@@ -74,9 +74,15 @@ transient research belong under `docs/plans/`.
 
 ### Experimental GPU and Adaptive ordering
 
-- The current deterministic GPU baseline generates keys for the full resident
-  scene, runs eight stable 4-bit radix passes, and performs a normal instance
-  draw. It does not yet compact screen-visible entries or use indirect drawing.
+- The experimental GPU baseline now evaluates near/far plus NDC footprint
+  visibility on both full-f32 and quantized keygen, compacts visible
+  `(key, id)` without CPU readback, sorts only that compacted count with
+  eight stable 4-bit radix passes and a two-level hierarchical prefix
+  scan, and consumes GPU-written indirect sort-dispatch and draw
+  arguments. Host CPU-vs-GPU image parity is exact on the empty / near-far
+  / screen-edge / degenerate / tie / degree-3 fixtures. CPU radix remains
+  the default. Session telemetry still reports the resident source count,
+  not the GPU-visible count.
 - Adaptive is an opt-in measurement policy, not a point-count rule. It learns
   CPU behavior first, probes GPU, retains hysteresis/cooldowns, and falls back to
   CPU on a GPU execution error.
@@ -84,13 +90,15 @@ transient research belong under `docs/plans/`.
   slower than CPU in every paired ladder comparison. CPU therefore remains the
   default. See
   [`2026-07-22-adaptive-sort-experiment/report.md`](../docs/plans/completed/2026-07-22-adaptive-sort-experiment/report.md).
-- That result is scoped to the tested baseline, which sorts the full
-  uncompacted scene and serializes its global prefix scan in a single
-  workgroup. External device evidence (PlayCanvas engine PR #8620) shows a
-  multi-pass 4-bit radix design with a hierarchical scan and no subgroup
-  dependency performing well on Apple and Android SoCs, so portable GPU
-  ordering remains open pending the corrected, compacted candidate sequenced
-  below.
+- The corrected candidate (compact + hierarchical scan + indirect) has
+  host image-parity evidence and paired device evidence on Adreno 730,
+  desktop Metal, Chrome WebGPU, and iPhone 17 Pro Max: GPU never beat
+  CPU end to end, though the deficit shrinks with device class (Adreno
+  1.46×, desktop Metal 1.40×, iPhone 1.07× at Truck 700k). CPU remains
+  the default. External kernel evidence (PlayCanvas engine PR #8620) is
+  architecture guidance only: it compares GPU sorters against each
+  other, and PlayCanvas itself enables GPU sorting only on non-mobile
+  devices.
 
 ### Scene-aware Surface limits
 
@@ -140,7 +148,7 @@ proven insufficient.
 
 Compute preprocess and an explicit quantized resident profile landed on
 2026-08-13 as a Rust-only option. Evidence:
-[`2026-08-13-quantized-resident-preprocess`](../docs/plans/active/2026-08-13-quantized-resident-preprocess/).
+[`2026-08-13-quantized-resident-preprocess`](../docs/plans/completed/2026-08-13-quantized-resident-preprocess/).
 
 In tree today:
 
@@ -165,6 +173,22 @@ This data-plane item is closed. Compressed resident storage is not
 streaming.
 
 ### 3. GPU-visible compaction, portable GPU ordering, and indirect drawing
+
+Host-side candidate landed on 2026-08-13 as an experimental path. Evidence:
+[`2026-08-13-gpu-compact-order-indirect`](../docs/plans/completed/2026-08-13-gpu-compact-order-indirect/).
+The device gate is complete (2026-08-18). Host CPU image parity landed,
+including exact Kitsune/Flowers renders. Paired evidence on A065
+(Kitsune 1.46×; Truck 50k–700k ratio 2.02→1.08, no crossover), desktop
+Metal (1.40×), Chrome WebGPU (portability; sync collector sees CPU call
+walls only), and iPhone 17 Pro Max Surface (Kitsune vsync-capped both
+backends; Truck 700k CPU holds 60 fps vs GPU 17.9 ms, 1.07×) all ran
+with zero GPU fallbacks. No platform showed a crossover, so CPU radix
+remains the default and the compact+indirect path stays an experimental
+backend. Re-opening the default question requires new hardware evidence
+(for example a device where Adaptive probing shows GPU winning). Reduced-
+width depth keys were measured and demoted; they are not a cheaper GPU
+default. Evidence:
+[`2026-08-18-depth-key-width`](../docs/plans/completed/2026-08-18-depth-key-width/).
 
 Build on the compute preprocess stage from item 2:
 

@@ -26,7 +26,9 @@
   Adaptive order policy (`surface_adaptive.rs`), and native async CPU sorting
   (`surface_async.rs`). `surface_presenter.rs` owns Surface resources,
   `surface_session.rs` owns shared frame scheduling, and
-  `resident_gpu_order.rs` owns the experimental GPU ordering backend.
+  `resident_gpu_order.rs` owns the experimental GPU ordering backend
+  (visibility compact, hierarchical 4-bit radix, indirect sort/draw).
+  Depth keys stay full 32-bit IEEE `f32` bits on both CPU and GPU radix.
   CPU-projected `GpuInstance` expansion lives in `cpu_geometry.rs` as a
   test-only conformance oracle. Each presented frame runs a compute
   preprocess that writes compact projected records; the vertex stage only
