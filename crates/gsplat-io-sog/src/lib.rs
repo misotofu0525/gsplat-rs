@@ -3,7 +3,8 @@
 //! Unbundled SOG (`meta.json` plus 8-bit images) and bundled `.sog` ZIP decode
 //! to one resident [`SceneBuffers`](gsplat_core::SceneBuffers). Streamed SOG
 //! (`lod-meta.json`) is selected from spatial metadata first; only the
-//! budgeted subset is decoded.
+//! budgeted subset is decoded. GPU residency is an independent gaussian
+//! cap, not a page pool.
 
 mod archive;
 mod decode;
@@ -120,6 +121,7 @@ mod tests {
                 max_gaussians: 1,
                 max_source_bytes: 256 * 1024,
                 max_decoded_bytes: 256 * 1024,
+                ..StreamingBudgets::default()
             },
         )
         .expect("open streamed SOG");
@@ -158,6 +160,44 @@ mod tests {
         assert_eq!(far.gaussians, 1);
         assert!(far.scene.positions[0].x > 0.0);
         assert_ne!(assembled.fingerprint, far.fingerprint);
+    }
+
+    #[test]
+    fn streamed_session_applies_independent_resident_gaussian_budget() {
+        let dir = temp_dir("sog-resident");
+        write_streamed_sog(&dir);
+        let mut session = StreamedSogSession::open(
+            &dir.join("lod-meta.json"),
+            StreamingBudgets {
+                max_resident_gaussians: Some(1),
+                ..StreamingBudgets::default()
+            },
+        )
+        .expect("open streamed SOG");
+        assert_eq!(session.peek_sh_degree().expect("peek SH"), 0);
+
+        assert!(matches!(
+            session.assemble(None),
+            Err(SogError::ResourceLimit {
+                resource: "resident gaussians",
+                requested: 2,
+                limit: 1
+            })
+        ));
+
+        let camera = Camera {
+            pose: CameraPose {
+                position: Vec3f::new(-1.0, 0.0, 0.0),
+                rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            },
+            ..Camera::default()
+        };
+        let assembled = session
+            .assemble(Some(&camera))
+            .expect("near leaf fits resident cap");
+        assert_eq!(assembled.gaussians, 1);
+        assert_eq!(assembled.selected_leaves, 1);
+        assert_eq!(assembled.dropped_leaves, 1);
     }
 
     #[test]

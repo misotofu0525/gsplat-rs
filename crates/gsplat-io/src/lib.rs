@@ -1,7 +1,8 @@
 //! Whole-scene PLY / SPZ v4 / SOG import facade.
 //!
 //! Streamed SOG (`lod-meta.json`) is rejected here. Use
-//! [`assemble_streamed_sog`] to select a budgeted subset from spatial metadata.
+//! [`assemble_streamed_sog`] or [`StreamedSogSession`] to select a budgeted
+//! subset from spatial metadata, including an optional GPU-resident cap.
 
 use std::fs;
 use std::path::Path;

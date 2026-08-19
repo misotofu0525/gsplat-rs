@@ -10,7 +10,10 @@ use artifact::{
     ResourcePreflight, ResourceRequirement,
 };
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_io::{StreamingBudgets, assemble_streamed_sog, is_streamed_sog_path, load_scene_path};
+use gsplat_io::{
+    StreamedSogSession, StreamingBudgets, assemble_streamed_sog, is_streamed_sog_path,
+    load_scene_path,
+};
 use gsplat_render_wgpu::{Renderer, ResidentStorageProfile, SurfaceOrderBackend};
 
 fn main() {
@@ -32,24 +35,25 @@ fn run() -> Result<(), String> {
         .as_ref()
         .map(|_| artifact::file_identity(dataset_path))
         .transpose()?;
-    let loaded_scene = load_dataset(dataset_path)?;
-    if let Some(expected) = dataset_identity.as_ref() {
-        let actual = artifact::file_identity(dataset_path)?;
-        if &actual != expected {
-            return Err("dataset changed while it was being loaded".to_owned());
-        }
-    }
     if let Some(analysis) = config.analysis {
+        let loaded_scene = load_dataset(dataset_path)?;
+        verify_dataset_identity(dataset_path, dataset_identity.as_ref())?;
         return run_spatial_analysis(&loaded_scene, &config.dataset_path, analysis);
     }
 
-    let splat_count = loaded_scene.len();
-    let sh_degree = loaded_scene.sh_degree;
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
     renderer.set_storage_profile(config.storage_profile);
     renderer
         .set_order_backend(config.order_backend)
         .map_err(|err| err.to_string())?;
+    let loaded_scene = if is_streamed_sog_path(dataset_path) {
+        load_streamed_dataset(dataset_path, &renderer)?
+    } else {
+        load_dataset(dataset_path)?
+    };
+    verify_dataset_identity(dataset_path, dataset_identity.as_ref())?;
+    let splat_count = loaded_scene.len();
+    let sh_degree = loaded_scene.sh_degree;
     renderer
         .load_scene(loaded_scene)
         .map_err(|err| err.to_string())?;
@@ -82,6 +86,41 @@ fn run() -> Result<(), String> {
             dataset_identity,
         )
     }
+}
+
+fn verify_dataset_identity(path: &Path, expected: Option<&FileIdentity>) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = artifact::file_identity(path)?;
+    if &actual != expected {
+        return Err("dataset changed while it was being loaded".to_owned());
+    }
+    Ok(())
+}
+
+fn apply_resident_gpu_budget(
+    session: &mut StreamedSogSession,
+    renderer: &Renderer,
+) -> Result<(), String> {
+    let sh_degree = session.peek_sh_degree().map_err(|err| err.to_string())?;
+    let cap = renderer
+        .max_resident_gaussians(sh_degree)
+        .map_err(|err| err.to_string())?;
+    let cap = usize::try_from(cap).unwrap_or(usize::MAX);
+    let mut budgets = session.budgets();
+    budgets.max_resident_gaussians = Some(cap);
+    session.set_budgets(budgets);
+    println!("streamed_sog_max_resident_gaussians={cap}");
+    println!("streamed_sog_peek_sh_degree={sh_degree}");
+    Ok(())
+}
+
+fn load_streamed_dataset(path: &Path, renderer: &Renderer) -> Result<SceneBuffers, String> {
+    let mut session = StreamedSogSession::open(path, StreamingBudgets::default())
+        .map_err(|err| err.to_string())?;
+    apply_resident_gpu_budget(&mut session, renderer)?;
+    Ok(session.assemble(None).map_err(|err| err.to_string())?.scene)
 }
 
 fn load_dataset(path: &Path) -> Result<SceneBuffers, String> {

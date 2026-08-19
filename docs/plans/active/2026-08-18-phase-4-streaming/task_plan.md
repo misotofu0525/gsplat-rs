@@ -9,7 +9,7 @@ cuts: C ABI scene-from-memory, Streamed SOG, then metadata-first streaming/LOD.
 
 ## Current Phase
 
-Slice 5 — bundled `.sog` ZIP, parallel chunk decode, camera-driven desktop session
+Slice 6 — independent GPU-resident gaussian budget (not a page pool)
 
 ## Phases
 
@@ -42,9 +42,16 @@ Slice 5 — bundled `.sog` ZIP, parallel chunk decode, camera-driven desktop ses
 - [x] Whole-scene bundled `.sog` ZIP (STORED + DEFLATE, zip-bomb bounds)
 - [x] Native parallel missing-chunk decode; wasm stays serial
 - [x] Selection fingerprint; desktop `--auto-camera` two-pass and interactive reload
-- [ ] GPU streaming residency (not this slice)
+- [x] GPU streaming residency (not this slice)
 - [ ] C ABI streaming/LOD (not this slice)
 - **Status:** complete for bundled ZIP + camera-driven desktop session
+
+### Slice 6: Independent GPU-resident budget
+- [x] `StreamingBudgets.max_resident_gaussians` + `peek_sh_degree`
+- [x] `Renderer::max_resident_gaussians` from device limits or downlevel
+- [x] Desktop / bench-runner apply the GPU cap before assemble
+- [ ] C ABI streaming/LOD (not this slice)
+- **Status:** complete; not a GPU page pool
 
 ## Key Questions
 
@@ -64,6 +71,7 @@ Slice 5 — bundled `.sog` ZIP, parallel chunk decode, camera-driven desktop ses
 | Bundled `.sog` ZIP is whole-scene import | Same decode as unbundled; C bytes path sniffs `PK` without a new symbol |
 | Native parallel chunk decode is `thread::scope` | wasm32 stays serial; `SogError` is `Send` |
 | Camera-driven desktop reuses `reload_scene` | Not a C ABI change; fingerprint skip avoids redundant GPU rebuilds |
+| GPU cap is `max_resident_gaussians`, not a page pool | Kill criterion: still one assembled `SceneBuffers` + existing preflight |
 
 ## Errors Encountered
 

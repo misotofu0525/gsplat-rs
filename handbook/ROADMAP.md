@@ -245,10 +245,15 @@ and DEFLATE, with zip-bomb bounds), native parallel missing-chunk decode, and
 a camera-driven desktop Streamed SOG session (`reload_scene` when the
 selection fingerprint changes).
 
+Slice 6 (landed 2026-08-19): independent GPU-resident gaussian budget
+(`StreamingBudgets.max_resident_gaussians`) applied while selecting leaves.
+Desktop and bench-runner ask `Renderer::max_resident_gaussians` (real device
+limits when an offscreen rasterizer exists; portable `downlevel_defaults`
+otherwise) before assemble. The renderer still uploads one selected
+`SceneBuffers` and runs resident preflight. This is not a page pool.
+
 Remaining in this item:
 
-- GPU residency budgets distinct from the CPU subset; keep using renderer
-  capacity preflight rather than a page pool.
 - A C ABI for streaming/LOD. Do not invent a proprietary scene format. Track
   the Khronos `KHR_gaussian_splatting` glTF extension and its planned SPZ
   streaming extension as they ratify.
@@ -370,8 +375,9 @@ stability gates are documented in `handbook/VERIFICATION.md` and promoted here.
 - Web distribution: npm publication waits for target-browser Surface smoke and
   explicit promotion of the package API.
 - SPZ / SOG product integration: whole-scene path and memory load cover PLY,
-  SPZ v4, and bundled `.sog`; path load also covers unbundled SOG. GPU-side
-  streaming residency and a C streaming ABI remain later work.
+  SPZ v4, and bundled `.sog`; path load also covers unbundled SOG. Streamed
+  SOG already applies an independent GPU-resident gaussian budget before
+  assemble. A C streaming ABI remains later work.
 
 ## Explicitly Not Active Right Now
 

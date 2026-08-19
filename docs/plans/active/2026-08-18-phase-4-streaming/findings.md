@@ -47,21 +47,37 @@ PlayCanvas Streamed SOG v1 (https://developer.playcanvas.com/user-manual/gaussia
 - identify by filename `lod-meta.json`
 - chunks are unbundled SOG directories
 - `StreamedSogSession` reads the tree first, then stats/decodes only selected leaves
-- independent budgets: `max_source_bytes`, `max_decoded_bytes`, `max_gaussians`
+- independent budgets: `max_source_bytes`, `max_decoded_bytes`, `max_gaussians`,
+  `max_resident_gaussians`
 - no camera: every LOD 0 leaf must fit, or `ResourceLimit`
 - with camera: keep nearest leaves, drop farther; a single environment or nearest leaf that exceeds the full budget is `ResourceLimit`
-- GPU budget remains renderer capacity preflight after upload
+- GPU budget is an independent `max_resident_gaussians` applied during leaf
+  selection; the renderer still capacity-checks the assembled subset
 - bundled `.sog` ZIP is whole-scene import (STORED + DEFLATE, zip-bomb bounds)
 - native missing-chunk decode uses `std::thread::scope`; wasm stays serial
 - desktop `--auto-camera` and interactive Streamed SOG reassemble when the
   selection fingerprint changes
+
+## Slice 6 contract
+
+- `StreamingBudgets.max_resident_gaussians: Option<usize>` is independent of
+  `max_gaussians` / decoded bytes. `None` leaves GPU checking to renderer
+  preflight after upload.
+- `StreamedSogSession::peek_sh_degree` reads chunk / environment `meta.json`
+  only (no image decode).
+- `Renderer::max_resident_gaussians(sh_degree)` uses the real device when an
+  offscreen rasterizer exists; otherwise `wgpu::Limits::downlevel_defaults`.
+- Desktop and bench-runner set the GPU cap before the first assemble.
+- Over-budget without a camera is `ResourceLimit { resource: "resident gaussians" }`.
+- With a camera, farther leaves drop; a single nearest leaf / environment that
+  exceeds the cap is still `ResourceLimit`.
+- This is not a GPU page pool and does not change the C ABI.
 
 Kill criterion: do not load every chunk into one `SceneBuffers` and then pick slots. That is the retired Paged lesson.
 
 ## Explicitly later
 
 - Replacing Android/iOS bundled `showcase.ply`
-- GPU residency distinct from the CPU subset
 - C ABI streaming/LOD
 - Custom internal cache format
 - Khronos `KHR_gaussian_splatting` + planned SPZ streaming extension (watch-only)

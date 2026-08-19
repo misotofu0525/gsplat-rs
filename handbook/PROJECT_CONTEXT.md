@@ -92,8 +92,10 @@ For the broader command matrix, use `VERIFICATION.md`.
   unbundled SOG and metadata-first Streamed SOG subset assembly with
   independent source/decoded/gaussian budgets. Slice 5 adds bundled `.sog`
   ZIP whole-scene import, native parallel chunk decode, and a camera-driven
-  desktop Streamed SOG session. The renderer still uploads one selected
-  `SceneBuffers`; this is not a revival of Packed/Paged.
+  desktop Streamed SOG session. Slice 6 applies an independent GPU-resident
+  gaussian budget (`Renderer::max_resident_gaussians`) while selecting
+  leaves; the renderer still uploads one selected `SceneBuffers`. This is
+  not a revival of Packed/Paged.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
@@ -153,8 +155,8 @@ For the broader command matrix, use `VERIFICATION.md`.
   v0.1 public API.
 - SPZ / SOG product integration: whole-scene path and memory load cover PLY,
   SPZ v4, and bundled `.sog`; path load also covers unbundled `meta.json`.
-  GPU residency distinct from the CPU subset and a C streaming ABI remain
-  later work.
+  Streamed SOG already applies an independent GPU-resident gaussian budget
+  before assemble. A C streaming ABI remains later work.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
   Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app

@@ -41,6 +41,10 @@ Default-camera SPZ drawn=0 is framing, not a load failure. `--auto-camera` draws
   ZIP `PK` without a new symbol or version bump.
 - Committed fixtures: `tests/datasets/minimal_sog/`,
   `tests/datasets/minimal.sog`, `tests/datasets/minimal_streamed_sog/`.
+- Slice 6: independent `StreamingBudgets.max_resident_gaussians`. Desktop and
+  bench-runner peek SH degree, ask `Renderer::max_resident_gaussians`, then
+  assemble. Surface-only / no-device uses `downlevel_defaults`. Not a page
+  pool; C ABI unchanged.
 
 ### Verification
 
@@ -59,3 +63,16 @@ Default-camera SPZ drawn=0 is framing, not a load failure. `--auto-camera` draws
 | `cargo run -p desktop-example -- tests/datasets/minimal.sog --auto-camera --png target/out-bundled-sog.png` | pass, drawn=2 |
 | `cargo run -p desktop-example -- tests/datasets/minimal_streamed_sog/lod-meta.json --auto-camera --png target/out-streamed-sog.png` | pass, drawn=2 |
 | `bash bindings/apple/scripts/run-swift-smoke.sh tests/datasets/minimal_ascii.ply` | pass, drawn=2 (slice 2–4; slice 5 did not change Swift) |
+
+### Slice 6 verification
+
+| Command | Result |
+|---------|--------|
+| `cargo fmt --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace --offline` | pass (`gsplat-io-sog` 11; render-wgpu 72+1 ignored) |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+| `cargo check -p gsplat-web --target wasm32-unknown-unknown` | pass (pre-existing wasm unused warnings only) |
+| `cargo run -p desktop-example -- tests/datasets/minimal_sog/meta.json --auto-camera --png target/out-sog.png` | pass, drawn=2 |
+| `cargo run -p desktop-example -- tests/datasets/minimal.sog --auto-camera --png target/out-bundled-sog.png` | pass, drawn=2 |
+| `cargo run -p desktop-example -- tests/datasets/minimal_streamed_sog/lod-meta.json --auto-camera --png target/out-streamed-sog.png` | pass, drawn=2; printed GPU resident cap 2097152 (SH 0) |

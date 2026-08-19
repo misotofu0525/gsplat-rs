@@ -164,7 +164,14 @@ fn usage() -> String {
 fn run(args: Args) -> Result<(), String> {
     let mut streamed = open_streamed_session(Path::new(&args.dataset_path))?;
     let mut last_fingerprint = None;
+    let mut renderer = if args.interactive {
+        Renderer::with_config_for_surface(args.config)
+    } else {
+        Renderer::with_config(args.config)
+    }
+    .map_err(|err| err.to_string())?;
     let scene = if let Some(session) = streamed.as_mut() {
+        apply_resident_gpu_budget(session, &renderer)?;
         let assembled = session.assemble(None).map_err(|err| err.to_string())?;
         last_fingerprint = Some(assembled.fingerprint);
         assembled.scene
@@ -173,13 +180,6 @@ fn run(args: Args) -> Result<(), String> {
             .map_err(|err| err.to_string())?
             .scene
     };
-
-    let mut renderer = if args.interactive {
-        Renderer::with_config_for_surface(args.config)
-    } else {
-        Renderer::with_config(args.config)
-    }
-    .map_err(|err| err.to_string())?;
     renderer.load_scene(scene).map_err(|err| err.to_string())?;
 
     let mut camera = if args.auto_camera {
@@ -211,6 +211,22 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     run_offscreen(&args, renderer, camera)
+}
+
+fn apply_resident_gpu_budget(
+    session: &mut StreamedSogSession,
+    renderer: &Renderer,
+) -> Result<(), String> {
+    let sh_degree = session.peek_sh_degree().map_err(|err| err.to_string())?;
+    let cap = renderer
+        .max_resident_gaussians(sh_degree)
+        .map_err(|err| err.to_string())?;
+    let cap = usize::try_from(cap).unwrap_or(usize::MAX);
+    let mut budgets = session.budgets();
+    budgets.max_resident_gaussians = Some(cap);
+    session.set_budgets(budgets);
+    eprintln!("streamed SOG GPU resident cap: {cap} gaussians (SH degree {sh_degree})");
+    Ok(())
 }
 
 fn open_streamed_session(path: &Path) -> Result<Option<StreamedSogSession>, String> {

@@ -11,7 +11,8 @@ narrow C ABI, and example surfaces that validate the stack on desktop, Android,
 iOS, and browser paths without overstating SDK maturity. Rendering uses one
 resident-scene, sorted-index render pipeline on every platform. Unbundled SOG
 and bundled `.sog` ZIP are whole-scene import. Streamed SOG selects a budgeted
-subset from `lod-meta.json` before decode; it is not a hidden full-scene cache.
+subset from `lod-meta.json` before decode, including an independent GPU-resident
+gaussian budget; it is not a hidden full-scene cache.
 
 ![SortedAlpha render of the Wakufactory Kitsune scene](docs/media/kitune.jpg)
 

@@ -20,9 +20,10 @@ absent or unknown, from file magic (`ply` header, SPZ v4 `NGSP`, or ZIP `PK`).
 Unbundled SOG is a directory of images, so it is path-only.
 
 Streamed SOG (`lod-meta.json`) is **not** whole-scene import. `load_scene_path`
-returns a structured `StreamingRequired` error. Use `assemble_streamed_sog` to
-select a budgeted subset from spatial metadata, then hand that subset to the
-existing resident renderer.
+returns a structured `StreamingRequired` error. Use `assemble_streamed_sog` or
+`StreamedSogSession` to select a budgeted subset from spatial metadata. Desktop
+and bench-runner set `max_resident_gaussians` from the renderer before
+assemble, then hand that subset to the existing resident renderer.
 
 ## Position in the workspace
 

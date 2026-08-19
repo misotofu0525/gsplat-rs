@@ -12,11 +12,13 @@ use crate::meta::{LodMeta, LodNode, LodRange, SogChunkMeta, load_chunk_meta, loa
 
 const MIB: usize = 1024 * 1024;
 
-/// Independent source, decoded-CPU, and gaussian budgets for Streamed SOG.
+/// Independent source, decoded-CPU, gaussian, and GPU-resident budgets.
 ///
 /// These budgets are applied while selecting leaves from `lod-meta.json`. They
 /// are not a GPU page pool: the existing renderer still capacity-checks the
-/// assembled subset before upload.
+/// assembled subset before upload. `max_resident_gaussians` is the GPU splat
+/// cap from resident preflight; it is independent of the CPU decoded-byte
+/// budget and of the product `max_gaussians` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamingBudgets {
     /// Maximum bytes of selected chunk files (metadata + images) to read.
@@ -25,6 +27,9 @@ pub struct StreamingBudgets {
     pub max_decoded_bytes: usize,
     /// Maximum gaussians in the assembled subset, including environment.
     pub max_gaussians: usize,
+    /// Independent GPU-resident splat cap. `None` leaves GPU checking to the
+    /// renderer preflight after upload.
+    pub max_resident_gaussians: Option<usize>,
 }
 
 impl Default for StreamingBudgets {
@@ -33,6 +38,7 @@ impl Default for StreamingBudgets {
             max_source_bytes: 256 * MIB,
             max_decoded_bytes: 256 * MIB,
             max_gaussians: 1_000_000,
+            max_resident_gaussians: None,
         }
     }
 }
@@ -89,6 +95,24 @@ impl StreamedSogSession {
         self.budgets
     }
 
+    pub fn set_budgets(&mut self, budgets: StreamingBudgets) {
+        self.budgets = budgets;
+    }
+
+    /// Highest SH degree among chunk and environment metadata, without decoding
+    /// images. Used to ask the renderer for an independent GPU splat cap.
+    pub fn peek_sh_degree(&self) -> Result<u8, SogError> {
+        let mut degree = 0_u8;
+        for file in 0..self.index.filenames.len() {
+            degree = degree.max(chunk_sh_degree(&self.index, file)?);
+        }
+        if let Some(environment) = &self.index.environment {
+            let meta = load_chunk_meta(&self.index.root.join(environment))?;
+            degree = degree.max(meta.shn.as_ref().map(|shn| shn.bands).unwrap_or(0));
+        }
+        Ok(degree)
+    }
+
     pub fn index(&self) -> &LodMeta {
         &self.index
     }
@@ -97,7 +121,8 @@ impl StreamedSogSession {
     ///
     /// Without a camera, every leaf's LOD 0 range is required to fit. With a
     /// camera, farther leaves are dropped until the budgets fit. A single
-    /// environment or nearest leaf that exceeds the full budget is a structured
+    /// environment or nearest leaf that exceeds the full budget — including
+    /// the optional GPU-resident gaussian cap — is a structured
     /// [`SogError::ResourceLimit`].
     pub fn assemble(&mut self, camera: Option<&Camera>) -> Result<StreamAssembleResult, SogError> {
         let plan = plan_selection(&self.index, camera, self.budgets)?;
@@ -245,6 +270,9 @@ fn plan_selection(
             env_cost.decoded_bytes,
             budgets.max_decoded_bytes,
         )?;
+        if let Some(limit) = budgets.max_resident_gaussians {
+            ensure_single_fits("environment resident gaussians", env_cost.gaussians, limit)?;
+        }
     }
 
     if camera.is_none() {
@@ -284,6 +312,9 @@ fn plan_without_camera(
     ensure_total_fits("gaussians", gaussians, budgets.max_gaussians)?;
     ensure_total_fits("source bytes", source_bytes, budgets.max_source_bytes)?;
     ensure_total_fits("decoded bytes", decoded_bytes, budgets.max_decoded_bytes)?;
+    if let Some(limit) = budgets.max_resident_gaussians {
+        ensure_total_fits("resident gaussians", gaussians, limit)?;
+    }
     if ranges.is_empty() && index.environment.is_none() {
         return Err(SogError::ResourceLimit {
             resource: "gaussians",
@@ -328,9 +359,13 @@ fn plan_with_camera(
             .saturating_add(unique_source_bytes(index, &unique_files, meta_cache)?)
             .saturating_add(added_source);
         let next_decoded = decoded_bytes.saturating_add(added_decoded);
+        let resident_ok = budgets
+            .max_resident_gaussians
+            .is_none_or(|limit| next_gaussians <= limit);
         let fits = next_gaussians <= budgets.max_gaussians
             && next_source <= budgets.max_source_bytes
-            && next_decoded <= budgets.max_decoded_bytes;
+            && next_decoded <= budgets.max_decoded_bytes
+            && resident_ok;
         if !fits {
             if ranges.is_empty() {
                 if next_gaussians > budgets.max_gaussians {
@@ -339,6 +374,16 @@ fn plan_with_camera(
                         resource: "gaussians",
                         requested: next_gaussians,
                         limit: budgets.max_gaussians,
+                    });
+                }
+                if let Some(limit) = budgets.max_resident_gaussians
+                    && next_gaussians > limit
+                {
+                    ensure_single_fits("resident gaussians", range.count, limit)?;
+                    return Err(SogError::ResourceLimit {
+                        resource: "resident gaussians",
+                        requested: next_gaussians,
+                        limit,
                     });
                 }
                 if next_source > budgets.max_source_bytes {
@@ -459,6 +504,11 @@ fn cached_chunk<'a>(
             Ok(entry.insert(CachedChunk { meta, source_bytes }))
         }
     }
+}
+
+fn chunk_sh_degree(index: &LodMeta, file: usize) -> Result<u8, SogError> {
+    let meta = load_chunk_meta(&index.root.join(&index.filenames[file]))?;
+    Ok(meta.shn.as_ref().map(|shn| shn.bands).unwrap_or(0))
 }
 
 fn file_source_bytes(

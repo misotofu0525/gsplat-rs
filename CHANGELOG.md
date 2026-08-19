@@ -23,7 +23,9 @@ and this project adheres to
   chunk into one hidden scene. Native Streamed SOG decode of missing chunks
   is parallel; wasm stays serial. Desktop `--auto-camera` and the interactive
   viewer reassemble Streamed SOG when the camera-driven selection fingerprint
-  changes.
+  changes. Desktop and bench-runner apply an independent GPU-resident
+  gaussian budget from `Renderer::max_resident_gaussians` before assemble;
+  this is still one selected `SceneBuffers`, not a page pool.
 - Added versioned benchmark artifacts, dataset manifests, a shared camera
   trace contract, extraction tools for Web/Android/iOS, and a pinned
   PlayCanvas comparison harness with paired statistics and SSIM checks.

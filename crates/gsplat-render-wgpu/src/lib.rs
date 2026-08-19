@@ -236,6 +236,27 @@ impl Renderer {
         }
     }
 
+    /// GPU splat cap for `sh_degree` on this renderer's current storage profile.
+    ///
+    /// Offscreen renderers use the real device limits. Surface-only renderers
+    /// and wasm without a device use portable `downlevel_defaults` so Streamed
+    /// SOG can select before upload. This is not a page pool.
+    pub fn max_resident_gaussians(&self, sh_degree: u8) -> Result<u64, RendererError> {
+        let limits = self.resident_limit_snapshot();
+        Ok(
+            resident_scene_preflight_for_profile(1, sh_degree, &limits, self.storage_profile)?
+                .max_resident_splats,
+        )
+    }
+
+    fn resident_limit_snapshot(&self) -> wgpu::Limits {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rasterizer) = self.gpu_rasterizer.as_ref() {
+            return rasterizer.device.limits();
+        }
+        wgpu::Limits::downlevel_defaults()
+    }
+
     /// Reports whether the loaded scene fits the resident path on this renderer's
     /// effective offscreen device limits.
     ///
@@ -1496,6 +1517,21 @@ mod tests {
             error,
             super::RendererError::GpuRasterizerUnavailable
         ));
+    }
+
+    #[test]
+    fn max_resident_gaussians_uses_portable_limits_without_a_device() {
+        let renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
+        let cap = renderer.max_resident_gaussians(3).unwrap();
+        let expected = super::resident_scene_preflight_for_profile(
+            1,
+            3,
+            &wgpu::Limits::downlevel_defaults(),
+            super::ResidentStorageProfile::default(),
+        )
+        .unwrap()
+        .max_resident_splats;
+        assert_eq!(cap, expected);
     }
 
     #[test]
