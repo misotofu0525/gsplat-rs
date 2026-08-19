@@ -10,7 +10,7 @@ use artifact::{
     ResourcePreflight, ResourceRequirement,
 };
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers, Vec3f};
-use gsplat_io::load_scene_path;
+use gsplat_io::{StreamingBudgets, assemble_streamed_sog, is_streamed_sog_path, load_scene_path};
 use gsplat_render_wgpu::{Renderer, ResidentStorageProfile, SurfaceOrderBackend};
 
 fn main() {
@@ -32,7 +32,7 @@ fn run() -> Result<(), String> {
         .as_ref()
         .map(|_| artifact::file_identity(dataset_path))
         .transpose()?;
-    let loaded = load_scene_path(dataset_path).map_err(|err| err.to_string())?;
+    let loaded_scene = load_dataset(dataset_path)?;
     if let Some(expected) = dataset_identity.as_ref() {
         let actual = artifact::file_identity(dataset_path)?;
         if &actual != expected {
@@ -40,18 +40,18 @@ fn run() -> Result<(), String> {
         }
     }
     if let Some(analysis) = config.analysis {
-        return run_spatial_analysis(&loaded.scene, &config.dataset_path, analysis);
+        return run_spatial_analysis(&loaded_scene, &config.dataset_path, analysis);
     }
 
-    let splat_count = loaded.scene.len();
-    let sh_degree = loaded.scene.sh_degree;
+    let splat_count = loaded_scene.len();
+    let sh_degree = loaded_scene.sh_degree;
     let mut renderer = Renderer::new(RenderMode::SortedAlpha).map_err(|err| err.to_string())?;
     renderer.set_storage_profile(config.storage_profile);
     renderer
         .set_order_backend(config.order_backend)
         .map_err(|err| err.to_string())?;
     renderer
-        .load_scene(loaded.scene)
+        .load_scene(loaded_scene)
         .map_err(|err| err.to_string())?;
     println!(
         "resident_storage_profile={}",
@@ -81,6 +81,18 @@ fn run() -> Result<(), String> {
             sh_degree,
             dataset_identity,
         )
+    }
+}
+
+fn load_dataset(path: &Path) -> Result<SceneBuffers, String> {
+    if is_streamed_sog_path(path) {
+        Ok(
+            assemble_streamed_sog(path, None, StreamingBudgets::default())
+                .map_err(|err| err.to_string())?
+                .scene,
+        )
+    } else {
+        Ok(load_scene_path(path).map_err(|err| err.to_string())?.scene)
     }
 }
 

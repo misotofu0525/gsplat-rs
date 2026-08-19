@@ -15,7 +15,10 @@
 
 - Core data types live in `crates/gsplat-core`.
 - Stable scene import starts in `crates/gsplat-io`, which dispatches to
-  `crates/gsplat-io-ply` or `crates/gsplat-io-spz`.
+  `crates/gsplat-io-ply`, `crates/gsplat-io-spz`, or SOG in
+  `crates/gsplat-io-sog` (unbundled `meta.json` or bundled `.sog` ZIP). Streamed
+  SOG stays in `gsplat-io-sog` as a metadata-first subset assembler, not a
+  whole-scene facade path.
 - Sorting lives in `crates/gsplat-sort`.
 - Rendering and GPU-facing orchestration live in `crates/gsplat-render-wgpu`.
   `lib.rs` owns `Renderer` and public re-exports. Focused internal modules
@@ -72,8 +75,33 @@
   `crates/gsplat-io-spz/src/lib.rs`
   converts RUB positions, rotations, and SH data into runtime RUF
   produces the same validated `SceneBuffers` shape as PLY
-  is exercised by desktop/bench-runner/C path load/wasm `createRenderer`
+  is exercised by desktop/bench-runner/C path and bytes load/wasm `createRenderer`
   this is resident whole-scene import, not streaming or LOD
+
+- Unbundled SOG whole-scene import flow:
+  starts from PlayCanvas `meta.json` plus sibling 8-bit images
+  passes through `crates/gsplat-io` into `crates/gsplat-io-sog`
+  converts RUB positions, rotations, and SH data into runtime RUF
+  produces one resident `SceneBuffers`; this is not streaming
+
+- Bundled SOG whole-scene import flow:
+  starts from a `.sog` ZIP (`PK` magic) of the same files at the archive root
+  accepts STORED (official writer) and DEFLATE, rejects ZIP64, encryption, and
+  path traversal, and bounds entry count / uncompressed bytes
+  then follows the same decode as unbundled SOG
+  is exercised by desktop, `gsplat_context_load_scene_path` / `_bytes`, and wasm
+  `parse_scene_bytes`
+
+- Streamed SOG subset flow:
+  starts from PlayCanvas `lod-meta.json` plus per-chunk unbundled SOG
+  `StreamedSogSession` reads the spatial tree first, selects leaves under
+  independent source / decoded / gaussian budgets, then decodes only that
+  subset (native builds decode missing chunks in parallel)
+  `gsplat_context_load_scene_path` / `_bytes` reject `lod-meta.json`
+  desktop assembles with no camera first, then optionally reassembles for
+  `--auto-camera` and interactive camera motion via `SurfaceRenderSession::reload_scene`
+  bench-runner still assembles the no-camera subset
+  this never materializes a hidden full-scene `SceneBuffers`
 
 - Renderer construction flow:
   native offscreen `Renderer::new` and `Renderer::with_config` acquire a GPU
@@ -138,8 +166,8 @@
 
 - Web WASM renderer flow:
   starts at browser JavaScript that imports the local `packages/web` wrapper or generated `gsplat-web` wasm package
-  passes an `HtmlCanvasElement`, PLY or SPZ v4 bytes, and dimensions through
-  `wasm-bindgen`
+  passes an `HtmlCanvasElement`, PLY / SPZ v4 / bundled `.sog` bytes, and
+  dimensions through `wasm-bindgen`
   parses the scene with `gsplat-io::parse_scene_bytes`
   loads the scene into `gsplat-render-wgpu::Renderer`
   creates a browser canvas `wgpu::Surface` through `SurfacePresenter::from_canvas`
@@ -188,8 +216,9 @@
   across Web, desktop, Android, and Apple. Projection and SH evaluation stay on
   the GPU.
 - The SPZ v4 parser remains in `gsplat-io-spz`; product loaders consume it
-  through `gsplat-io` as whole-scene import. Streaming/LOD is a later
-  architecture.
+  through `gsplat-io` as whole-scene import. Unbundled SOG and bundled `.sog`
+  are the same resident import. Streamed SOG is a metadata-first subset
+  assembler and must not be described as whole-scene streaming.
 - PLY input normalization is not optional: quaternion remapping and `RDF -> RUF` conversion happen at load time.
 - Mobile examples are integration validators. Android and Apple packaging live
   under `bindings/`, but neither path is a published product SDK yet.
@@ -211,8 +240,9 @@
   CPU/GPU order policy
 - `crates/gsplat-render-wgpu/src/surface_async.rs`: native async CPU sort worker
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
-- `crates/gsplat-io/src/lib.rs`: PLY / SPZ v4 whole-scene import facade
+- `crates/gsplat-io/src/lib.rs`: PLY / SPZ v4 / SOG whole-scene import facade
 - `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
+- `crates/gsplat-io-sog/src/lib.rs`: PlayCanvas SOG decode and Streamed SOG session
 - `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`: integration boundary stability
 - `crates/gsplat-web/src/`: browser `wasm-bindgen` API over the shared Surface renderer
 - `packages/web/src/index.js`: local browser ESM wrapper over the generated wasm-bindgen module
@@ -228,7 +258,8 @@
   (orchestration) and `resident.rs` / `project.rs` / `quantized.rs` /
   `preprocess.rs` / `math.rs` for the matching internal stage
 - Read first for import changes: `crates/gsplat-io/src/lib.rs`, then
-  `crates/gsplat-io-ply/src/lib.rs` or `crates/gsplat-io-spz/src/lib.rs`
+  `crates/gsplat-io-ply/src/lib.rs`, `crates/gsplat-io-spz/src/lib.rs`, or
+  `crates/gsplat-io-sog/src/lib.rs`
 - Read first for native integration changes: `crates/gsplat-ffi-c/src/lib.rs` and `crates/gsplat-ffi-c/include/gsplat.h`
 - Read first for verification flow: `VERIFICATION.md`
 - Read first for release/tag changes: `../RELEASING.md`

@@ -28,6 +28,7 @@ let renderer = try GsplatContextRenderer(
     configuration: GsplatRenderConfiguration(width: 800, height: 600)
 )
 try renderer.loadScene(path: sceneURL.path)
+// or: try renderer.loadScene(bytes: try Data(contentsOf: sceneURL))
 try renderer.setAutoCamera()
 try renderer.renderFrame()
 let stats = try renderer.stats()
@@ -52,7 +53,9 @@ Current limits:
 
 - local binary package only; no remote SwiftPM release artifact
 - iOS 17+ in this validation slice
-- scene loading is still file-path based
+- scene loading accepts a filesystem path or an in-memory PLY / SPZ v4 /
+  bundled `.sog` payload (`loadScene(path:)` / `loadScene(bytes:)`). Streamed
+  SOG is not part of the C ABI.
 - `SortedAlpha` is the only release-gated render path
 - simulator slice builds `aarch64-apple-ios-sim x86_64-apple-ios` by default
   unless `IOS_XCFRAMEWORK_SIM_TARGETS` is overridden

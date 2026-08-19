@@ -1,7 +1,39 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../crates/gsplat-ffi-c/include/gsplat.h"
+
+static int32_t load_scene_bytes_from_path(GsplatContext *ctx, const char *path) {
+  FILE *file = fopen(path, "rb");
+  if (file == NULL) {
+    return -1;
+  }
+  if (fseek(file, 0, SEEK_END) != 0) {
+    fclose(file);
+    return -1;
+  }
+  long nbytes = ftell(file);
+  if (nbytes <= 0) {
+    fclose(file);
+    return -1;
+  }
+  rewind(file);
+  uint8_t *bytes = (uint8_t *)malloc((size_t)nbytes);
+  if (bytes == NULL) {
+    fclose(file);
+    return -1;
+  }
+  size_t readn = fread(bytes, 1, (size_t)nbytes, file);
+  fclose(file);
+  if (readn != (size_t)nbytes) {
+    free(bytes);
+    return -1;
+  }
+  int32_t rc = gsplat_context_load_scene_bytes(ctx, bytes, (uint64_t)nbytes);
+  free(bytes);
+  return rc;
+}
 
 int main(int argc, char **argv) {
   const char *dataset = "tests/datasets/minimal_ascii.ply";
@@ -60,6 +92,13 @@ int main(int argc, char **argv) {
     fprintf(stderr, "gsplat_context_load_scene_path failed (%s): %s (%d)\n", dataset, gsplat_error_message(rc), rc);
     gsplat_context_destroy(ctx);
     return 5;
+  }
+
+  rc = load_scene_bytes_from_path(ctx, dataset);
+  if (rc != 0) {
+    fprintf(stderr, "gsplat_context_load_scene_bytes failed (%s): %s (%d)\n", dataset, gsplat_error_message(rc), rc);
+    gsplat_context_destroy(ctx);
+    return 10;
   }
 
   rc = gsplat_context_render_frame(ctx);

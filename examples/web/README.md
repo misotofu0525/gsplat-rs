@@ -127,8 +127,8 @@ regression.
 - The Rust/WASM package uses `gsplat-io::parse_scene_bytes`,
   `gsplat-render-wgpu::Renderer`, `SurfacePresenter::from_canvas`, and
   `SurfaceRenderSession` so it shares the complete Surface lifecycle used by
-  Android/iOS and the interactive desktop viewer. Wasm accepts PLY or SPZ v4
-  bytes; the WebGL2 fallback remains PLY-only.
+  Android/iOS and the interactive desktop viewer. Wasm accepts PLY, SPZ v4, or
+  bundled `.sog` ZIP bytes; the WebGL2 fallback remains PLY-only.
 
 ## Web Integration Boundary
 

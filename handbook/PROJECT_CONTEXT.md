@@ -26,8 +26,9 @@
 - The workspace builds and tests cleanly on the supported CI paths.
 - `SortedAlpha` remains the only quality-guaranteed render mode.
 - FFI smoke paths and mobile smoke integrations stay working.
-- Untrusted PLY or SPZ v4 inputs fail with bounded, structured errors before
-  unchecked allocation.
+- Untrusted PLY, SPZ v4, or SOG inputs fail with bounded, structured
+  errors before unchecked allocation. Streamed SOG (`lod-meta.json`) is not a
+  whole-scene import path.
 - Desktop and mobile examples remain validation surfaces for the shared crates, not separate product lines.
 
 ## Current Repository Shape
@@ -35,7 +36,9 @@
 - `crates/gsplat-core`: shared public types, config, stats, and error codes
 - `crates/gsplat-io-ply`: PLY parsing and scene buffer construction
 - `crates/gsplat-io-spz`: bounded SPZ v4 parsing and scene buffer construction
-- `crates/gsplat-io`: PLY / SPZ v4 whole-scene import facade
+- `crates/gsplat-io-sog`: PlayCanvas SOG (unbundled, bundled `.sog`) and Streamed SOG import
+- `crates/gsplat-io`: PLY / SPZ v4 / SOG whole-scene import facade;
+  Streamed SOG is assembled separately from `lod-meta.json`
 - `crates/gsplat-sort`: CPU radix sort backend and ordering utilities
 - `crates/gsplat-render-wgpu`: resident scene resources, preprocessing, ordering policy, and shared Surface/offscreen rendering
 - `crates/gsplat-ffi-c`: small C ABI surface over the renderer and mobile Surface presenters
@@ -84,6 +87,13 @@ For the broader command matrix, use `VERIFICATION.md`.
   Item 4 slice 1 promotes whole-scene SPZ v4 import through `gsplat-io`
   (desktop, C path load, wasm, mobile path-create). Packed on-disk SPZ is
   still one resident `SceneBuffers` after decode; it is not streaming.
+  Slice 2 adds `gsplat_context_load_scene_bytes` to the stable C ABI (PLY/SPZ
+  magic, plus bundled `.sog` ZIP via the same bytes path). Slice 3–4 add
+  unbundled SOG and metadata-first Streamed SOG subset assembly with
+  independent source/decoded/gaussian budgets. Slice 5 adds bundled `.sog`
+  ZIP whole-scene import, native parallel chunk decode, and a camera-driven
+  desktop Streamed SOG session. The renderer still uploads one selected
+  `SceneBuffers`; this is not a revival of Packed/Paged.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
@@ -103,7 +113,9 @@ For the broader command matrix, use `VERIFICATION.md`.
   through `SurfacePresenter`.
 - Default PLY loading is bounded by `PlyLoadLimits`; callers that intentionally
   need a different budget must opt into the limit-aware APIs.
-- The current C ABI intentionally stays small and does not yet cover scene-from-memory loading or runtime render-mode switching.
+- The current C ABI stays small. Offscreen scene loading covers a filesystem
+  path and an in-memory PLY / SPZ v4 / bundled `.sog` payload. It does not cover
+  runtime render-mode switching.
 - Android Surface integration now has a local `gsplat-android` library module
   that builds an AAR, but it is not Maven-published or a broad Android product
   API yet. iOS integration now has a local `GsplatKit` Swift package wrapper
@@ -124,8 +136,9 @@ For the broader command matrix, use `VERIFICATION.md`.
   a local ESM wrapper, but the Web SDK is not published to npm or stable in the
   v0.1 contract yet.
 - The bounded SPZ v4 loader is consumed through `gsplat-io` as whole-scene
-  import (path or bytes). Streamed SOG, C ABI scene-from-memory, and LOD are
-  not in this contract.
+  import (path or bytes). Unbundled SOG (`meta.json`) and bundled `.sog` ZIP
+  are the same resident import. Streamed SOG uses `assemble_streamed_sog` /
+  `StreamedSogSession` and is not on the C ABI.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.
 - Input 3DGS coordinates are treated as `RDF` and converted at load time to runtime `RUF`, including quaternion and SH sign transforms.
 
@@ -138,9 +151,10 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Web external distribution: the GitHub prerelease attaches an npm-compatible
   tarball, but `@gsplat-rs/web` is not published to npm or treated as a stable
   v0.1 public API.
-- SPZ product integration: whole-scene path/bytes load is in the product
-  import facade. C ABI scene-from-memory, Streamed SOG, and metadata-first
-  streaming remain separate decisions.
+- SPZ / SOG product integration: whole-scene path and memory load cover PLY,
+  SPZ v4, and bundled `.sog`; path load also covers unbundled `meta.json`.
+  GPU residency distinct from the CPU subset and a C streaming ABI remain
+  later work.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
   Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app

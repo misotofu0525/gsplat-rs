@@ -164,6 +164,22 @@ public final class GsplatContextRenderer {
         }
     }
 
+    public func loadScene(bytes: Data) throws {
+        try withContext(operation: "gsplat_context_load_scene_bytes") { context in
+            try bytes.withUnsafeBytes { buffer in
+                let pointer = buffer.bindMemory(to: UInt8.self).baseAddress
+                try check(
+                    gsplat_context_load_scene_bytes(
+                        context,
+                        pointer,
+                        UInt64(buffer.count)
+                    ),
+                    operation: "gsplat_context_load_scene_bytes"
+                )
+            }
+        }
+    }
+
     public func renderFrame() throws {
         try withContext(operation: "gsplat_context_render_frame") { context in
             try check(

@@ -7,8 +7,9 @@ Browser WebAssembly bindings for the shared Rust `wgpu` Surface renderer.
 - This crate is the experimental Web SDK boundary for the `wasm32-unknown-unknown`
   target.
 - It uses `wasm-bindgen` to expose a browser API that accepts an
-  `HtmlCanvasElement` and whole-scene PLY or SPZ v4 bytes.
-- Scene loading goes through `gsplat-io::parse_scene_bytes`.
+  `HtmlCanvasElement` and whole-scene PLY, SPZ v4, or bundled `.sog` ZIP bytes.
+- Scene loading goes through `gsplat-io::parse_scene_bytes` (PLY / SPZ / ZIP
+  magic). Streamed SOG JSON is rejected; unbundled SOG is path-only.
 - Rendering goes through `gsplat-render-wgpu::SurfaceRenderSession`, which owns
   `Renderer`, `SurfacePresenter`, CPU sort cadence, compact order uploads,
   direct rendering, and phase timings. This is the same Surface lifecycle

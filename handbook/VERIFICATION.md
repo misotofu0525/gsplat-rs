@@ -441,12 +441,15 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
   for realtime Surface or touch changes, also run
   `bash bindings/apple/scripts/run-ios-sim-app.sh`; for offscreen simulator smoke
   changes, run `bash bindings/apple/scripts/run-ios-sim-smoke.sh`.
-- If you touch PLY/SPZ import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`. For SPZ product loaders also run `cargo test -p gsplat-io`, `bash tests/ffi/run-ffi-smoke.sh tests/datasets/minimal_v4_degree0.spz`, and `cargo run -p desktop-example -- tests/datasets/minimal_v4_degree0.spz --png target/out-spz.png`.
+- If you touch PLY/SPZ/SOG import or scene normalization, run `cargo test --workspace` and `cargo run -p desktop-example -- tests/datasets/minimal_ascii.ply --png target/out.png`. For SPZ product loaders also run `cargo test -p gsplat-io`, `bash tests/ffi/run-ffi-smoke.sh tests/datasets/minimal_v4_degree0.spz`, and `cargo run -p desktop-example -- tests/datasets/minimal_v4_degree0.spz --png target/out-spz.png`. For SOG / Streamed SOG also run `cargo test -p gsplat-io-sog -p gsplat-io`, `cargo run -p desktop-example -- tests/datasets/minimal_sog/meta.json --auto-camera --png target/out-sog.png`, `cargo run -p desktop-example -- tests/datasets/minimal.sog --auto-camera --png target/out-bundled-sog.png`, and `cargo run -p desktop-example -- tests/datasets/minimal_streamed_sog/lod-meta.json --auto-camera --png target/out-streamed-sog.png`.
 - If you touch SPZ import (`crates/gsplat-io-spz/` or `crates/gsplat-io/`), run
   `cargo test -p gsplat-io-spz -p gsplat-io` and
   `cargo test -p gsplat-render-wgpu ply_vs_spz_offscreen_image_parity_gate_on_minimal_fixture`.
   Load metrics land under `target/benchmarks/phase-c/`
   (`minimal-spz-vs-ply-load-metrics.json`, `minimal-spz-vs-ply-ttff.json`).
+- If you touch SOG import (`crates/gsplat-io-sog/`), run
+  `cargo test -p gsplat-io-sog -p gsplat-io` and the desktop SOG PNG commands
+  above. Adding image codecs also requires `bash tests/security/run-cargo-deny.sh`.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, GPU-complete, nearest-rank frame distributions, missed-frame counts, and structured resident-resource preflight together with adapter/backend/driver metadata. Use `--storage-profile quantized` for the explicit quantized resident layout, `--order-backend gpu` to force the experimental GPU ordering path for paired offscreen comparisons (CPU stays the default; GPU runs report the resident source count as visible/drawn). Use the artifact route above when the result will be retained or compared. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the resident path.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch

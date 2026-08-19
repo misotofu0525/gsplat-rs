@@ -340,6 +340,26 @@ impl SurfaceRenderSession {
         }
         self.renderer.set_storage_profile(profile);
         self.presenter.rebuild_resident_scene(&self.renderer)?;
+        self.finish_resident_rebuild()
+    }
+
+    /// Replace the resident scene and rebuild GPU resources.
+    ///
+    /// Desktop Streamed SOG uses this when camera-driven leaf selection changes.
+    /// The stable C ABI does not expose it.
+    pub fn reload_scene(&mut self, scene: gsplat_core::SceneBuffers) -> Result<(), RendererError> {
+        self.renderer.load_scene(scene)?;
+        self.presenter.rebuild_resident_scene(&self.renderer)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.async_sort_enabled {
+            self.async_sorter = Some(crate::surface_async::SurfaceAsyncSorter::new(
+                &self.renderer,
+            )?);
+        }
+        self.finish_resident_rebuild()
+    }
+
+    fn finish_resident_rebuild(&mut self) -> Result<(), RendererError> {
         self.gpu_order_initialized = false;
         let gpu_prepare_error = if self.order_backend == SurfaceOrderBackend::Cpu {
             None

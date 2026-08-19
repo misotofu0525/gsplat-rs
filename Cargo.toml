@@ -3,6 +3,7 @@ members = [
   "crates/gsplat-core",
   "crates/gsplat-io-ply",
   "crates/gsplat-io-spz",
+  "crates/gsplat-io-sog",
   "crates/gsplat-io",
   "crates/gsplat-sort",
   "crates/gsplat-render-wgpu",

@@ -14,6 +14,16 @@ and this project adheres to
   bench-runner, `gsplat_context_load_scene_path`, Android/iOS Surface
   path-create, and wasm `createRenderer` accept `.ply` / `.spz` (or magic).
   This is still one resident `SceneBuffers` after decode, not streaming.
+- Added `gsplat_context_load_scene_bytes` to the stable C ABI for in-memory
+  PLY / SPZ v4 / bundled `.sog` ZIP payloads. API version stays 0.1. Swift
+  `loadScene(bytes:)` wraps it. Streamed SOG JSON is rejected.
+- Added PlayCanvas unbundled SOG (`meta.json`), bundled `.sog` ZIP, and
+  metadata-first Streamed SOG (`lod-meta.json`) import in `gsplat-io-sog`.
+  Desktop and bench-runner assemble a budgeted subset; they do not load every
+  chunk into one hidden scene. Native Streamed SOG decode of missing chunks
+  is parallel; wasm stays serial. Desktop `--auto-camera` and the interactive
+  viewer reassemble Streamed SOG when the camera-driven selection fingerprint
+  changes.
 - Added versioned benchmark artifacts, dataset manifests, a shared camera
   trace contract, extraction tools for Web/Android/iOS, and a pinned
   PlayCanvas comparison harness with paired statistics and SSIM checks.

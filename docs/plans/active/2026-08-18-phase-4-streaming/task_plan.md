@@ -5,11 +5,11 @@
 Start ROADMAP item 4 without disguising whole-scene residency as streaming.
 First cut: promote the existing bounded SPZ v4 loader into the shared product
 import surface (desktop, C path load, Web wasm, mobile path-create). Later
-cuts: Streamed SOG, then metadata-first streaming/LOD.
+cuts: C ABI scene-from-memory, Streamed SOG, then metadata-first streaming/LOD.
 
 ## Current Phase
 
-Slice 2 — C ABI scene-from-memory (not started)
+Slice 5 — bundled `.sog` ZIP, parallel chunk decode, camera-driven desktop session
 
 ## Phases
 
@@ -21,22 +21,35 @@ Slice 2 — C ABI scene-from-memory (not started)
 - [x] Verify: `gsplat-io` tests, FFI smoke on PLY and SPZ, desktop PNG on SPZ
 - **Status:** complete
 
-### Slice 2: C ABI scene-from-memory (separate release-boundary decision)
-- [ ] Decide whether `gsplat_context_load_scene_bytes` belongs in v0.1
-- **Status:** pending
+### Slice 2: C ABI scene-from-memory
+- [x] Add `gsplat_context_load_scene_bytes` (PLY/SPZ magic; keep API 0.1)
+- [x] Swift `loadScene(bytes:)` + FFI smoke path and bytes coverage
+- [x] Reject Streamed SOG JSON on this whole-scene ABI
+- **Status:** complete
 
 ### Slice 3: Streamed SOG read support
-- [ ] PlayCanvas `lod-meta.json` + chunked payloads from splat-transform
-- **Status:** pending
+- [x] `gsplat-io-sog` unbundled SOG (`meta.json` + 8-bit images)
+- [x] PlayCanvas `lod-meta.json` parse + per-chunk range decode
+- **Status:** complete
 
 ### Slice 4: Metadata-first streaming / LOD
-- [ ] Independent source / CPU / GPU budgets; no Packed/Paged revival
-- **Status:** pending
+- [x] `StreamedSogSession` with independent source / decoded / gaussian budgets
+- [x] Camera-based leaf + LOD selection; no-camera requires all LOD 0 to fit
+- [x] Desktop / bench-runner assemble subset; C ABI still rejects `lod-meta.json`
+- **Status:** complete
+
+### Slice 5: Bundled `.sog` + camera-driven session
+- [x] Whole-scene bundled `.sog` ZIP (STORED + DEFLATE, zip-bomb bounds)
+- [x] Native parallel missing-chunk decode; wasm stays serial
+- [x] Selection fingerprint; desktop `--auto-camera` two-pass and interactive reload
+- [ ] GPU streaming residency (not this slice)
+- [ ] C ABI streaming/LOD (not this slice)
+- **Status:** complete for bundled ZIP + camera-driven desktop session
 
 ## Key Questions
 
 1. First cut vs full streaming? Whole-scene SPZ first. Streaming is a new architecture.
-2. New C ABI symbol for in-memory load? Not in slice 1. Existing `load_scene_path` gains `.spz`.
+2. New C ABI symbol for in-memory load? Slice 2 adds it; version stays 0.1.
 3. New crate vs copy dispatch in four consumers? Thin `gsplat-io` facade.
 
 ## Decisions Made
@@ -44,10 +57,13 @@ Slice 2 — C ABI scene-from-memory (not started)
 | Decision | Rationale |
 |----------|-----------|
 | Slice 1 is whole-scene SPZ, not streaming | GOLDEN_PRINCIPLES: never disguise full `SceneBuffers` as streaming |
-| No new C ABI function in slice 1 | Path load already exists; memory load is a release-boundary widen |
-| Add `crates/gsplat-io` | Four consumers need the same PLY/SPZ dispatch; keep ply/spz crates focused |
-| WebGL2 fallback stays PLY-only | No JS SPZ decoder; SPZ requires the wasm renderer |
-| Do not replace mobile bundled `showcase.ply` | Path create will load `.spz` when the caller passes one |
+| Slice 2 adds `load_scene_bytes` without bumping minor | Additive C symbol; existing version checks keep working |
+| Streamed SOG stays off the C ABI | Multi-file format; whole-scene bytes API cannot represent it |
+| `StreamedSogSession` selects from metadata first | Kill criterion: no full decoded scene plus slot selector |
+| Assemble subset into one `SceneBuffers` for the current renderer | Honest about renderer residency; not a page pool |
+| Bundled `.sog` ZIP is whole-scene import | Same decode as unbundled; C bytes path sniffs `PK` without a new symbol |
+| Native parallel chunk decode is `thread::scope` | wasm32 stays serial; `SogError` is `Send` |
+| Camera-driven desktop reuses `reload_scene` | Not a C ABI change; fingerprint skip avoids redundant GPU rebuilds |
 
 ## Errors Encountered
 

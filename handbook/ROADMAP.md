@@ -27,9 +27,11 @@ transient research belong under `docs/plans/`.
 
 ## Stable v0.1 Release Boundary
 
-- The stable contract is bounded PLY or SPZ v4 whole-scene import into
-  validated in-memory `SceneBuffers`, resident `SortedAlpha` rendering,
-  structured errors, and the small C ABI.
+- The stable contract is bounded PLY, SPZ v4, unbundled SOG, or bundled `.sog`
+  whole-scene import into validated in-memory `SceneBuffers`, resident `SortedAlpha`
+  rendering, structured errors, and the small C ABI. Streamed SOG is a
+  metadata-first subset assembler used by Rust/desktop/bench-runner, not a
+  C ABI scene type.
 - One resident-scene representation serves every platform. Capacity preflight
   fails explicitly instead of selecting another storage or residency mode.
 - CPU radix ordering is the default production ordering backend. GPU and
@@ -43,16 +45,17 @@ transient research belong under `docs/plans/`.
   - defaults: `gsplat_config_default`, `gsplat_camera_default`
   - offscreen lifecycle: `gsplat_context_create`, `gsplat_context_destroy`,
     `gsplat_context_set_camera`, `gsplat_context_set_auto_camera`,
-    `gsplat_context_load_scene_path`, `gsplat_context_render_frame`,
+    `gsplat_context_load_scene_path`, `gsplat_context_load_scene_bytes`,
+    `gsplat_context_render_frame`,
     `gsplat_context_get_stats`
   - Android and iOS Surface create/resize/camera-control/render/stats/destroy
     functions used by the validation integrations
-- The stable C ABI does not cover scene-from-memory loading, runtime render-mode
-  switching, raw `wgpu` resources, or experimental ordering/storage controls.
+- The stable C ABI does not cover runtime render-mode switching, raw `wgpu`
+  resources, experimental ordering/storage controls, or Streamed SOG.
 - Mobile Surface convenience wrappers, Web package APIs, and benchmark artifact
   schemas remain experimental.
-- The bounded SPZ v4 loader remains an isolated import component until a
-  consumer integration is selected and verified separately.
+- Whole-scene SPZ v4, unbundled SOG, and bundled `.sog` import are consumed
+  through `gsplat-io`. Streamed SOG is a separate metadata-first subset assembler.
 
 ## Current Technical Baseline
 
@@ -226,20 +229,29 @@ Slice 1 (landed 2026-08-18): promote whole-scene SPZ v4 import through
 Android/iOS Surface path-create, and wasm `createRenderer` dispatch `.ply` /
 `.spz` (or magic). This is still one resident `SceneBuffers` after decode.
 
+Slice 2 (landed 2026-08-18): additive stable C ABI
+`gsplat_context_load_scene_bytes` for in-memory PLY / SPZ v4, later extended
+to bundled `.sog` ZIP via the same magic-sniffing symbol. API version stays
+0.1. Streamed SOG JSON is rejected.
+
+Slice 3–4 (landed 2026-08-18): PlayCanvas unbundled SOG (`meta.json`) and
+Streamed SOG (`lod-meta.json`). `StreamedSogSession` reads the spatial tree
+first, selects leaves under independent source / decoded / gaussian budgets,
+and decodes only that subset. The existing renderer still uploads one
+`SceneBuffers` of the subset. This is not Packed/Paged.
+
+Slice 5 (landed 2026-08-19): bundled `.sog` ZIP whole-scene import (STORED
+and DEFLATE, with zip-bomb bounds), native parallel missing-chunk decode, and
+a camera-driven desktop Streamed SOG session (`reload_scene` when the
+selection fingerprint changes).
+
 Remaining in this item:
 
-- C ABI scene-from-memory (`gsplat_context_load_scene_bytes`) is a separate
-  release-boundary decision; path load already accepts `.spz`.
-- Add read support for PlayCanvas Streamed SOG (spatial-tree metadata plus
-  chunked payloads) so assets produced by the open `splat-transform`
-  toolchain stream directly.
-- Design streaming metadata-first with bounded compressed/decoded caches,
-  asynchronous decode, spatial hierarchy/LOD, and independently measured
-  source/CPU/GPU budgets, honoring the retired Packed/Paged lessons: no
-  hidden fallback, no fixed-slot revival.
-- Do not invent a proprietary scene format. Track the Khronos
-  `KHR_gaussian_splatting` glTF extension and its planned SPZ streaming
-  extension as they ratify.
+- GPU residency budgets distinct from the CPU subset; keep using renderer
+  capacity preflight rather than a page pool.
+- A C ABI for streaming/LOD. Do not invent a proprietary scene format. Track
+  the Khronos `KHR_gaussian_splatting` glTF extension and its planned SPZ
+  streaming extension as they ratify.
 
 ### 5. Mobile-only differentiators
 
@@ -357,17 +369,16 @@ stability gates are documented in `handbook/VERIFICATION.md` and promoted here.
   polished Apple product API remain future work.
 - Web distribution: npm publication waits for target-browser Surface smoke and
   explicit promotion of the package API.
-- SPZ product integration: whole-scene path/bytes load is in the import
-  facade. C ABI scene-from-memory, Streamed SOG, and metadata-first streaming
-  remain separate work.
+- SPZ / SOG product integration: whole-scene path and memory load cover PLY,
+  SPZ v4, and bundled `.sog`; path load also covers unbundled SOG. GPU-side
+  streaming residency and a C streaming ABI remain later work.
 
 ## Explicitly Not Active Right Now
 
 - A custom internal binary scene/cache format
 - Reintroducing the retired Packed/Paged modes
-- Metadata-first or remote streaming is ROADMAP item 4 remaining work. Do
-  not disguise whole-scene `SceneBuffers` as streaming, and do not revive
-  Packed/Paged.
+- Disguising a full-scene `SceneBuffers` plus slot selector as streaming.
+  Streamed SOG must keep selecting from `lod-meta.json` before decode.
 - Additional experimental blending/rendering backends, including sort-free or
   stochastic approximations that change image semantics or require retrained
   assets

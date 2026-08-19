@@ -11,14 +11,14 @@ use gsplat_core::{
     Camera, CameraIntrinsics, CameraPose, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR,
     GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
 };
-use gsplat_io::load_scene_path;
+use gsplat_io::{load_scene_path, parse_scene_bytes};
 #[cfg(target_os = "android")]
 use gsplat_render_wgpu::ResidentStorageProfile;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use gsplat_render_wgpu::SurfaceOrderBackend;
 use gsplat_render_wgpu::{
-    Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed, SurfacePresenter,
-    SurfaceRenderSession,
+    Renderer, RendererError, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed,
+    SurfacePresenter, SurfaceRenderSession,
 };
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
@@ -456,10 +456,12 @@ pub unsafe extern "C" fn gsplat_context_set_auto_camera(ctx: *mut GsplatContext)
     })
 }
 
-/// Load a whole-scene PLY or SPZ v4 file from a filesystem path.
+/// Load a whole-scene PLY, SPZ v4, unbundled SOG, or bundled `.sog` ZIP from a
+/// filesystem path.
 ///
-/// Format comes from the extension (`.ply`, `.spz`) or, if the extension is
-/// absent or unknown, from file magic. This is resident import, not streaming.
+/// Format comes from the extension (`.ply`, `.spz`, `.sog`) or, if the
+/// extension is absent or unknown, from file magic. This is resident import,
+/// not streaming. Streamed SOG (`lod-meta.json`) is rejected.
 ///
 /// # Safety
 ///
@@ -505,9 +507,69 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
             }
         };
 
-        match ctx.renderer.load_scene(loaded.scene) {
+        match install_loaded_scene(ctx, loaded) {
             Ok(()) => ffi_ok(),
             Err(err) => ffi_error_display(err.code(), "gsplat_context_load_scene_path", err),
+        }
+    })
+}
+
+/// Load a whole-scene PLY, SPZ v4, or bundled `.sog` ZIP payload from memory.
+///
+/// Format comes from file magic (`ply` / `NGSP` / ZIP `PK`). This is resident
+/// import, not streaming. Streamed SOG JSON is rejected. Unbundled SOG JSON
+/// without sibling images is rejected.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live handle returned by `gsplat_context_create`.
+/// If `byte_count` is non-zero, `bytes` must be non-null and readable for
+/// that many bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gsplat_context_load_scene_bytes(
+    ctx: *mut GsplatContext,
+    bytes: *const u8,
+    byte_count: u64,
+) -> i32 {
+    ffi_catch_i32("gsplat_context_load_scene_bytes", || {
+        let ctx = match unsafe { ctx.as_mut() } {
+            Some(ctx) => ctx,
+            None => {
+                return ffi_error(
+                    ErrorCode::InvalidArgument,
+                    "gsplat_context_load_scene_bytes: ctx is null",
+                );
+            }
+        };
+
+        if bytes.is_null() || byte_count == 0 {
+            return ffi_error(
+                ErrorCode::InvalidArgument,
+                "gsplat_context_load_scene_bytes: bytes is null or empty",
+            );
+        }
+
+        let len = match usize::try_from(byte_count) {
+            Ok(len) => len,
+            Err(_) => {
+                return ffi_error(
+                    ErrorCode::Unsupported,
+                    "gsplat_context_load_scene_bytes: payload is too large for this host",
+                );
+            }
+        };
+
+        let input = unsafe { std::slice::from_raw_parts(bytes, len) };
+        let loaded = match parse_scene_bytes(input) {
+            Ok(result) => result,
+            Err(err) => {
+                return ffi_error_display(err.code(), "gsplat_context_load_scene_bytes", err);
+            }
+        };
+
+        match install_loaded_scene(ctx, loaded) {
+            Ok(()) => ffi_ok(),
+            Err(err) => ffi_error_display(err.code(), "gsplat_context_load_scene_bytes", err),
         }
     })
 }
@@ -1571,6 +1633,13 @@ fn vec3_normalize(v: Vec3f) -> Option<Vec3f> {
     Some(vec3_scale(v, 1.0 / len))
 }
 
+fn install_loaded_scene(
+    ctx: &mut GsplatContext,
+    loaded: gsplat_io::SceneLoadResult,
+) -> Result<(), RendererError> {
+    ctx.renderer.load_scene(loaded.scene)
+}
+
 fn scene_bounds(scene: &gsplat_core::SceneBuffers) -> Option<(Vec3f, Vec3f)> {
     if scene.positions.is_empty() {
         return None;
@@ -1596,9 +1665,9 @@ mod tests {
         GsplatCamera, GsplatConfig, GsplatContext, SurfaceCameraControl,
         camera_rotation_looking_at, ffi_catch_i32, gsplat_camera_default, gsplat_config_default,
         gsplat_context_create, gsplat_context_destroy, gsplat_context_get_stats,
-        gsplat_context_load_scene_path, gsplat_context_render_frame,
-        gsplat_context_set_auto_camera, gsplat_context_set_camera, gsplat_error_message,
-        gsplat_last_error_message, gsplat_surface_renderer_get_stats,
+        gsplat_context_load_scene_bytes, gsplat_context_load_scene_path,
+        gsplat_context_render_frame, gsplat_context_set_auto_camera, gsplat_context_set_camera,
+        gsplat_error_message, gsplat_last_error_message, gsplat_surface_renderer_get_stats,
         gsplat_surface_renderer_orbit, gsplat_surface_renderer_pan,
         gsplat_surface_renderer_render_frame, gsplat_surface_renderer_reset_camera,
         gsplat_surface_renderer_resize, gsplat_surface_renderer_set_async_sort,
@@ -1750,6 +1819,10 @@ mod tests {
             ErrorCode::InvalidArgument.as_i32()
         );
         assert_eq!(
+            unsafe { gsplat_context_load_scene_bytes(ptr::null_mut(), ptr::null(), 0) },
+            ErrorCode::InvalidArgument.as_i32()
+        );
+        assert_eq!(
             unsafe { gsplat_context_render_frame(ptr::null_mut()) },
             ErrorCode::InvalidArgument.as_i32()
         );
@@ -1773,6 +1846,79 @@ mod tests {
         let rc = unsafe { gsplat_context_load_scene_path(ctx, ptr::null()) };
 
         assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+        unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_load_scene_bytes_rejects_null_or_empty_payload() {
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let rc = unsafe { gsplat_context_load_scene_bytes(ctx, ptr::null(), 4) };
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+
+        let empty = [0_u8; 0];
+        let rc = unsafe { gsplat_context_load_scene_bytes(ctx, empty.as_ptr(), 0) };
+        assert_eq!(rc, ErrorCode::InvalidArgument.as_i32());
+        unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_load_scene_bytes_loads_committed_ply_and_spz() {
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let ply = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/datasets/minimal_ascii.ply"),
+        )
+        .expect("minimal PLY");
+        let rc = unsafe { gsplat_context_load_scene_bytes(ctx, ply.as_ptr(), ply.len() as u64) };
+        assert_eq!(rc, ErrorCode::Ok.as_i32());
+
+        let spz = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/datasets/minimal_v4_degree0.spz"),
+        )
+        .expect("minimal SPZ");
+        let rc = unsafe { gsplat_context_load_scene_bytes(ctx, spz.as_ptr(), spz.len() as u64) };
+        assert_eq!(rc, ErrorCode::Ok.as_i32());
+
+        let sog = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/minimal.sog");
+        if sog.is_file() {
+            let sog = std::fs::read(sog).expect("minimal bundled SOG");
+            let rc =
+                unsafe { gsplat_context_load_scene_bytes(ctx, sog.as_ptr(), sog.len() as u64) };
+            assert_eq!(rc, ErrorCode::Ok.as_i32());
+        }
+        unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_load_rejects_streamed_sog_index() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/minimal_streamed_sog/lod-meta.json");
+        if !path.is_file() {
+            return;
+        }
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let rc = unsafe { gsplat_context_load_scene_path(ctx, c_path.as_ptr()) };
+        assert_eq!(rc, ErrorCode::Unsupported.as_i32());
+
+        let bytes = std::fs::read(&path).expect("lod-meta.json");
+        let rc =
+            unsafe { gsplat_context_load_scene_bytes(ctx, bytes.as_ptr(), bytes.len() as u64) };
+        assert_eq!(rc, ErrorCode::Unsupported.as_i32());
         unsafe { gsplat_context_destroy(ctx) };
     }
 

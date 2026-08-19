@@ -14,7 +14,9 @@ use std::{
 use gsplat_core::{Camera, RenderMode, RendererConfig, Vec3f};
 #[cfg(feature = "interactive-viewer")]
 use gsplat_core::{CameraIntrinsics, CameraPose};
-use gsplat_io::load_scene_path;
+#[cfg(feature = "interactive-viewer")]
+use gsplat_io::SogError;
+use gsplat_io::{StreamedSogSession, StreamingBudgets, is_streamed_sog_path, load_scene_path};
 use gsplat_render_wgpu::Renderer;
 #[cfg(feature = "interactive-viewer")]
 use gsplat_render_wgpu::{SurfacePresenter, SurfaceRenderSession};
@@ -144,7 +146,7 @@ impl Args {
 
 fn usage() -> String {
     let lines = [
-        "usage: cargo run -p desktop-example -- [dataset.ply|.spz] [flags]",
+        "usage: cargo run -p desktop-example -- [dataset.ply|.spz|.sog|meta.json|lod-meta.json] [flags]",
         "",
         "flags:",
         "  --frames N       render N frames (default: 1)",
@@ -160,7 +162,17 @@ fn usage() -> String {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let loaded = load_scene_path(Path::new(&args.dataset_path)).map_err(|err| err.to_string())?;
+    let mut streamed = open_streamed_session(Path::new(&args.dataset_path))?;
+    let mut last_fingerprint = None;
+    let scene = if let Some(session) = streamed.as_mut() {
+        let assembled = session.assemble(None).map_err(|err| err.to_string())?;
+        last_fingerprint = Some(assembled.fingerprint);
+        assembled.scene
+    } else {
+        load_scene_path(Path::new(&args.dataset_path))
+            .map_err(|err| err.to_string())?
+            .scene
+    };
 
     let mut renderer = if args.interactive {
         Renderer::with_config_for_surface(args.config)
@@ -168,9 +180,7 @@ fn run(args: Args) -> Result<(), String> {
         Renderer::with_config(args.config)
     }
     .map_err(|err| err.to_string())?;
-    renderer
-        .load_scene(loaded.scene)
-        .map_err(|err| err.to_string())?;
+    renderer.load_scene(scene).map_err(|err| err.to_string())?;
 
     let mut camera = if args.auto_camera {
         auto_camera(&renderer, args.config)
@@ -182,11 +192,36 @@ fn run(args: Args) -> Result<(), String> {
         camera.pose.rotation_xyzw = [0.0, (yaw * 0.5).sin(), 0.0, (yaw * 0.5).cos()];
     }
 
+    if args.auto_camera
+        && let Some(session) = streamed.as_mut()
+    {
+        let assembled = session
+            .assemble(Some(&camera))
+            .map_err(|err| err.to_string())?;
+        if last_fingerprint != Some(assembled.fingerprint) {
+            renderer
+                .load_scene(assembled.scene)
+                .map_err(|err| err.to_string())?;
+        }
+        last_fingerprint = Some(assembled.fingerprint);
+    }
+
     if args.interactive {
-        return run_interactive(&args, renderer, camera);
+        return run_interactive(&args, renderer, camera, streamed, last_fingerprint);
     }
 
     run_offscreen(&args, renderer, camera)
+}
+
+fn open_streamed_session(path: &Path) -> Result<Option<StreamedSogSession>, String> {
+    if is_streamed_sog_path(path) {
+        Ok(Some(
+            StreamedSogSession::open(path, StreamingBudgets::default())
+                .map_err(|err| err.to_string())?,
+        ))
+    } else {
+        Ok(None)
+    }
 }
 
 fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Result<(), String> {
@@ -230,7 +265,13 @@ fn run_offscreen(args: &Args, mut renderer: Renderer, mut camera: Camera) -> Res
 }
 
 #[cfg(feature = "interactive-viewer")]
-fn run_interactive(args: &Args, renderer: Renderer, camera: Camera) -> Result<(), String> {
+fn run_interactive(
+    args: &Args,
+    renderer: Renderer,
+    camera: Camera,
+    mut streamed: Option<StreamedSogSession>,
+    mut last_fingerprint: Option<u64>,
+) -> Result<(), String> {
     if args.png_out.is_some() {
         return Err("interactive mode does not support --png in surface-present path".to_owned());
     }
@@ -349,6 +390,34 @@ fn run_interactive(args: &Args, renderer: Renderer, camera: Camera) -> Result<()
                     }
 
                     let camera_now = controller.camera();
+                    if let Some(stream) = streamed.as_mut() {
+                        match stream.assemble(Some(&camera_now)) {
+                            Ok(assembled) => {
+                                if last_fingerprint != Some(assembled.fingerprint)
+                                    && let Err(err) = session.reload_scene(assembled.scene)
+                                {
+                                    if let Ok(mut slot) = render_error_shared.lock() {
+                                        *slot = Some(format!(
+                                            "interactive streamed reload failed: {err}"
+                                        ));
+                                    }
+                                    target.exit();
+                                    return;
+                                }
+                                last_fingerprint = Some(assembled.fingerprint);
+                            }
+                            Err(SogError::ResourceLimit { .. }) => {}
+                            Err(err) => {
+                                if let Ok(mut slot) = render_error_shared.lock() {
+                                    *slot = Some(format!(
+                                        "interactive streamed assemble failed: {err}"
+                                    ));
+                                }
+                                target.exit();
+                                return;
+                            }
+                        }
+                    }
                     if let Err(err) = session.set_camera(camera_now) {
                         if let Ok(mut slot) = render_error_shared.lock() {
                             *slot = Some(format!("interactive camera update failed: {err}"));
@@ -400,7 +469,13 @@ fn run_interactive(args: &Args, renderer: Renderer, camera: Camera) -> Result<()
 }
 
 #[cfg(not(feature = "interactive-viewer"))]
-fn run_interactive(_args: &Args, _renderer: Renderer, _camera: Camera) -> Result<(), String> {
+fn run_interactive(
+    _args: &Args,
+    _renderer: Renderer,
+    _camera: Camera,
+    _streamed: Option<StreamedSogSession>,
+    _last_fingerprint: Option<u64>,
+) -> Result<(), String> {
     Err("interactive mode is not enabled. re-run with `--features interactive-viewer`".to_owned())
 }
 

@@ -13,6 +13,10 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
   hand-writing ABI defaults.
 - Use `GSPLAT_RENDER_MODE_SORTED_ALPHA`; it is the only release-gated render
   mode in v0.1.
+- Load whole-scene PLY, SPZ v4, unbundled SOG, or bundled `.sog` ZIP through
+  `gsplat_context_load_scene_path`. `gsplat_context_load_scene_bytes` sniffs
+  PLY / SPZ / ZIP magic. Both produce one resident scene; they are not
+  streaming. Streamed SOG (`lod-meta.json`) is rejected.
 - Treat non-zero returns as `GsplatErrorCode` values and pass them to
   `gsplat_error_message()`; use `gsplat_last_error_message()` for the most
   recent operation detail.

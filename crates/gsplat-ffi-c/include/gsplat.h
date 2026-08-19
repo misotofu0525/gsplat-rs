@@ -97,11 +97,24 @@ void gsplat_context_destroy(GsplatContext *ctx);
 int32_t gsplat_context_set_camera(GsplatContext *ctx, GsplatCamera camera);
 int32_t gsplat_context_set_auto_camera(GsplatContext *ctx);
 /*
- * Load a whole-scene 3DGS PLY or Niantic SPZ v4 file. Format comes from the
- * extension (`.ply`, `.spz`) or, if the extension is absent or unknown, from
- * file magic. Decode produces one resident scene; this is not streaming.
+ * Load a whole-scene 3DGS PLY, Niantic SPZ v4, unbundled SOG (`meta.json`),
+ * or bundled `.sog` ZIP file. Format comes from the extension (`.ply`, `.spz`,
+ * `.sog`) or, if the extension is absent or unknown, from file magic. Decode
+ * produces one resident scene; this is not streaming. Streamed SOG
+ * (`lod-meta.json`) is rejected here.
  */
 int32_t gsplat_context_load_scene_path(GsplatContext *ctx, const char *path);
+/*
+ * Load a whole-scene 3DGS PLY, Niantic SPZ v4, or bundled `.sog` ZIP payload
+ * from memory. Format comes from file magic (`ply` / `NGSP` / ZIP `PK`).
+ * `bytes` must be non-null and `byte_count` must be positive. Decode produces
+ * one resident scene; this is not streaming. Streamed SOG (`lod-meta.json`)
+ * is rejected here.
+ */
+int32_t gsplat_context_load_scene_bytes(
+    GsplatContext *ctx,
+    const uint8_t *bytes,
+    uint64_t byte_count);
 int32_t gsplat_context_render_frame(GsplatContext *ctx);
 int32_t gsplat_context_get_stats(const GsplatContext *ctx, GsplatStats *out_stats);
 

@@ -86,7 +86,11 @@ retains its SPDX notice in the source file.
 ## Verification
 
 The focused tests use tiny generated fixtures and a local range-capable HTTP
-server; they do not contact INRIA or download large assets:
+server; they do not contact INRIA or download large assets. Committed tiny
+PlayCanvas SOG fixtures live at `tests/datasets/minimal_sog/` (unbundled
+`meta.json`), `tests/datasets/minimal.sog` (bundled ZIP of that directory),
+and `tests/datasets/minimal_streamed_sog/` (`lod-meta.json`).
+Regenerate them with `GSPLAT_WRITE_SOG_FIXTURE=1 cargo test -p gsplat-io-sog write_committed_sog_fixtures_when_requested`.
 
 ```bash
 python3 tests/datasets/test_dataset_tools.py
