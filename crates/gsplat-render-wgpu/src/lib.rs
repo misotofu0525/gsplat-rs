@@ -1118,7 +1118,7 @@ mod tests {
                 // 100 deg about x, stored with x negative.
                 [-0.766_044_4, 0.0, 0.0, -0.642_787_6],
                 // 160 deg about y, stored with y negative.
-                [0.0, -0.984_807_75, 0.0, -0.173_648_18],
+                [0.0, -0.984_807_7, 0.0, -0.173_648_18],
             ],
             color_dc: vec![
                 [0.5, 0.1, 0.1],
