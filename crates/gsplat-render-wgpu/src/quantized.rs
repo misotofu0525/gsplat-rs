@@ -223,6 +223,14 @@ pub(crate) fn encode_smallest_three(q: [f32; 4]) -> u32 {
             largest_abs = abs;
         }
     }
+    // Decoders reconstruct the dropped component as +sqrt(1 - sum), so the
+    // packed representative must have a non-negative largest component.
+    // `q` and `-q` are the same rotation.
+    let q = if q[largest] < 0.0 {
+        [-q[0], -q[1], -q[2], -q[3]]
+    } else {
+        q
+    };
     let mut packed = (largest as u32) << 30;
     let mut shift = 0_u32;
     for index in (0..4).rev() {
@@ -332,6 +340,7 @@ pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::quat_to_mat3;
     use gsplat_core::{SceneBuffers, Vec3f};
 
     #[test]
@@ -346,6 +355,38 @@ mod tests {
         let decoded = decode_smallest_three(encode_smallest_three(q));
         for i in 0..4 {
             assert!((q[i] - decoded[i]).abs() < 2.0e-3, "{q:?} vs {decoded:?}");
+        }
+    }
+
+    #[test]
+    fn smallest_three_preserves_rotation_when_largest_component_is_negative() {
+        // The decoder always reconstructs the dropped component as positive, so
+        // `q` and `-q` must encode to the same rotation. One case per largest index.
+        let cases = [
+            [-0.9, 0.1, -0.2, 0.3],
+            [0.2, -0.85, 0.3, -0.1],
+            [0.1, 0.3, -0.9, 0.2],
+            [0.2, 0.3, 0.1, -0.9],
+        ];
+        for raw in cases {
+            let q = quat_normalize(raw);
+            let decoded = decode_smallest_three(encode_smallest_three(q));
+            let expected = quat_to_mat3(q);
+            let actual = quat_to_mat3(decoded);
+            for (row, expected_row) in expected.iter().enumerate() {
+                for (col, expected_value) in expected_row.iter().enumerate() {
+                    assert!(
+                        (expected_value - actual[row][col]).abs() < 4.0e-3,
+                        "{q:?} decoded as {decoded:?}: rotation matrix differs at [{row}][{col}]"
+                    );
+                }
+            }
+            for i in 0..4 {
+                assert!(
+                    (decoded[i] + q[i]).abs() < 2.0e-3,
+                    "{q:?} should decode to its largest-positive representative, got {decoded:?}"
+                );
+            }
         }
     }
 

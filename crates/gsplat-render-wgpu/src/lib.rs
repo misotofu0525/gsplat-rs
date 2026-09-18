@@ -1053,6 +1053,74 @@ mod tests {
         );
     }
 
+    /// Anisotropic splats whose largest-magnitude quaternion component is
+    /// negative, one per component index. The full-f32 path consumes the
+    /// quaternion directly; the quantized path must reproduce the same
+    /// orientation through smallest-three packing.
+    fn build_negative_largest_quaternion_scene() -> SceneBuffers {
+        let needle_x = [-1.6, -3.5, -3.5];
+        let needle_y = [-3.5, -1.6, -3.5];
+        let needle_z = [-3.5, -3.5, -1.6];
+        SceneBuffers {
+            positions: vec![
+                Vec3f::new(-0.35, 0.0, 1.6),
+                Vec3f::new(0.35, 0.0, 1.6),
+                Vec3f::new(0.0, 0.35, 1.6),
+                Vec3f::new(0.0, -0.35, 1.6),
+            ],
+            opacity: vec![2.0, 2.0, 2.0, 2.0],
+            scale_xyz: vec![needle_x, needle_x, needle_y, needle_z],
+            rotation_xyzw: vec![
+                // 60 deg about z, stored with w negative.
+                [0.0, 0.0, -0.5, -0.866_025_4],
+                // 120 deg about z, stored with z negative.
+                [0.0, 0.0, -0.866_025_4, -0.5],
+                // 100 deg about x, stored with x negative.
+                [-0.766_044_4, 0.0, 0.0, -0.642_787_6],
+                // 160 deg about y, stored with y negative.
+                [0.0, -0.984_807_75, 0.0, -0.173_648_18],
+            ],
+            color_dc: vec![
+                [0.5, 0.1, 0.1],
+                [0.1, 0.5, 0.1],
+                [0.1, 0.1, 0.5],
+                [0.4, 0.4, 0.1],
+            ],
+            sh_degree: 0,
+            sh_rest: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quantized_profile_keeps_orientation_for_negative_largest_quaternions() {
+        let scene = build_negative_largest_quaternion_scene();
+        scene.validate().unwrap();
+        let Some((reference, quantized, _, _)) = render_profile_pair(
+            scene,
+            96,
+            "quantized negative-largest quaternion",
+            &Camera::default(),
+        ) else {
+            return;
+        };
+        let metrics = rgba_image_parity_metrics(&reference, &quantized);
+        let ssim = ssim_luma_srgb_window8(&reference, &quantized, 96, 96);
+        eprintln!(
+            "quantized negative-largest quaternion: mean_abs_rgb={:.6} frac_over_3_255={:.6} max_abs_rgb={:.6} ssim={:.6}",
+            metrics.mean_abs_rgb, metrics.frac_pixels_over_3_255, metrics.max_abs_rgb, ssim
+        );
+        assert!(
+            metrics.mean_abs_rgb <= 2.0 / 255.0,
+            "quantized mean abs RGB {:.6} exceeded 2/255",
+            metrics.mean_abs_rgb
+        );
+        assert!(
+            ssim >= 0.99,
+            "negative-largest quaternion SSIM {ssim} below 0.99"
+        );
+    }
+
     fn ssim_luma_srgb_window8(first: &[u8], second: &[u8], width: u32, height: u32) -> f64 {
         assert_eq!(first.len(), second.len());
         assert_eq!(first.len(), (width * height * 4) as usize);
