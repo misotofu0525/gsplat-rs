@@ -29,6 +29,10 @@ The wrapper exposes:
   for experimental ordering benchmarks; CPU radix remains the default
 - phase-specific frame stats: `renderSubmitMs` and `frameWallMs`;
   `cpuGeometryMs` and `rasterMs` remain zero-valued compatibility fields
+- on-demand presentation: `renderFrame()` on an unchanged camera does no GPU
+  work and returns `presented: false` with the last presented frame's stats;
+  the canvas keeps its image, so a `requestAnimationFrame` loop is free while
+  idle
 
 Minimal browser usage:
 

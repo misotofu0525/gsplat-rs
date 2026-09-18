@@ -74,7 +74,10 @@ returned.
 The C handle is an adapter over the shared Rust `SurfaceRenderSession`, not a
 separate Android scheduler. CPU sort cadence, compact order uploads, resident
 drawing, and optional native async sorting therefore follow the same state
-machine as Web, iOS, and desktop Surface rendering.
+machine as Web, iOS, and desktop Surface rendering. A `renderFrame()` call
+with an unchanged camera and surface does no GPU work and leaves the last
+presented image on the `Surface`, so a fixed-rate render loop is cheap while
+the scene is stationary.
 
 ## 2) Host smoke (JNI)
 

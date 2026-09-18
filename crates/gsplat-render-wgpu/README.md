@@ -17,7 +17,9 @@ Main entry points:
   constructors intentionally do not create an offscreen GPU device
 - `SurfaceRenderSession` / `SurfacePresenter`: shared CPU-sort, compact-order
   upload, and realtime presentation onto Android `Surface`, iOS
-  `CAMetalLayer`, desktop windows, or an HTML canvas
+  `CAMetalLayer`, desktop windows, or an HTML canvas. Presentation is on
+  demand: `render_frame` does no GPU work while nothing changed, and
+  `needs_frame` lets an event loop idle
 
 Internal layout (not a public API split): `math.rs`, `preprocess.rs`,
 `project.rs`, `quantized.rs`, `resident.rs`, `offscreen.rs`, `surface.rs`,
