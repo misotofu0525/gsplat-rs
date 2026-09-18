@@ -774,12 +774,11 @@ impl SurfaceRenderSession {
         let mut observed_revision_lag = None;
         let mut stale_result_dropped = false;
         let mut completed_revision = None;
-        let polled_result = self
+        let sorter = self
             .async_sorter
             .as_mut()
-            .ok_or(RendererError::SurfaceWorker)?
-            .poll_result();
-        if let Some(result) = polled_result {
+            .ok_or(RendererError::SurfaceWorker)?;
+        if let Some(result) = sorter.poll_result() {
             let result = result?;
             completed_revision = Some(result.camera_revision);
             let revision_delta = self.camera_revision.saturating_sub(result.camera_revision);
@@ -794,13 +793,16 @@ impl SurfaceRenderSession {
                     self.async_sort_translation_limit,
                 )
             {
-                self.renderer
+                let previous = self
+                    .renderer
                     .replace_surface_sorted_indices(result.indices)?;
+                sorter.recycle(previous);
                 self.frame_state.mark_external_order(revision_lag);
                 self.applied_order_revision = result.camera_revision;
                 self.applied_order_camera = result.camera;
                 applied_order = true;
             } else {
+                sorter.recycle(result.indices);
                 stale_result_dropped = true;
             }
         }

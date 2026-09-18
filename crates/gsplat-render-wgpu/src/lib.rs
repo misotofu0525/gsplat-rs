@@ -477,18 +477,19 @@ impl Renderer {
         &self.preprocess_indices
     }
 
+    /// Installs an externally sorted order and returns the buffer it replaced
+    /// so the producer can reuse its capacity.
     pub fn replace_surface_sorted_indices(
         &mut self,
         indices: Vec<u32>,
-    ) -> Result<(), RendererError> {
+    ) -> Result<Vec<u32>, RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
         if indices.iter().any(|&idx| idx as usize >= scene.len()) {
             return Err(RendererError::InvalidScene);
         }
 
         self.preprocess_depth_keys.clear();
-        self.preprocess_indices = indices;
-        Ok(())
+        Ok(std::mem::replace(&mut self.preprocess_indices, indices))
     }
 
     pub fn build_sorted_indices(
