@@ -136,8 +136,10 @@ For the broader command matrix, use `VERIFICATION.md`.
   cadence, CPU sort refreshes, compact order uploads, and presentation to the
   shared `SurfaceRenderSession`. All clients use the same resident scene and
   sorted-index draw path. Mobile keeps the default CPU sort interval of 2.
-  A `render_frame` call with nothing changed presents nothing and reports
-  `presented == false`; the previously presented image stays on screen.
+  A `render_frame` call with no camera command and nothing changed presents
+  nothing and reports `presented == false`; the previously presented image
+  stays on screen. Camera commands always request a frame, so static
+  benchmark loops that orbit by zero still measure presented frames.
 - Resident capacity is checked before GPU allocation. A scene that exceeds the
   adapter's binding or buffer limits returns a structured error; there is no
   hidden storage-mode or paging fallback.

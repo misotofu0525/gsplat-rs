@@ -439,6 +439,8 @@ fn run_interactive(
                             }
                         }
                     }
+                    // set_camera also requests a frame, which covers both our
+                    // own redraw requests and the platform exposing the window.
                     if let Err(err) = session.set_camera(camera_now) {
                         if let Ok(mut slot) = render_error_shared.lock() {
                             *slot = Some(format!("interactive camera update failed: {err}"));
@@ -446,9 +448,6 @@ fn run_interactive(
                         target.exit();
                         return;
                     }
-                    // This event is either our own request (something changed)
-                    // or the platform exposing the window; both need an image.
-                    session.request_present();
                     let output = match session.render_frame() {
                         Ok(output) => output,
                         Err(err) => {

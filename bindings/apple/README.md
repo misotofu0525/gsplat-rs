@@ -27,9 +27,11 @@ callers should use one owner thread or queue.
 The C handle adapts the shared Rust `SurfaceRenderSession`; iOS does not own a
 separate frame scheduler. CPU sort cadence, compact order uploads, resident
 drawing, and optional native async sorting are shared with Android, Web, and
-desktop Surface rendering. `renderFrame()` with an unchanged camera and
-drawable size does no GPU work and keeps the last presented drawable on
-screen, so a fixed-rate render loop is cheap while the scene is stationary.
+desktop Surface rendering. `renderFrame()` with no camera command since the
+last presented frame and an unchanged drawable size does no GPU work and
+keeps the last presented drawable on screen, so a fixed-rate render loop is
+cheap while the scene is stationary. Any camera command (`orbit`, `zoom`,
+`pan`, `resetCamera`), even a zero delta, requests a presented frame.
 
 `GSPLAT_RENDER_MODE_SORTED_ALPHA` is the only release-gated render mode in v0.1.
 Scene loading is path-based today; scene-from-memory loading is outside the

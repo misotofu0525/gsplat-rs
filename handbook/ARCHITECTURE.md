@@ -127,9 +127,11 @@
   redraws do not repeatedly sort
   frames are presented on demand: `render_frame` returns `presented ==
   false` with no GPU work while nothing changed since the last presented
-  image, `needs_frame` lets event-loop clients idle, and `request_present`
-  forces a redraw after the platform exposes or recreates a window; a
-  swapchain timeout keeps the frame pending instead of dropping it
+  image; every `set_camera` call (any orbit/zoom/pan/reset command through
+  the C ABI or wasm, even with an unchanged pose) requests a frame,
+  `needs_frame` lets event-loop clients idle, and `request_present` forces
+  a redraw after the platform exposes or recreates a window; a swapchain
+  timeout keeps the frame pending instead of dropping it
   scene-derived positions, covariance terms, opacity, DC color, and SH data stay
   GPU-resident; CPU sort refreshes upload only sorted `u32` source IDs; the
   CPU retains one `SceneBuffers` (shared by `Arc` with the native async sort

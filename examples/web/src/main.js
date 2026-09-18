@@ -1127,6 +1127,11 @@ function frame(now) {
     if (state.benchmark.yawStep !== 0) {
       orbitCamera(state.benchmark.yawStep, 0);
       state.cameraStatus = "camera=benchmark_orbit";
+    } else {
+      // The Surface session presents on demand; a camera command (even a
+      // zero orbit) requests a frame so a static trace still measures a
+      // presented frame every tick instead of a skipped one.
+      state.wasmRenderer?.orbit(0, 0);
     }
   } else if (state.autoOrbit && state.scene) {
     orbitCamera(dt * 0.22, 0);

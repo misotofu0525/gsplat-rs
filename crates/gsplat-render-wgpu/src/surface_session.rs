@@ -286,6 +286,10 @@ impl SurfaceRenderSession {
         self.camera
     }
 
+    /// Sets the camera for the next frame. Any camera command is also a
+    /// request for a frame, even when the pose is unchanged, so a host
+    /// driving the camera every tick (or a static benchmark) always presents;
+    /// only frames with no camera command and nothing else pending are skipped.
     pub fn set_camera(&mut self, camera: Camera) -> Result<(), RendererError> {
         camera
             .validate()
@@ -295,6 +299,7 @@ impl SurfaceRenderSession {
             self.camera_revision = self.camera_revision.wrapping_add(1);
             self.frame_state.mark_camera_changed();
         }
+        self.frame_state.request_present();
         Ok(())
     }
 
@@ -546,9 +551,11 @@ impl SurfaceRenderSession {
         self.async_sort_enabled
     }
 
-    /// Presents a frame when something changed; otherwise returns immediately
-    /// with `presented == false` and no GPU work. Wrappers that tick on every
-    /// display refresh therefore idle for free once the camera stops.
+    /// Presents a frame when something changed or a camera command / redraw
+    /// request arrived since the last presented image; otherwise returns
+    /// immediately with `presented == false` and no GPU work. Wrappers that
+    /// tick on every display refresh therefore idle for free once the host
+    /// stops sending camera commands.
     pub fn render_frame(&mut self) -> Result<SurfaceFrameOutput, RendererError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.async_sort_enabled && self.order_backend == SurfaceOrderBackend::Cpu {

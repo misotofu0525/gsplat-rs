@@ -73,9 +73,10 @@ transient research belong under `docs/plans/`.
   record plus per-degree u8 SH sidecars. The stable C ABI does not expose the
   profile.
 - Mobile keeps the default CPU sort interval of 2. Identical redraws reuse the
-  existing order and projected records, and a frame with nothing changed is
-  not presented at all (`SurfaceRenderSession::needs_frame` /
-  `SurfaceFrameOutput::presented`). Native CPU ordering can use the bounded
+  existing order and projected records, and a frame with no camera command
+  and nothing changed is not presented at all
+  (`SurfaceRenderSession::needs_frame` / `SurfaceFrameOutput::presented`;
+  any camera command requests a frame). Native CPU ordering can use the bounded
   `AsyncLatest` schedule; its worker keeps one sort workspace and recycles
   the displayed index buffer. The CPU retains one `SceneBuffers` per
   renderer and no derived per-splat arrays.
