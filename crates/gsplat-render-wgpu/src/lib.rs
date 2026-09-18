@@ -509,6 +509,7 @@ impl Renderer {
         &mut self,
         camera: &Camera,
         sorted_indices: &[u32],
+        upload_order: bool,
     ) -> Result<(), RendererError> {
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
         let rasterizer = self
@@ -527,6 +528,7 @@ impl Renderer {
                 .as_deref()
                 .ok_or(RendererError::InvalidScene)?,
             self.storage_profile,
+            upload_order,
         )
     }
 
@@ -545,7 +547,7 @@ impl Renderer {
 
         let raster_start = timer_now();
         let sorted_indices = std::mem::take(&mut self.preprocess_indices);
-        let raster_result = self.raster_sorted_indices(camera, &sorted_indices);
+        let raster_result = self.raster_sorted_indices(camera, &sorted_indices, true);
         let drawn_count = sorted_indices.len() as u32;
         self.preprocess_indices = sorted_indices;
         raster_result?;
@@ -594,18 +596,52 @@ impl Renderer {
         Ok(stats)
     }
 
+    /// Runs only the resident projection stage for `sorted_indices`; returns
+    /// whether a dispatch was submitted (false when the cache was current).
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn project_with_external_order_for_test(
+        &mut self,
+        camera: &Camera,
+        sorted_indices: &[u32],
+        upload_order: bool,
+    ) -> Result<bool, RendererError> {
+        let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
+        let rasterizer = self
+            .gpu_rasterizer
+            .as_mut()
+            .ok_or(RendererError::GpuRasterizerUnavailable)?;
+        rasterizer.project_resident_sorted_indices(
+            self.config,
+            sorted_indices,
+            camera,
+            scene,
+            self.world_covariance_terms
+                .as_deref()
+                .ok_or(RendererError::InvalidScene)?,
+            self.alpha_values
+                .as_deref()
+                .ok_or(RendererError::InvalidScene)?,
+            self.storage_profile,
+            upload_order,
+        )
+    }
+
+    /// Draws `sorted_indices` on the offscreen target. `upload_order = false`
+    /// keeps the resident order and cached projection, mirroring a stationary
+    /// Surface frame; production offscreen frames always upload.
     #[cfg(all(test, not(target_arch = "wasm32")))]
     fn render_frame_with_external_order_for_test(
         &mut self,
         camera: &Camera,
         sorted_indices: &[u32],
+        upload_order: bool,
     ) -> Result<FrameStats, RendererError> {
         camera
             .validate()
             .map_err(|_| RendererError::InvalidCamera)?;
         let frame_start = timer_now();
         let raster_start = timer_now();
-        self.raster_sorted_indices(camera, sorted_indices)?;
+        self.raster_sorted_indices(camera, sorted_indices, upload_order)?;
         let raster_ms = timer_elapsed_ms(raster_start);
         let count = u32::try_from(sorted_indices.len()).unwrap_or(u32::MAX);
         let stats = FrameStats {
@@ -870,10 +906,10 @@ mod tests {
         );
 
         reference
-            .render_frame_with_external_order_for_test(&current_camera, &fresh_order)
+            .render_frame_with_external_order_for_test(&current_camera, &fresh_order, true)
             .unwrap();
         stale
-            .render_frame_with_external_order_for_test(&current_camera, &stale_order)
+            .render_frame_with_external_order_for_test(&current_camera, &stale_order, true)
             .unwrap();
         let metrics = rgba_image_parity_metrics(
             &reference.readback_rgba8().unwrap(),
@@ -911,6 +947,187 @@ mod tests {
                 .unwrap_or_else(|error| panic!("load {label} at {}: {error}", path.display()));
             assert_two_revision_stale_order_quality(loaded.scene, label);
         }
+    }
+
+    /// Deterministic degree-3 scene: half the splats sit inside the default
+    /// camera's frustum, half are pushed far off-screen but stay inside the
+    /// near/far range, so the CPU visibility pass keeps them and the compute
+    /// preprocess culls them by NDC footprint.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn synthetic_half_offscreen_degree_three_scene(count: usize) -> SceneBuffers {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32
+        };
+        let tan_half = (Camera::default().intrinsics.vertical_fov_radians * 0.5).tan();
+        let rest_len = 45;
+        let mut positions = Vec::with_capacity(count);
+        let mut color_dc = Vec::with_capacity(count);
+        let mut sh_rest = Vec::with_capacity(count * rest_len);
+        for index in 0..count {
+            let depth = 2.0 + next() * 18.0;
+            let lateral = (next() - 0.5) * 1.6 * depth * tan_half;
+            let vertical = (next() - 0.5) * 1.6 * depth * tan_half;
+            let offscreen_shift = if index % 2 == 0 {
+                0.0
+            } else {
+                depth * tan_half * 6.0
+            };
+            positions.push(Vec3f::new(lateral + offscreen_shift, vertical, depth));
+            color_dc.push([next() * 0.8, next() * 0.8, next() * 0.8]);
+            for _ in 0..rest_len {
+                sh_rest.push((next() - 0.5) * 0.2);
+            }
+        }
+        SceneBuffers {
+            positions,
+            opacity: vec![2.0; count],
+            scale_xyz: vec![[-4.0, -4.0, -4.0]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc,
+            sh_degree: 3,
+            sh_rest: Some(sh_rest),
+        }
+    }
+
+    /// Average wall time of `frames` projection-only submissions including the
+    /// GPU wait. `upload_order = true` forces a dispatch per frame; `false`
+    /// exercises the stationary cache.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn measure_projection_only(
+        renderer: &mut Renderer,
+        camera: &Camera,
+        order: &[u32],
+        upload_order: bool,
+        frames: u32,
+    ) -> (f64, u32) {
+        let mut dispatched = 0_u32;
+        let started = std::time::Instant::now();
+        for _ in 0..frames {
+            dispatched += u32::from(
+                renderer
+                    .project_with_external_order_for_test(camera, order, upload_order)
+                    .unwrap(),
+            );
+            renderer.wait_for_gpu().unwrap();
+        }
+        (
+            started.elapsed().as_secs_f64() * 1000.0 / f64::from(frames),
+            dispatched,
+        )
+    }
+
+    /// Stationary frames must skip the projection dispatch and draw the same
+    /// image from the cached projected buffer. Also prints the isolated
+    /// projection-pass cost so the SH early-out can be compared between
+    /// shader revisions with one command.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn assert_stationary_projection_cache(scene: SceneBuffers, camera: Camera, label: &str) {
+        let config = test_config(256);
+        let Some(mut renderer) = test_renderer(config, label) else {
+            return;
+        };
+        let splats = scene.len();
+        renderer.load_scene(scene).unwrap();
+        let (order, stats) = renderer.build_sorted_indices(&camera).unwrap();
+        let (instances, _) = renderer.build_sorted_instances(&camera).unwrap();
+        let onscreen = instances.len();
+        const WARMUP: u32 = 5;
+        const FRAMES: u32 = 40;
+
+        measure_projection_only(&mut renderer, &camera, &order, true, WARMUP);
+        let (forced_ms, forced_dispatches) =
+            measure_projection_only(&mut renderer, &camera, &order, true, FRAMES);
+        assert_eq!(forced_dispatches, FRAMES);
+        let (cached_ms, cached_dispatches) =
+            measure_projection_only(&mut renderer, &camera, &order, false, FRAMES);
+        assert_eq!(
+            cached_dispatches, 0,
+            "{label}: stationary frames must not dispatch the projection pass"
+        );
+        assert_eq!(
+            renderer
+                .gpu_rasterizer
+                .as_ref()
+                .and_then(crate::GpuRasterizer::resident_projection_dirty),
+            Some(false),
+            "{label}: stationary frames must keep the cached projection"
+        );
+
+        // Full frames: a forced re-projection and a cached draw must be
+        // pixel-identical.
+        renderer
+            .render_frame_with_external_order_for_test(&camera, &order, true)
+            .unwrap();
+        let forced_image = renderer.readback_rgba8().unwrap();
+        renderer
+            .render_frame_with_external_order_for_test(&camera, &order, false)
+            .unwrap();
+        let cached_image = renderer.readback_rgba8().unwrap();
+        assert_eq!(
+            forced_image, cached_image,
+            "{label}: cached projection must draw the identical image"
+        );
+
+        // A camera change invalidates the cache even without an order upload.
+        let mut moved = camera;
+        moved.pose.position.x += 1e-3;
+        assert!(
+            renderer
+                .project_with_external_order_for_test(&moved, &order, false)
+                .unwrap(),
+            "{label}: a moved camera must re-project the resident order"
+        );
+        renderer
+            .render_frame_with_external_order_for_test(&moved, &order, false)
+            .unwrap();
+        let moved_image = renderer.readback_rgba8().unwrap();
+        assert_ne!(
+            moved_image, cached_image,
+            "{label}: a moved camera must change the image"
+        );
+
+        eprintln!(
+            "projection_cache scene={label} splats={splats} visible={} onscreen={onscreen} frames={FRAMES} projection_pass_ms={forced_ms:.3} cached_ms={cached_ms:.3}",
+            stats.visible_count,
+        );
+        assert!(
+            cached_ms < forced_ms,
+            "{label}: cached stationary frames ({cached_ms:.3} ms) must be cheaper than re-projected frames ({forced_ms:.3} ms)"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stationary_projection_cache_skips_reprojection_on_synthetic_scene() {
+        assert_stationary_projection_cache(
+            synthetic_half_offscreen_degree_three_scene(200_000),
+            Camera::default(),
+            "synthetic-200k-half-offscreen",
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stationary_projection_cache_skips_reprojection_on_kitsune_when_present() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/external/wakufactory_kitune/kitune1.ply");
+        if !path.is_file() {
+            eprintln!("skipping Kitsune projection cache; dataset missing");
+            return;
+        }
+        let loaded = gsplat_io_ply::load_ply(&path)
+            .unwrap_or_else(|error| panic!("load Kitsune at {}: {error}", path.display()));
+        let camera = orbit_camera_for_scene(&loaded.scene, test_config(256), 0.0);
+        assert_stationary_projection_cache(loaded.scene.clone(), camera, "kitsune-orbit");
+        // Camera::default() sits inside the scene: most near/far-visible splats
+        // are outside the NDC footprint, the SH early-out's best case.
+        assert_stationary_projection_cache(
+            loaded.scene,
+            Camera::default(),
+            "kitsune-default-camera",
+        );
     }
 
     fn scene_to_rdf_ply_for_spz_parity(scene: &SceneBuffers) -> String {

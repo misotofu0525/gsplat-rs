@@ -88,8 +88,10 @@ impl GpuRasterizer {
         self.resident_scene = None;
     }
 
+    /// Creates the resident scene on first use, then uploads the order (when
+    /// requested) and the render params. Returns the instance count to draw.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_resident_sorted_indices(
+    fn prepare_resident_cpu_frame(
         &mut self,
         config: RendererConfig,
         sorted_indices: &[u32],
@@ -98,7 +100,8 @@ impl GpuRasterizer {
         world_covariance_terms: &[CameraCovarianceTerms],
         alpha_values: &[f32],
         profile: crate::ResidentStorageProfile,
-    ) -> Result<(), RendererError> {
+        upload_order: bool,
+    ) -> Result<u32, RendererError> {
         self.ensure_output_target(config.width, config.height)?;
         if self.resident_scene.is_none() {
             self.resident_scene = Some(ResidentSceneResources::new(
@@ -112,18 +115,50 @@ impl GpuRasterizer {
         }
         let resident_scene = self
             .resident_scene
-            .as_ref()
+            .as_mut()
             .ok_or(RendererError::GpuDeviceCreation)?;
-        let instance_count = resident_scene
+        resident_scene
             .prepare_cpu(
                 &self.queue,
                 sorted_indices,
                 camera,
                 config.width,
                 config.height,
-                true,
+                upload_order,
             )
-            .map_err(|_| RendererError::GpuDeviceCreation)?;
+            .map_err(|_| RendererError::GpuDeviceCreation)
+    }
+
+    /// Offscreen `Renderer::render_frame` always passes `upload_order = true`;
+    /// each call is a full preprocess + sort + draw so PNG, conformance, and
+    /// bench output measure complete frames. `false` reuses the resident order
+    /// and the cached projection exactly like a stationary Surface frame.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_resident_sorted_indices(
+        &mut self,
+        config: RendererConfig,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        scene: &SceneBuffers,
+        world_covariance_terms: &[CameraCovarianceTerms],
+        alpha_values: &[f32],
+        profile: crate::ResidentStorageProfile,
+        upload_order: bool,
+    ) -> Result<(), RendererError> {
+        let instance_count = self.prepare_resident_cpu_frame(
+            config,
+            sorted_indices,
+            camera,
+            scene,
+            world_covariance_terms,
+            alpha_values,
+            profile,
+            upload_order,
+        )?;
+        let resident_scene = self
+            .resident_scene
+            .as_mut()
+            .ok_or(RendererError::GpuDeviceCreation)?;
 
         let mut encoder = self
             .device
@@ -145,7 +180,57 @@ impl GpuRasterizer {
             },
         );
         self.queue.submit(Some(encoder.finish()));
+        resident_scene.mark_projection_current();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_projection_dirty(&self) -> Option<bool> {
+        self.resident_scene
+            .as_ref()
+            .map(ResidentSceneResources::projection_dirty)
+    }
+
+    /// Runs only the projection stage (no draw) so tests can time the compute
+    /// pass by itself. Returns whether a dispatch was submitted.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn project_resident_sorted_indices(
+        &mut self,
+        config: RendererConfig,
+        sorted_indices: &[u32],
+        camera: &Camera,
+        scene: &SceneBuffers,
+        world_covariance_terms: &[CameraCovarianceTerms],
+        alpha_values: &[f32],
+        profile: crate::ResidentStorageProfile,
+        upload_order: bool,
+    ) -> Result<bool, RendererError> {
+        let instance_count = self.prepare_resident_cpu_frame(
+            config,
+            sorted_indices,
+            camera,
+            scene,
+            world_covariance_terms,
+            alpha_values,
+            profile,
+            upload_order,
+        )?;
+        let resident_scene = self
+            .resident_scene
+            .as_mut()
+            .ok_or(RendererError::GpuDeviceCreation)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: wgpu_label("gsplat-offscreen-project-only-encoder"),
+            });
+        let encoded = resident_scene.encode_project(&mut encoder, instance_count, false);
+        if encoded {
+            self.queue.submit(Some(encoder.finish()));
+            resident_scene.mark_projection_current();
+        }
+        Ok(encoded)
     }
 
     #[cfg(test)]
@@ -202,6 +287,7 @@ impl GpuRasterizer {
             })?;
             gpu_order.sorter.encode(&mut encoder);
         }
+        resident_scene.invalidate_projection();
         resident_scene.encode_project(&mut encoder, instance_count, true);
         let gpu_order = resident_scene.gpu_order().ok_or_else(|| {
             crate::ResidentSceneError::GpuOrderInitialization(
@@ -225,6 +311,7 @@ impl GpuRasterizer {
             },
         );
         self.queue.submit(Some(encoder.finish()));
+        resident_scene.mark_projection_current();
         Ok(())
     }
 

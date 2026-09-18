@@ -384,6 +384,8 @@ impl SurfacePresenter {
         self.surface.configure(&self.device, &self.surface_config);
     }
 
+    /// Uploads a changed order / params, re-projects only when the projected
+    /// buffer is stale, and draws.
     pub fn render_sorted_indices(
         &mut self,
         sorted_indices: &[u32],
@@ -471,6 +473,7 @@ impl SurfacePresenter {
             })?;
             if refresh_order {
                 gpu_order.sorter.encode(&mut encoder);
+                self.resident_scene.invalidate_projection();
             }
         }
         self.resident_scene
@@ -482,6 +485,7 @@ impl SurfacePresenter {
             // an uninitialized pair buffer.
             if refresh_order {
                 self.queue.submit(Some(encoder.finish()));
+                self.resident_scene.mark_projection_current();
             }
             return Ok(());
         };
@@ -510,6 +514,7 @@ impl SurfacePresenter {
             },
         );
         self.queue.submit(Some(encoder.finish()));
+        self.resident_scene.mark_projection_current();
         frame.present();
         Ok(())
     }
@@ -542,6 +547,7 @@ impl SurfacePresenter {
             },
         );
         self.queue.submit(Some(encoder.finish()));
+        self.resident_scene.mark_projection_current();
         frame.present();
         Ok(())
     }

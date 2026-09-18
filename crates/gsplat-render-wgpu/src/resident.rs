@@ -88,7 +88,7 @@ pub(crate) struct GpuSurfaceSourceElem {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct GpuSurfaceRenderParams {
     pub(crate) camera_pos: [f32; 4],
     pub(crate) view_rot_row0: [f32; 4],
@@ -368,6 +368,12 @@ pub(crate) struct ResidentSceneResources {
     project_layout: wgpu::BindGroupLayout,
     cpu_project_bind_group: wgpu::BindGroup,
     gpu_order: Option<ResidentGpuSceneOrder>,
+    /// Render params currently in the GPU uniform buffer; `None` until the
+    /// first upload.
+    uploaded_params: Option<GpuSurfaceRenderParams>,
+    /// True while the projected buffer lags the current params or order
+    /// buffer. Cleared only after a projection dispatch has been submitted.
+    projection_dirty: bool,
 }
 
 pub(crate) struct ResidentGpuSceneOrder {
@@ -495,11 +501,13 @@ impl ResidentSceneResources {
             project_layout,
             cpu_project_bind_group,
             gpu_order: None,
+            uploaded_params: None,
+            projection_dirty: true,
         })
     }
 
     pub(crate) fn prepare_cpu(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         sorted_indices: &[u32],
         camera: &Camera,
@@ -516,20 +524,53 @@ impl ResidentSceneResources {
                 0,
                 bytemuck::cast_slice(sorted_indices),
             );
+            self.projection_dirty = true;
         }
         let instance_count = sorted_indices.len() as u32;
         let params =
             make_surface_render_params(camera, width, height, instance_count, self.sh_degree);
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        self.upload_params(queue, params);
         Ok(instance_count)
     }
 
+    fn upload_params(&mut self, queue: &wgpu::Queue, params: GpuSurfaceRenderParams) {
+        if self.uploaded_params == Some(params) {
+            return;
+        }
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        self.uploaded_params = Some(params);
+        self.projection_dirty = true;
+    }
+
+    /// The projected buffer must be rewritten before the next draw. Called
+    /// when an order buffer changes without going through [`Self::prepare_cpu`].
+    pub(crate) fn invalidate_projection(&mut self) {
+        self.projection_dirty = true;
+    }
+
+    /// Call once the command buffer holding the last `encode_project`
+    /// dispatch has been submitted; the projected buffer is then current.
+    pub(crate) fn mark_projection_current(&mut self) {
+        self.projection_dirty = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projection_dirty(&self) -> bool {
+        self.projection_dirty
+    }
+
+    /// Records the projection pass when the projected buffer is stale.
+    /// Returns `false` when the cached projection is still valid and nothing
+    /// was encoded; the draw then reads the previous records unchanged.
     pub(crate) fn encode_project(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         instance_count: u32,
         use_gpu_order: bool,
-    ) {
+    ) -> bool {
+        if !self.projection_dirty {
+            return false;
+        }
         let bind_group = if use_gpu_order {
             self.gpu_order
                 .as_ref()
@@ -546,9 +587,10 @@ impl ResidentSceneResources {
                 order.sorter.indirect_args(),
                 crate::resident_gpu_order::ORDER_META_DISPATCH_OFFSET,
             );
-            return;
+            return true;
         }
         encode_project(encoder, &self.project_pipeline, bind_group, instance_count);
+        true
     }
 
     pub(crate) fn ensure_gpu_order(
@@ -627,7 +669,7 @@ impl ResidentSceneResources {
             make_surface_render_params(camera, width, height, instance_count, self.sh_degree);
         params.order_stride_words = 2;
         params.order_id_offset_words = 1;
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        self.upload_params(queue, params);
         Ok(instance_count)
     }
 
