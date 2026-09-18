@@ -1,7 +1,8 @@
 WGSL shader files for `gsplat-render-wgpu`.
 
 - `splat_common.wgsl`: shared projection, covariance, and SH evaluation used
-  by the per-splat compute preprocess pass.
+  by the per-splat compute preprocess pass. Culled or zero-alpha records
+  skip SH evaluation; their premultiplied color is exactly zero either way.
 - `splat_preprocess.wgsl`: compute entry that writes one projected record per
   sorted instance from full-f32 resident source buffers.
 - `splat_preprocess_quantized.wgsl`: quantized preprocess; SH rest is four
