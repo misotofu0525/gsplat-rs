@@ -331,6 +331,10 @@ impl SurfaceRenderSession {
 
     /// Rebuilds resident GPU buffers for a storage profile. Sample/benchmark
     /// use only; the stable C ABI stays on the default full-f32 layout.
+    ///
+    /// A profile the presenter's device cannot hold is rejected before any
+    /// state changes, so the renderer never reports a profile the GPU does not
+    /// have resident.
     pub fn set_storage_profile(
         &mut self,
         profile: ResidentStorageProfile,
@@ -338,6 +342,8 @@ impl SurfaceRenderSession {
         if self.renderer.storage_profile() == profile {
             return Ok(());
         }
+        let scene = self.renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
+        self.presenter.preflight_resident_scene(scene, profile)?;
         self.renderer.set_storage_profile(profile);
         self.presenter.rebuild_resident_scene(&self.renderer)?;
         self.finish_resident_rebuild()
@@ -346,8 +352,11 @@ impl SurfaceRenderSession {
     /// Replace the resident scene and rebuild GPU resources.
     ///
     /// Desktop Streamed SOG uses this when camera-driven leaf selection changes.
-    /// The stable C ABI does not expose it.
+    /// The stable C ABI does not expose it. A scene that does not fit the
+    /// presenter's device is rejected before the previous scene is replaced.
     pub fn reload_scene(&mut self, scene: gsplat_core::SceneBuffers) -> Result<(), RendererError> {
+        self.presenter
+            .preflight_resident_scene(&scene, self.renderer.storage_profile())?;
         self.renderer.load_scene(scene)?;
         self.presenter.rebuild_resident_scene(&self.renderer)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -360,7 +369,10 @@ impl SurfaceRenderSession {
     }
 
     fn finish_resident_rebuild(&mut self) -> Result<(), RendererError> {
+        // New resident buffers invalidate every presented order, whether or
+        // not the optional GPU-order preparation below succeeds.
         self.gpu_order_initialized = false;
+        self.frame_state.force_sort();
         let gpu_prepare_error = if self.order_backend == SurfaceOrderBackend::Cpu {
             None
         } else {
@@ -379,7 +391,6 @@ impl SurfaceRenderSession {
                 self.adaptive_policy.gpu_initialized = true;
             }
         }
-        self.frame_state.force_sort();
         Ok(())
     }
 

@@ -330,6 +330,10 @@ impl Renderer {
         scene.validate().map_err(|_| RendererError::InvalidScene)?;
         self.scene = Some(scene);
         self.rebuild_resident_cpu_data();
+        // The cached visibility order indexes the previous scene; a non-refresh
+        // frame must recompute instead of serving out-of-range source IDs.
+        self.preprocess_depth_keys.clear();
+        self.preprocess_indices.clear();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rasterizer) = self.gpu_rasterizer.as_mut() {
             rasterizer.clear_scene_resources();
@@ -679,6 +683,7 @@ mod tests {
     use crate::math::{precompute_world_covariances, quat_inverse};
     #[cfg(not(target_arch = "wasm32"))]
     use crate::offscreen::offscreen_device_limits;
+    use crate::resident::validate_resident_scene_for_limits;
 
     fn build_scene() -> SceneBuffers {
         SceneBuffers {
@@ -722,6 +727,41 @@ mod tests {
         assert_eq!(stats.visible_count, 2);
         assert_eq!(stats.drawn_count, 2);
         assert_eq!(instances.len(), 2);
+    }
+
+    #[test]
+    fn load_scene_invalidates_cached_visibility_order() {
+        let camera = Camera::default();
+        let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
+        renderer.load_scene(build_scene()).unwrap();
+        let stats = renderer
+            .build_surface_sorted_indices_with_sort_refresh(&camera, true)
+            .unwrap();
+        assert_eq!(stats.drawn_count, 2);
+        assert_eq!(renderer.current_sorted_indices().len(), 2);
+
+        let smaller = SceneBuffers {
+            positions: vec![Vec3f::new(0.0, 0.0, 1.0)],
+            opacity: vec![0.5],
+            scale_xyz: vec![[0.0; 3]],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]],
+            color_dc: vec![[0.2; 3]],
+            sh_degree: 0,
+            sh_rest: None,
+        };
+        renderer.load_scene(smaller).unwrap();
+        assert!(
+            renderer.current_sorted_indices().is_empty(),
+            "a scene switch must drop the previous scene's order"
+        );
+
+        // A non-refresh frame right after the switch must not serve the old order.
+        let stats = renderer
+            .build_surface_sorted_indices_with_sort_refresh(&camera, false)
+            .unwrap();
+        assert_eq!(stats.visible_count, 1);
+        assert_eq!(stats.drawn_count, 1);
+        assert_eq!(renderer.current_sorted_indices(), &[0]);
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1765,6 +1805,43 @@ mod tests {
                 required: 7,
                 available: 4,
             }
+        );
+    }
+
+    #[test]
+    fn resident_switch_validation_rejects_before_any_allocation() {
+        let limits = limits_with_storage_binding_limit(128 * 1024 * 1024);
+        assert!(
+            validate_resident_scene_for_limits(
+                &limits,
+                279_199,
+                3,
+                ResidentStorageProfile::FullF32
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_resident_scene_for_limits(
+                &limits,
+                3_454_040,
+                3,
+                ResidentStorageProfile::FullF32
+            ),
+            Err(ResidentSceneError::ResourceLimitExceeded(_))
+        ));
+        let mut four_storage_buffers = wgpu::Limits::downlevel_defaults();
+        four_storage_buffers.max_storage_buffers_per_shader_stage = 4;
+        assert_eq!(
+            validate_resident_scene_for_limits(
+                &four_storage_buffers,
+                1_000,
+                3,
+                ResidentStorageProfile::Quantized
+            ),
+            Err(ResidentSceneError::StorageBuffersPerStage {
+                required: 7,
+                available: 4,
+            })
         );
     }
 

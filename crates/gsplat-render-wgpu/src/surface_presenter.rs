@@ -1,13 +1,14 @@
 //! WGPU Surface presentation and geometry-resource ownership.
 
-use gsplat_core::Camera;
+use gsplat_core::{Camera, SceneBuffers};
 
 use crate::draw_pass::{SplatDraw, encode_splat_draw_into};
+use crate::resident::validate_resident_scene_for_limits;
 use crate::{
     Renderer, ResidentSceneError, ResidentScenePath, ResidentScenePreflight,
-    ResidentSceneResources, SurfacePresenterError, create_resident_bind_group_layout,
-    create_resident_pipeline, create_surface_instance, fit_surface_size, select_present_mode,
-    surface_error_to_presenter, wgpu_label,
+    ResidentSceneResources, ResidentStorageProfile, SurfacePresenterError,
+    create_resident_bind_group_layout, create_resident_pipeline, create_surface_instance,
+    fit_surface_size, select_present_mode, surface_error_to_presenter, wgpu_label,
 };
 
 struct SurfaceAdapterContext {
@@ -398,6 +399,23 @@ impl SurfacePresenter {
             refresh_indices,
         )?;
         self.present_resident_scene()
+    }
+
+    /// Checks that `scene` fits this presenter's device under `profile` without
+    /// touching the current resident scene. Run before a scene or profile swap
+    /// so a rejected switch leaves renderer and presenter consistent.
+    pub(crate) fn preflight_resident_scene(
+        &self,
+        scene: &SceneBuffers,
+        profile: ResidentStorageProfile,
+    ) -> Result<(), SurfacePresenterError> {
+        validate_resident_scene_for_limits(
+            &self.device.limits(),
+            scene.len(),
+            scene.sh_degree,
+            profile,
+        )
+        .map_err(SurfacePresenterError::from)
     }
 
     /// Recreates resident GPU buffers for the renderer's current storage

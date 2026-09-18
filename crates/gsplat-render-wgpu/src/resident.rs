@@ -331,6 +331,27 @@ pub fn resident_scene_preflight_for_profile(
     })
 }
 
+/// Every `Result`-returning check that resident resource creation performs
+/// against a device's limits, without allocating. Callers that swap a scene
+/// or profile run this before mutating any state so a rejected switch leaves
+/// the previous resident scene fully intact.
+pub(crate) fn validate_resident_scene_for_limits(
+    limits: &wgpu::Limits,
+    splat_count: usize,
+    sh_degree: u8,
+    profile: ResidentStorageProfile,
+) -> Result<(), ResidentSceneError> {
+    let preflight = resident_scene_preflight_for_profile(splat_count, sh_degree, limits, profile)?;
+    if preflight.path != ResidentScenePath::Resident {
+        return Err(ResidentSceneError::ResourceLimitExceeded(Box::new(
+            preflight,
+        )));
+    }
+    let capacity = u32::try_from(splat_count.max(1))
+        .map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
+    validate_project_dispatch(limits, capacity)
+}
+
 pub(crate) struct ResidentSceneResources {
     sorted_indices_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
@@ -363,21 +384,13 @@ impl ResidentSceneResources {
         alpha_values: &[f32],
         profile: ResidentStorageProfile,
     ) -> Result<Self, ResidentSceneError> {
-        let preflight = resident_scene_preflight_for_profile(
+        validate_resident_scene_for_limits(
+            &device.limits(),
             scene.len(),
             scene.sh_degree,
-            &device.limits(),
             profile,
         )?;
-        if preflight.path != ResidentScenePath::Resident {
-            return Err(ResidentSceneError::ResourceLimitExceeded(Box::new(
-                preflight,
-            )));
-        }
         let capacity = scene.len().max(1);
-        let capacity_u32 =
-            u32::try_from(capacity).map_err(|_| ResidentSceneError::SortedIndexCapacityExceeded)?;
-        validate_project_dispatch(&device.limits(), capacity_u32)?;
         let sorted_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: wgpu_label("gsplat-resident-sorted-indices"),
             size: (capacity as u64) * (std::mem::size_of::<u32>() as u64),
