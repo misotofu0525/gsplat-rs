@@ -3,7 +3,7 @@
 use bytemuck::{Pod, Zeroable};
 use gsplat_core::SceneBuffers;
 
-use crate::math::quat_normalize;
+use crate::math::{alpha_value, quat_normalize};
 
 const COLOR_SCALE: f32 = 0.15;
 const SQRT_ONE_HALF: f32 = std::f32::consts::FRAC_1_SQRT_2;
@@ -103,59 +103,56 @@ pub(crate) fn quantized_sh_max_sidecar_stride(scene_degree: u8) -> u64 {
     }
 }
 
-pub(crate) fn pack_quantized_sources(
-    scene: &SceneBuffers,
-    alpha_values: &[f32],
-) -> Vec<GpuQuantizedSource> {
-    if scene.positions.is_empty() {
-        return vec![GpuQuantizedSource::zeroed()];
+/// Packs one validated splat into the 32-byte hot record.
+pub(crate) fn pack_quantized_source(scene: &SceneBuffers, index: usize) -> GpuQuantizedSource {
+    let p = scene.positions[index];
+    let alpha = alpha_value(scene.opacity[index]);
+    let scale = scene.scale_xyz[index];
+    let dc = scene.color_dc[index];
+    GpuQuantizedSource {
+        pos_xy: pack2x16float(p.x, p.y),
+        pos_z_alpha: pack2x16float(p.z, alpha),
+        rotation: encode_smallest_three(quat_normalize(scene.rotation_xyzw[index])),
+        scale_rgb: pack_u8x4(
+            quantize_log_scale(scale[0]),
+            quantize_log_scale(scale[1]),
+            quantize_log_scale(scale[2]),
+            0,
+        ),
+        color_dc: pack_u8x4(
+            quantize_color_dc(dc[0]),
+            quantize_color_dc(dc[1]),
+            quantize_color_dc(dc[2]),
+            0,
+        ),
+        _pad: [0; 3],
     }
-    (0..scene.positions.len())
-        .map(|i| {
-            let p = scene.positions[i];
-            let alpha = alpha_values.get(i).copied().unwrap_or(0.0);
-            let scale = scene.scale_xyz.get(i).copied().unwrap_or([0.0; 3]);
-            let rotation = scene
-                .rotation_xyzw
-                .get(i)
-                .copied()
-                .unwrap_or([0.0, 0.0, 0.0, 1.0]);
-            let dc = scene.color_dc.get(i).copied().unwrap_or([0.0; 3]);
-            GpuQuantizedSource {
-                pos_xy: pack2x16float(p.x, p.y),
-                pos_z_alpha: pack2x16float(p.z, alpha.clamp(0.0, 1.0)),
-                rotation: encode_smallest_three(quat_normalize(rotation)),
-                scale_rgb: pack_u8x4(
-                    quantize_log_scale(scale[0]),
-                    quantize_log_scale(scale[1]),
-                    quantize_log_scale(scale[2]),
-                    0,
-                ),
-                color_dc: pack_u8x4(
-                    quantize_color_dc(dc[0]),
-                    quantize_color_dc(dc[1]),
-                    quantize_color_dc(dc[2]),
-                    0,
-                ),
-                _pad: [0; 3],
-            }
-        })
-        .collect()
 }
 
-pub(crate) fn pack_quantized_sh_sidecar(scene: &SceneBuffers, sidecar_degree: u8) -> Vec<u32> {
+/// `u32` word count of the sidecar buffer for `sidecar_degree`.
+pub(crate) fn quantized_sh_sidecar_words(scene: &SceneBuffers, sidecar_degree: u8) -> usize {
     let total_bytes = quantized_sh_sidecar_buffer_bytes(
         scene.len().max(1) as u64,
         sidecar_degree,
         scene.sh_degree,
     )
     .unwrap_or(4) as usize;
-    let mut out = vec![0_u32; (total_bytes / 4).max(1)];
+    (total_bytes / 4).max(1)
+}
+
+/// Writes the u8 SH sidecar for `sidecar_degree` into `out`, sized by
+/// [`quantized_sh_sidecar_words`]. Degrees the scene lacks leave zeros.
+pub(crate) fn pack_quantized_sh_sidecar_into(
+    scene: &SceneBuffers,
+    sidecar_degree: u8,
+    out: &mut [u32],
+) {
+    out.fill(0);
     if sidecar_degree == 0 || scene.sh_degree < sidecar_degree {
-        return out;
+        return;
     }
     let Some(rest) = scene.sh_rest.as_deref() else {
-        return out;
+        return;
     };
     let rest_coeffs = ((u64::from(scene.sh_degree) + 1).pow(2) - 1) as usize;
     let first = quantized_sh_first_coeff(sidecar_degree) as usize;
@@ -173,6 +170,12 @@ pub(crate) fn pack_quantized_sh_sidecar(scene: &SceneBuffers, sidecar_degree: u8
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn pack_quantized_sh_sidecar(scene: &SceneBuffers, sidecar_degree: u8) -> Vec<u32> {
+    let mut out = vec![0_u32; quantized_sh_sidecar_words(scene, sidecar_degree)];
+    pack_quantized_sh_sidecar_into(scene, sidecar_degree, &mut out);
     out
 }
 

@@ -35,20 +35,10 @@ fn create_resident_scene_resources(
     let scene = renderer
         .scene()
         .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-    let world_covariance_terms = renderer
-        .world_covariance_terms
-        .as_deref()
-        .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-    let alpha_values = renderer
-        .alpha_values
-        .as_deref()
-        .ok_or(SurfacePresenterError::SceneNotLoaded)?;
     ResidentSceneResources::new(
         device,
         resident_bind_group_layout,
         scene,
-        world_covariance_terms,
-        alpha_values,
         renderer.storage_profile(),
     )
     .map_err(SurfacePresenterError::from)

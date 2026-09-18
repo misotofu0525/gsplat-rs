@@ -1,13 +1,16 @@
 //! CPU-side splat math shared by preprocess, resident upload, and tests.
 
+#[cfg(test)]
 use gsplat_core::SceneBuffers;
 
+/// Resident alpha for one splat's logit opacity.
+pub(crate) fn alpha_value(opacity: f32) -> f32 {
+    sigmoid(opacity).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
 pub(crate) fn precompute_alpha_values(scene: &SceneBuffers) -> Vec<f32> {
-    scene
-        .opacity
-        .iter()
-        .map(|&opacity| sigmoid(opacity).clamp(0.0, 1.0))
-        .collect()
+    scene.opacity.iter().copied().map(alpha_value).collect()
 }
 
 pub(crate) fn sigmoid(value: f32) -> f32 {
@@ -90,24 +93,26 @@ impl CameraCovarianceTerms {
     }
 }
 
+/// World-space covariance of one splat from its log scale and rotation.
+pub(crate) fn world_covariance(log_scale: [f32; 3], rotation_xyzw: [f32; 4]) -> [[f32; 3]; 3] {
+    let sx = log_scale[0].exp().max(1e-6);
+    let sy = log_scale[1].exp().max(1e-6);
+    let sz = log_scale[2].exp().max(1e-6);
+    let object_cov = [
+        [sx * sx, 0.0, 0.0],
+        [0.0, sy * sy, 0.0],
+        [0.0, 0.0, sz * sz],
+    ];
+    let rot_gaussian = quat_to_mat3(quat_normalize(rotation_xyzw));
+    mat3_mul(
+        mat3_mul(rot_gaussian, object_cov),
+        mat3_transpose(rot_gaussian),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn precompute_world_covariances(scene: &SceneBuffers) -> Vec<[[f32; 3]; 3]> {
-    let mut out = Vec::with_capacity(scene.len());
-    for i in 0..scene.len() {
-        let scale = scene.scale_xyz[i];
-        let sx = scale[0].exp().max(1e-6);
-        let sy = scale[1].exp().max(1e-6);
-        let sz = scale[2].exp().max(1e-6);
-        let object_cov = [
-            [sx * sx, 0.0, 0.0],
-            [0.0, sy * sy, 0.0],
-            [0.0, 0.0, sz * sz],
-        ];
-        let rot_gaussian = quat_to_mat3(quat_normalize(scene.rotation_xyzw[i]));
-        let world_cov = mat3_mul(
-            mat3_mul(rot_gaussian, object_cov),
-            mat3_transpose(rot_gaussian),
-        );
-        out.push(world_cov);
-    }
-    out
+    (0..scene.len())
+        .map(|i| world_covariance(scene.scale_xyz[i], scene.rotation_xyzw[i]))
+        .collect()
 }

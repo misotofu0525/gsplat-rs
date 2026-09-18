@@ -2,7 +2,7 @@
 
 use gsplat_core::Camera;
 #[cfg(not(target_arch = "wasm32"))]
-use gsplat_core::Vec3f;
+use gsplat_core::SceneBuffers;
 #[cfg(not(target_arch = "wasm32"))]
 use gsplat_sort::CpuSortBackend;
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,8 +75,7 @@ impl AsyncSortWorkspace {
 #[cfg(not(target_arch = "wasm32"))]
 impl SurfaceAsyncSorter {
     pub(crate) fn new(renderer: &Renderer) -> Result<Self, RendererError> {
-        let scene = renderer.scene().ok_or(RendererError::SceneNotLoaded)?;
-        let positions: Arc<[Vec3f]> = Arc::from(scene.positions.clone().into_boxed_slice());
+        let scene = Arc::clone(renderer.scene_arc().ok_or(RendererError::SceneNotLoaded)?);
         let (request_tx, request_rx) = sync_channel::<AsyncSortRequest>(1);
         let (result_tx, result_rx) = sync_channel(1);
         let worker = thread::spawn(move || {
@@ -91,8 +90,8 @@ impl SurfaceAsyncSorter {
                     break;
                 };
                 if result_tx
-                    .send(sort_positions_for_camera(
-                        &positions,
+                    .send(sort_scene_for_camera(
+                        &scene,
                         camera,
                         camera_revision,
                         &mut workspace,
@@ -184,50 +183,31 @@ impl Drop for SurfaceAsyncSorter {
     }
 }
 
-/// Filters `positions` against the near/far range, writes their depth keys
-/// into `workspace`, and sorts the visible source IDs back-to-front into
-/// `indices`. Only the visible count grows a buffer; a warm workspace and a
-/// recycled `indices` buffer allocate nothing.
+/// Runs the shared CPU visibility pass for `scene`, writing depth keys into
+/// `workspace`, then sorts the visible source IDs back-to-front into
+/// `indices`. A warm workspace and a recycled `indices` buffer allocate
+/// nothing.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn sort_positions_for_camera(
-    positions: &[Vec3f],
+pub(crate) fn sort_scene_for_camera(
+    scene: &SceneBuffers,
     camera: Camera,
     camera_revision: u64,
     workspace: &mut AsyncSortWorkspace,
     mut indices: Vec<u32>,
 ) -> Result<AsyncSortResult, RendererError> {
-    camera
-        .validate()
-        .map_err(|_| RendererError::InvalidCamera)?;
-
     let preprocess_start = std::time::Instant::now();
-    let view_rotation =
-        crate::math::quat_to_mat3(crate::math::quat_inverse(camera.pose.rotation_xyzw));
-    let depth_row = view_rotation[2];
-    let camera_position = camera.pose.position;
-    let depth_keys = &mut workspace.depth_keys;
-    depth_keys.clear();
-    indices.clear();
-    depth_keys.reserve(positions.len());
-    indices.reserve(positions.len());
-
-    for (index, position) in positions.iter().enumerate() {
-        let relative_x = position.x - camera_position.x;
-        let relative_y = position.y - camera_position.y;
-        let relative_z = position.z - camera_position.z;
-        let depth =
-            depth_row[0] * relative_x + depth_row[1] * relative_y + depth_row[2] * relative_z;
-        if depth >= camera.intrinsics.near_plane && depth <= camera.intrinsics.far_plane {
-            indices.push(index as u32);
-            depth_keys.push(depth.max(0.0).to_bits());
-        }
-    }
+    crate::preprocess::preprocess_visible_into(
+        scene,
+        &camera,
+        &mut workspace.depth_keys,
+        &mut indices,
+    )?;
     let preprocess_ms = preprocess_start.elapsed().as_secs_f32() * 1000.0;
 
     let sort_start = std::time::Instant::now();
     workspace
         .backend
-        .sort_values_by_keys(depth_keys, &mut indices)?;
+        .sort_values_by_keys(&workspace.depth_keys, &mut indices)?;
     let sort_ms = sort_start.elapsed().as_secs_f32() * 1000.0;
 
     Ok(AsyncSortResult {
@@ -260,40 +240,48 @@ pub(crate) fn async_order_pose_compatible(
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{AsyncSortWorkspace, SurfaceAsyncSorter, sort_positions_for_camera};
+    use super::{AsyncSortWorkspace, SurfaceAsyncSorter, sort_scene_for_camera};
     use crate::Renderer;
     use gsplat_core::{Camera, RenderMode, SceneBuffers, Vec3f};
 
-    fn synthetic_positions(count: usize) -> Vec<Vec3f> {
+    fn synthetic_scene(count: usize) -> SceneBuffers {
         let mut seed = 0x2545_f491_u32;
         let mut next = move || {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (seed >> 8) as f32 / (1u32 << 24) as f32
         };
-        (0..count)
+        let positions = (0..count)
             .map(|_| Vec3f::new(next() * 4.0 - 2.0, next() * 4.0 - 2.0, next() * 40.0 + 0.5))
-            .collect()
+            .collect();
+        SceneBuffers {
+            positions,
+            opacity: vec![1.0; count],
+            scale_xyz: vec![[0.0; 3]; count],
+            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; count],
+            color_dc: vec![[0.5; 3]; count],
+            sh_degree: 0,
+            sh_rest: None,
+        }
     }
 
-    fn positions_for_bench() -> (Vec<Vec3f>, &'static str) {
+    fn scene_for_bench() -> (SceneBuffers, &'static str) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/datasets/external/wakufactory_kitune/kitune1.ply");
         if path.is_file()
             && let Ok(loaded) = gsplat_io_ply::load_ply(&path)
         {
-            return (loaded.scene.positions, "kitsune");
+            return (loaded.scene, "kitsune");
         }
-        (synthetic_positions(200_000), "synthetic-200k")
+        (synthetic_scene(200_000), "synthetic-200k")
     }
 
     #[test]
     fn warm_workspace_and_recycled_indices_allocate_nothing() {
-        let positions = synthetic_positions(50_000);
+        let scene = synthetic_scene(50_000);
         let camera = Camera::default();
         let mut workspace = AsyncSortWorkspace::default();
 
-        let first =
-            sort_positions_for_camera(&positions, camera, 1, &mut workspace, Vec::new()).unwrap();
+        let first = sort_scene_for_camera(&scene, camera, 1, &mut workspace, Vec::new()).unwrap();
         let visible = first.indices.len();
         assert!(visible > 0);
         let key_capacity = workspace.depth_key_capacity();
@@ -301,8 +289,7 @@ mod tests {
         let indices_capacity = first.indices.capacity();
 
         let second =
-            sort_positions_for_camera(&positions, camera, 2, &mut workspace, first.indices)
-                .unwrap();
+            sort_scene_for_camera(&scene, camera, 2, &mut workspace, first.indices).unwrap();
         assert_eq!(second.indices.len(), visible);
         assert_eq!(second.indices.as_ptr(), indices_ptr);
         assert_eq!(second.indices.capacity(), indices_capacity);
@@ -310,20 +297,20 @@ mod tests {
     }
 
     #[test]
-    fn worker_reuses_the_recycled_index_buffer() {
-        let positions = synthetic_positions(10_000);
-        let scene = SceneBuffers {
-            positions: positions.clone(),
-            opacity: vec![1.0; positions.len()],
-            scale_xyz: vec![[0.0; 3]; positions.len()],
-            rotation_xyzw: vec![[0.0, 0.0, 0.0, 1.0]; positions.len()],
-            color_dc: vec![[0.5; 3]; positions.len()],
-            sh_degree: 0,
-            sh_rest: None,
-        };
+    fn worker_shares_the_scene_and_reuses_the_recycled_index_buffer() {
         let mut renderer = Renderer::new_for_surface(RenderMode::SortedAlpha).unwrap();
-        renderer.load_scene(scene).unwrap();
+        renderer.load_scene(synthetic_scene(10_000)).unwrap();
+        let scene_ptr = renderer.scene().map(|scene| scene.positions.as_ptr());
         let mut sorter = SurfaceAsyncSorter::new(&renderer).unwrap();
+        assert_eq!(
+            renderer.scene_arc().map(std::sync::Arc::strong_count),
+            Some(2),
+            "the worker must share the renderer's scene instead of copying it"
+        );
+        assert_eq!(
+            renderer.scene().map(|scene| scene.positions.as_ptr()),
+            scene_ptr
+        );
         let camera = Camera::default();
 
         let wait_result = |sorter: &mut SurfaceAsyncSorter| loop {
@@ -353,7 +340,7 @@ mod tests {
     /// recycled index buffer.
     #[test]
     fn workspace_reuse_microbench() {
-        let (positions, label) = positions_for_bench();
+        let (scene, label) = scene_for_bench();
         let camera = Camera::default();
         const ITERS: u32 = 20;
 
@@ -361,8 +348,8 @@ mod tests {
         let mut visible = 0;
         for revision in 0..ITERS {
             let mut workspace = AsyncSortWorkspace::default();
-            let result = sort_positions_for_camera(
-                &positions,
+            let result = sort_scene_for_camera(
+                &scene,
                 camera,
                 u64::from(revision),
                 &mut workspace,
@@ -375,25 +362,19 @@ mod tests {
 
         let mut workspace = AsyncSortWorkspace::default();
         let mut indices = Vec::new();
-        let warm =
-            sort_positions_for_camera(&positions, camera, 0, &mut workspace, indices).unwrap();
+        let warm = sort_scene_for_camera(&scene, camera, 0, &mut workspace, indices).unwrap();
         indices = warm.indices;
         let reuse_started = std::time::Instant::now();
         for revision in 1..=ITERS {
-            let result = sort_positions_for_camera(
-                &positions,
-                camera,
-                u64::from(revision),
-                &mut workspace,
-                indices,
-            )
-            .unwrap();
+            let result =
+                sort_scene_for_camera(&scene, camera, u64::from(revision), &mut workspace, indices)
+                    .unwrap();
             indices = result.indices;
         }
         let reuse_ms = reuse_started.elapsed().as_secs_f64() * 1000.0 / f64::from(ITERS);
         eprintln!(
             "async_sort_workspace scene={label} splats={} visible={visible} iters={ITERS} fresh_workspace_ms={fresh_ms:.3} reused_workspace_ms={reuse_ms:.3}",
-            positions.len()
+            scene.len()
         );
         assert!(fresh_ms.is_finite() && reuse_ms.is_finite());
     }

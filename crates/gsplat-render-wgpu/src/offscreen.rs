@@ -4,7 +4,6 @@ use gsplat_core::{Camera, RendererConfig, SceneBuffers};
 
 use crate::draw_pass;
 use crate::error::RendererError;
-use crate::math::CameraCovarianceTerms;
 use crate::resident::{
     ResidentSceneResources, create_resident_bind_group_layout, create_resident_pipeline,
 };
@@ -90,15 +89,12 @@ impl GpuRasterizer {
 
     /// Creates the resident scene on first use, then uploads the order (when
     /// requested) and the render params. Returns the instance count to draw.
-    #[allow(clippy::too_many_arguments)]
     fn prepare_resident_cpu_frame(
         &mut self,
         config: RendererConfig,
         sorted_indices: &[u32],
         camera: &Camera,
         scene: &SceneBuffers,
-        world_covariance_terms: &[CameraCovarianceTerms],
-        alpha_values: &[f32],
         profile: crate::ResidentStorageProfile,
         upload_order: bool,
     ) -> Result<u32, RendererError> {
@@ -108,8 +104,6 @@ impl GpuRasterizer {
                 &self.device,
                 &self.resident_bind_group_layout,
                 scene,
-                world_covariance_terms,
-                alpha_values,
                 profile,
             )?);
         }
@@ -133,15 +127,12 @@ impl GpuRasterizer {
     /// each call is a full preprocess + sort + draw so PNG, conformance, and
     /// bench output measure complete frames. `false` reuses the resident order
     /// and the cached projection exactly like a stationary Surface frame.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_resident_sorted_indices(
         &mut self,
         config: RendererConfig,
         sorted_indices: &[u32],
         camera: &Camera,
         scene: &SceneBuffers,
-        world_covariance_terms: &[CameraCovarianceTerms],
-        alpha_values: &[f32],
         profile: crate::ResidentStorageProfile,
         upload_order: bool,
     ) -> Result<(), RendererError> {
@@ -150,8 +141,6 @@ impl GpuRasterizer {
             sorted_indices,
             camera,
             scene,
-            world_covariance_terms,
-            alpha_values,
             profile,
             upload_order,
         )?;
@@ -194,15 +183,12 @@ impl GpuRasterizer {
     /// Runs only the projection stage (no draw) so tests can time the compute
     /// pass by itself. Returns whether a dispatch was submitted.
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn project_resident_sorted_indices(
         &mut self,
         config: RendererConfig,
         sorted_indices: &[u32],
         camera: &Camera,
         scene: &SceneBuffers,
-        world_covariance_terms: &[CameraCovarianceTerms],
-        alpha_values: &[f32],
         profile: crate::ResidentStorageProfile,
         upload_order: bool,
     ) -> Result<bool, RendererError> {
@@ -211,8 +197,6 @@ impl GpuRasterizer {
             sorted_indices,
             camera,
             scene,
-            world_covariance_terms,
-            alpha_values,
             profile,
             upload_order,
         )?;
@@ -241,14 +225,11 @@ impl GpuRasterizer {
         scene.ensure_gpu_order(&self.device)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_resident_gpu_order(
         &mut self,
         config: RendererConfig,
         camera: &Camera,
         scene: &SceneBuffers,
-        world_covariance_terms: &[CameraCovarianceTerms],
-        alpha_values: &[f32],
         profile: crate::ResidentStorageProfile,
     ) -> Result<(), RendererError> {
         self.ensure_output_target(config.width, config.height)?;
@@ -257,8 +238,6 @@ impl GpuRasterizer {
                 &self.device,
                 &self.resident_bind_group_layout,
                 scene,
-                world_covariance_terms,
-                alpha_values,
                 profile,
             )?);
         }

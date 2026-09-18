@@ -6,7 +6,9 @@ use gsplat_core::SceneBuffers;
 use wgpu::util::DeviceExt;
 
 use crate::draw_pass;
-use crate::math::{CameraCovarianceTerms, quat_inverse, quat_to_mat3};
+use crate::math::{
+    CameraCovarianceTerms, alpha_value, quat_inverse, quat_to_mat3, world_covariance,
+};
 use crate::project::{
     PROJECTED_RECORD_STRIDE, ProjectBindGroupBuffers, ProjectShBindings, create_draw_bind_group,
     create_project_bind_group, create_project_bind_group_layout, create_project_pipeline,
@@ -14,8 +16,8 @@ use crate::project::{
 };
 use crate::quantized::{
     QUANTIZED_SOURCE_STRIDE, QUANTIZED_STORAGE_BUFFERS_PER_STAGE, ResidentStorageProfile,
-    pack_quantized_sh_sidecar, pack_quantized_sources, quantized_sh_max_sidecar_bytes,
-    quantized_sh_max_sidecar_stride,
+    pack_quantized_sh_sidecar_into, pack_quantized_source, quantized_sh_max_sidecar_bytes,
+    quantized_sh_max_sidecar_stride, quantized_sh_sidecar_words,
 };
 use crate::timing::wgpu_label;
 use thiserror::Error;
@@ -107,39 +109,60 @@ pub(crate) struct GpuSurfaceRenderParams {
     pub(crate) _order_pad: [u32; 2],
 }
 
-pub(crate) fn make_surface_source_elems(
-    scene: &SceneBuffers,
-    world_covariance_terms: &[CameraCovarianceTerms],
-    alpha_values: &[f32],
-) -> Vec<GpuSurfaceSourceElem> {
-    if scene.positions.is_empty() {
-        return vec![GpuSurfaceSourceElem::zeroed()];
+/// Full-f32 resident record for one validated splat: world covariance terms
+/// and alpha are derived here, at upload, instead of being retained on the CPU.
+pub(crate) fn surface_source_elem(scene: &SceneBuffers, index: usize) -> GpuSurfaceSourceElem {
+    let position = scene.positions[index];
+    let color_dc = scene.color_dc[index];
+    let cov = CameraCovarianceTerms::from_matrix(world_covariance(
+        scene.scale_xyz[index],
+        scene.rotation_xyzw[index],
+    ));
+    GpuSurfaceSourceElem {
+        position: [position.x, position.y, position.z, 0.0],
+        covariance0: [cov.xx, cov.xy, cov.xz, cov.yy],
+        covariance1: [cov.yz, cov.zz, alpha_value(scene.opacity[index]), 0.0],
+        color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
     }
+}
 
-    (0..scene.positions.len())
-        .map(|i| {
-            let position = scene.positions[i];
-            let color_dc = scene.color_dc.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
-            let cov = world_covariance_terms
-                .get(i)
-                .copied()
-                .unwrap_or(CameraCovarianceTerms {
-                    xx: 0.0,
-                    xy: 0.0,
-                    xz: 0.0,
-                    yy: 0.0,
-                    yz: 0.0,
-                    zz: 0.0,
-                });
-            let alpha = alpha_values.get(i).copied().unwrap_or(0.0);
-            GpuSurfaceSourceElem {
-                position: [position.x, position.y, position.z, 0.0],
-                covariance0: [cov.xx, cov.xy, cov.xz, cov.yy],
-                covariance1: [cov.yz, cov.zz, alpha, 0.0],
-                color_dc: [color_dc[0], color_dc[1], color_dc[2], 0.0],
-            }
-        })
-        .collect()
+/// Creates a storage buffer and lets `fill` write its records straight into
+/// the mapped upload memory, so no intermediate `Vec` of GPU records exists
+/// on the CPU. An empty scene still gets one zeroed record.
+fn create_filled_storage_buffer<T: Pod>(
+    device: &wgpu::Device,
+    label: &'static str,
+    len: usize,
+    fill: impl FnOnce(&mut [T]),
+) -> wgpu::Buffer {
+    let len = len.max(1);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: wgpu_label(label),
+        size: (len * std::mem::size_of::<T>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: true,
+    });
+    {
+        let mut mapped = buffer.slice(..).get_mapped_range_mut();
+        fill(bytemuck::cast_slice_mut(&mut mapped));
+    }
+    buffer.unmap();
+    buffer
+}
+
+fn fill_per_splat<T: Pod>(
+    scene: &SceneBuffers,
+    pack: impl Fn(&SceneBuffers, usize) -> T,
+) -> impl FnOnce(&mut [T]) {
+    move |out| {
+        if scene.is_empty() {
+            out[0] = T::zeroed();
+            return;
+        }
+        for (index, record) in out.iter_mut().enumerate() {
+            *record = pack(scene, index);
+        }
+    }
 }
 
 pub(crate) fn make_surface_render_params(
@@ -382,12 +405,13 @@ pub(crate) struct ResidentGpuSceneOrder {
 }
 
 impl ResidentSceneResources {
+    /// Uploads a validated scene. Derived per-splat data (covariance terms,
+    /// alpha, quantized records, SH sidecars) is computed while writing the
+    /// mapped upload buffers; the CPU retains only `SceneBuffers` itself.
     pub(crate) fn new(
         device: &wgpu::Device,
         bind_group_layout: &wgpu::BindGroupLayout,
         scene: &SceneBuffers,
-        world_covariance_terms: &[CameraCovarianceTerms],
-        alpha_values: &[f32],
         profile: ResidentStorageProfile,
     ) -> Result<Self, ResidentSceneError> {
         validate_resident_scene_for_limits(
@@ -410,13 +434,12 @@ impl ResidentSceneResources {
         });
         let (source_buffer, sh_rest_buffer, sh_sidecars) = match profile {
             ResidentStorageProfile::FullF32 => {
-                let source_elems =
-                    make_surface_source_elems(scene, world_covariance_terms, alpha_values);
-                let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: wgpu_label("gsplat-resident-source"),
-                    contents: bytemuck::cast_slice(&source_elems),
-                    usage: wgpu::BufferUsages::STORAGE,
-                });
+                let source_buffer = create_filled_storage_buffer(
+                    device,
+                    "gsplat-resident-source",
+                    scene.len(),
+                    fill_per_splat(scene, surface_source_elem),
+                );
                 let sh_rest_fallback = [0.0_f32];
                 let sh_rest = scene.sh_rest.as_deref().unwrap_or(&sh_rest_fallback);
                 let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -427,37 +450,25 @@ impl ResidentSceneResources {
                 (source_buffer, sh_rest_buffer, None)
             }
             ResidentStorageProfile::Quantized => {
-                let source_elems = pack_quantized_sources(scene, alpha_values);
-                let source_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: wgpu_label("gsplat-resident-quantized-source"),
-                    contents: bytemuck::cast_slice(&source_elems),
-                    usage: wgpu::BufferUsages::STORAGE,
-                });
-                let sh1 = pack_quantized_sh_sidecar(scene, 1);
-                let sh_rest_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: wgpu_label("gsplat-resident-quantized-sh1"),
-                    contents: bytemuck::cast_slice(&sh1),
-                    usage: wgpu::BufferUsages::STORAGE,
-                });
-                let sh2 = pack_quantized_sh_sidecar(scene, 2);
-                let sh3 = pack_quantized_sh_sidecar(scene, 3);
-                let sh4 = pack_quantized_sh_sidecar(scene, 4);
+                let source_buffer = create_filled_storage_buffer(
+                    device,
+                    "gsplat-resident-quantized-source",
+                    scene.len(),
+                    fill_per_splat(scene, pack_quantized_source),
+                );
+                let sidecar = |label: &'static str, degree: u8| {
+                    create_filled_storage_buffer::<u32>(
+                        device,
+                        label,
+                        quantized_sh_sidecar_words(scene, degree),
+                        |out| pack_quantized_sh_sidecar_into(scene, degree, out),
+                    )
+                };
+                let sh_rest_buffer = sidecar("gsplat-resident-quantized-sh1", 1);
                 let sidecars = [
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: wgpu_label("gsplat-resident-quantized-sh2"),
-                        contents: bytemuck::cast_slice(&sh2),
-                        usage: wgpu::BufferUsages::STORAGE,
-                    }),
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: wgpu_label("gsplat-resident-quantized-sh3"),
-                        contents: bytemuck::cast_slice(&sh3),
-                        usage: wgpu::BufferUsages::STORAGE,
-                    }),
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: wgpu_label("gsplat-resident-quantized-sh4"),
-                        contents: bytemuck::cast_slice(&sh4),
-                        usage: wgpu::BufferUsages::STORAGE,
-                    }),
+                    sidecar("gsplat-resident-quantized-sh2", 2),
+                    sidecar("gsplat-resident-quantized-sh3", 3),
+                    sidecar("gsplat-resident-quantized-sh4", 4),
                 ];
                 (source_buffer, sh_rest_buffer, Some(sidecars))
             }

@@ -37,7 +37,6 @@ pub use surface_session::{
     SurfaceOrderBackendUsed, SurfaceRenderSession, SurfaceSortSchedule,
 };
 
-pub(crate) use math::CameraCovarianceTerms;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use offscreen::GpuRasterizer;
 pub(crate) use resident::{
@@ -49,10 +48,11 @@ pub(crate) use surface::{
 };
 pub(crate) use timing::{timer_elapsed_ms, timer_now, wgpu_label};
 
+use std::sync::Arc;
+
 use gsplat_core::{Camera, FrameStats, RenderMode, RendererConfig, SceneBuffers};
 use gsplat_sort::CpuSortBackend;
 
-use crate::math::{precompute_alpha_values, precompute_world_covariances};
 use crate::preprocess::preprocess_visible_into;
 use crate::timing::TimerInstant;
 
@@ -62,10 +62,9 @@ pub struct Renderer {
     cpu_sort_backend: CpuSortBackend,
     #[cfg(not(target_arch = "wasm32"))]
     gpu_rasterizer: Option<GpuRasterizer>,
-    scene: Option<SceneBuffers>,
-    world_covariances: Option<Vec<[[f32; 3]; 3]>>,
-    pub(crate) world_covariance_terms: Option<Vec<CameraCovarianceTerms>>,
-    pub(crate) alpha_values: Option<Vec<f32>>,
+    /// The only CPU-resident copy of the scene. Resident GPU records derive
+    /// from it at upload; the native async sort worker shares it by `Arc`.
+    scene: Option<Arc<SceneBuffers>>,
     preprocess_depth_keys: Vec<u32>,
     preprocess_indices: Vec<u32>,
     last_stats: FrameStats,
@@ -128,9 +127,6 @@ impl Renderer {
             #[cfg(not(target_arch = "wasm32"))]
             gpu_rasterizer: None,
             scene: None,
-            world_covariances: None,
-            world_covariance_terms: None,
-            alpha_values: None,
             preprocess_depth_keys: Vec::new(),
             preprocess_indices: Vec::new(),
             last_stats: FrameStats::zero(),
@@ -328,8 +324,7 @@ impl Renderer {
 
     pub fn load_scene(&mut self, scene: SceneBuffers) -> Result<(), RendererError> {
         scene.validate().map_err(|_| RendererError::InvalidScene)?;
-        self.scene = Some(scene);
-        self.rebuild_resident_cpu_data();
+        self.scene = Some(Arc::new(scene));
         // The cached visibility order indexes the previous scene; a non-refresh
         // frame must recompute instead of serving out-of-range source IDs.
         self.preprocess_depth_keys.clear();
@@ -341,31 +336,15 @@ impl Renderer {
         Ok(())
     }
 
-    fn rebuild_resident_cpu_data(&mut self) {
-        let Some(scene) = self.scene.as_ref() else {
-            self.world_covariances = None;
-            self.world_covariance_terms = None;
-            self.alpha_values = None;
-            return;
-        };
-        let world_covariances = precompute_world_covariances(scene);
-        let world_covariance_terms = world_covariances
-            .iter()
-            .copied()
-            .map(CameraCovarianceTerms::from_matrix)
-            .collect();
-        let alpha_values = precompute_alpha_values(scene);
-        self.world_covariances = Some(world_covariances);
-        self.world_covariance_terms = Some(world_covariance_terms);
-        self.alpha_values = Some(alpha_values);
-    }
-
     pub fn scene(&self) -> Option<&SceneBuffers> {
-        self.scene.as_ref()
+        self.scene.as_deref()
     }
 
-    pub fn world_covariances(&self) -> Option<&[[[f32; 3]; 3]]> {
-        self.world_covariances.as_deref()
+    /// Shared handle for workers that outlive one frame, e.g. the native
+    /// async sort thread, so they do not copy the scene.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn scene_arc(&self) -> Option<&Arc<SceneBuffers>> {
+        self.scene.as_ref()
     }
 
     pub fn preprocess_visible(&self, camera: &Camera) -> Result<PreprocessOutput, RendererError> {
@@ -429,18 +408,12 @@ impl Renderer {
 
         let raster_start = timer_now();
         let scene = self.scene.as_ref().ok_or(RendererError::SceneNotLoaded)?;
-        let world_covariances = self
-            .world_covariances
-            .as_deref()
-            .ok_or(RendererError::InvalidScene)?;
-        let alpha_values = self
-            .alpha_values
-            .as_deref()
-            .ok_or(RendererError::InvalidScene)?;
+        let world_covariances = crate::math::precompute_world_covariances(scene);
+        let alpha_values = crate::math::precompute_alpha_values(scene);
         build_instances_into(
             scene,
-            world_covariances,
-            alpha_values,
+            &world_covariances,
+            &alpha_values,
             &self.preprocess_indices,
             camera,
             self.config,
@@ -522,12 +495,6 @@ impl Renderer {
             sorted_indices,
             camera,
             scene,
-            self.world_covariance_terms
-                .as_deref()
-                .ok_or(RendererError::InvalidScene)?,
-            self.alpha_values
-                .as_deref()
-                .ok_or(RendererError::InvalidScene)?,
             self.storage_profile,
             upload_order,
         )
@@ -569,18 +536,7 @@ impl Renderer {
             .ok_or(RendererError::GpuRasterizerUnavailable)?;
         let frame_start = timer_now();
         let raster_start = timer_now();
-        rasterizer.render_resident_gpu_order(
-            self.config,
-            camera,
-            scene,
-            self.world_covariance_terms
-                .as_deref()
-                .ok_or(RendererError::InvalidScene)?,
-            self.alpha_values
-                .as_deref()
-                .ok_or(RendererError::InvalidScene)?,
-            self.storage_profile,
-        )?;
+        rasterizer.render_resident_gpu_order(self.config, camera, scene, self.storage_profile)?;
         let raster_ms = timer_elapsed_ms(raster_start);
         // GPU order compacts visibility on the GPU; the CPU cannot observe the
         // compacted count, so both counters report the resident source count.
@@ -616,12 +572,6 @@ impl Renderer {
             sorted_indices,
             camera,
             scene,
-            self.world_covariance_terms
-                .as_deref()
-                .ok_or(RendererError::InvalidScene)?,
-            self.alpha_values
-                .as_deref()
-                .ok_or(RendererError::InvalidScene)?,
             self.storage_profile,
             upload_order,
         )
@@ -2157,7 +2107,7 @@ mod tests {
         };
 
         let world_cov = precompute_world_covariances(&scene);
-        let alpha_values = super::precompute_alpha_values(&scene);
+        let alpha_values = crate::math::precompute_alpha_values(&scene);
         let instances = build_instances(
             &scene,
             &world_cov,
@@ -2192,7 +2142,7 @@ mod tests {
         };
 
         let world_cov = precompute_world_covariances(&scene);
-        let alpha_values = super::precompute_alpha_values(&scene);
+        let alpha_values = crate::math::precompute_alpha_values(&scene);
         let instances = build_instances(
             &scene,
             &world_cov,
