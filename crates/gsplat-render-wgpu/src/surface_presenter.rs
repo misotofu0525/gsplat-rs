@@ -385,13 +385,14 @@ impl SurfacePresenter {
     }
 
     /// Uploads a changed order / params, re-projects only when the projected
-    /// buffer is stale, and draws.
+    /// buffer is stale, and draws. Returns `false` when no swapchain image
+    /// could be acquired, so the caller keeps the frame pending.
     pub fn render_sorted_indices(
         &mut self,
         sorted_indices: &[u32],
         camera: &Camera,
         refresh_indices: bool,
-    ) -> Result<(), SurfacePresenterError> {
+    ) -> Result<bool, SurfacePresenterError> {
         self.instance_count = self.resident_scene.prepare_cpu(
             &self.queue,
             sorted_indices,
@@ -447,11 +448,12 @@ impl SurfacePresenter {
 
     /// Generates and stably sorts depth pairs on this presenter's GPU,
     /// then draws from the resident pair buffer in the same submission.
+    /// Returns `false` when no swapchain image could be acquired.
     pub(crate) fn render_resident_gpu_order(
         &mut self,
         camera: &Camera,
         refresh_order: bool,
-    ) -> Result<(), SurfacePresenterError> {
+    ) -> Result<bool, SurfacePresenterError> {
         self.instance_count = self.resident_scene.prepare_gpu(
             &self.device,
             &self.queue,
@@ -487,7 +489,7 @@ impl SurfacePresenter {
                 self.queue.submit(Some(encoder.finish()));
                 self.resident_scene.mark_projection_current();
             }
-            return Ok(());
+            return Ok(false);
         };
         let view = frame
             .texture
@@ -516,12 +518,12 @@ impl SurfacePresenter {
         self.queue.submit(Some(encoder.finish()));
         self.resident_scene.mark_projection_current();
         frame.present();
-        Ok(())
+        Ok(true)
     }
 
-    fn present_resident_scene(&mut self) -> Result<(), SurfacePresenterError> {
+    fn present_resident_scene(&mut self) -> Result<bool, SurfacePresenterError> {
         let Some(frame) = self.acquire_surface_texture()? else {
-            return Ok(());
+            return Ok(false);
         };
         let view = frame
             .texture
@@ -549,7 +551,7 @@ impl SurfacePresenter {
         self.queue.submit(Some(encoder.finish()));
         self.resident_scene.mark_projection_current();
         frame.present();
-        Ok(())
+        Ok(true)
     }
 
     fn acquire_surface_texture(

@@ -338,7 +338,12 @@ fn run_interactive(
     event_loop
         .run(move |event, target| match event {
             Event::AboutToWait => {
-                window.request_redraw();
+                // Redraw only while the camera can change or the session has a
+                // pending image; otherwise the default `ControlFlow::Wait`
+                // parks the loop until the next OS event.
+                if args.orbit || input.is_active() || session.needs_frame() {
+                    window.request_redraw();
+                }
             }
             Event::WindowEvent {
                 window_id: id,
@@ -441,6 +446,9 @@ fn run_interactive(
                         target.exit();
                         return;
                     }
+                    // This event is either our own request (something changed)
+                    // or the platform exposing the window; both need an image.
+                    session.request_present();
                     let output = match session.render_frame() {
                         Ok(output) => output,
                         Err(err) => {
@@ -509,6 +517,15 @@ struct InputState {
 impl InputState {
     fn is_key_down(&self, key: KeyCode) -> bool {
         self.keys_down.contains(&key)
+    }
+
+    /// True while held keys, a drag, or unconsumed wheel/mouse deltas can
+    /// still move the camera on the next frame.
+    fn is_active(&self) -> bool {
+        !self.keys_down.is_empty()
+            || self.mouse_left_down
+            || self.mouse_delta != (0.0, 0.0)
+            || self.scroll_y != 0.0
     }
 
     fn end_frame(&mut self) {

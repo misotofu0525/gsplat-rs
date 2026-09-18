@@ -59,6 +59,7 @@ function makeNativeRenderer(overrides = {}) {
         visibleCount: "2",
         drawnCount: 1,
         refreshSort: 1,
+        presented: 1,
         surfaceWidth: "640",
         surfaceHeight: 480,
       };
@@ -115,6 +116,7 @@ test("GsplatWebRenderer forwards commands and normalizes return values", () => {
     visibleCount: 2,
     drawnCount: 1,
     refreshSort: true,
+    presented: true,
     surfaceWidth: 640,
     surfaceHeight: 480,
   });
