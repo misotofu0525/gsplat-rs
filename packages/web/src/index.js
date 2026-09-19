@@ -263,6 +263,7 @@ function normalizeFrameStats(raw) {
     visibleCount: numberOr(raw.visibleCount, 0),
     drawnCount: numberOr(raw.drawnCount, 0),
     refreshSort: Boolean(raw.refreshSort),
+    presented: Boolean(raw.presented),
     surfaceWidth: numberOr(raw.surfaceWidth, 0),
     surfaceHeight: numberOr(raw.surfaceHeight, 0),
   };

@@ -293,6 +293,16 @@ fn eval_color(idx: u32, source: SurfaceSourceElem, alpha: f32) -> vec4<f32> {
 
 fn project_record(idx: u32, source: SurfaceSourceElem) -> ProjectedRecord {
   let projected = project_splat(source);
+  // A culled or fully transparent splat contributes premultiplied
+  // vec4(rgb * 0, 0) whatever its SH evaluates to; skip the sh_rest reads.
+  if (projected.alpha <= 0.0) {
+    return ProjectedRecord(
+      projected.center,
+      projected.axis_u,
+      projected.axis_v,
+      vec4<f32>(0.0),
+    );
+  }
   return ProjectedRecord(
     projected.center,
     projected.axis_u,

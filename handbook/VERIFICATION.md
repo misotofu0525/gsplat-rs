@@ -268,7 +268,9 @@ http://127.0.0.1:4173/examples/web/?gsplat_benchmark=true&gsplat_benchmark_sync=
 - After the benchmark/camera motion stops, leave the page visible for at least
   three animation frames. The canvas must remain non-black with non-zero
   `Visible` / `Drawn` counts; this is the stationary resident-path regression
-  check and proves a cached order is still redrawn through the resident pipeline.
+  check. The session presents on demand, so those frames report
+  `presented=false` in the wasm stats object and the canvas keeps the last
+  presented image; the next orbit/zoom/resize must redraw it.
 
 ## Web WASM Build
 
@@ -450,6 +452,15 @@ STABILITY_SECONDS=1800 bash tests/perf/run-long-stability.sh
 - If you touch SOG import (`crates/gsplat-io-sog/`), run
   `cargo test -p gsplat-io-sog -p gsplat-io` and the desktop SOG PNG commands
   above. Adding image codecs also requires `bash tests/security/run-cargo-deny.sh`.
+- If you touch the resident projection cache, on-demand presentation, or the
+  async sort worker, run
+  `cargo test -p gsplat-render-wgpu stationary_projection_cache -- --nocapture`
+  (prints the isolated projection-pass cost and asserts the cached draw is
+  pixel-identical; Kitsune adds a real-scene case when fetched),
+  `cargo test -p gsplat-render-wgpu surface_async -- --nocapture` (buffer
+  reuse across requests and the fresh-vs-warm workspace microbench), and the
+  interactive viewer smoke above: a stationary `--auto-camera --interactive`
+  run must idle after its first frame, while `--orbit` keeps redrawing.
 - If you touch renderer, sorting, or perf-sensitive code, run `cargo run --release -p bench-runner -- tests/datasets/minimal_ascii.ply 120 --warmup-iterations 10 --max-avg-gpu-complete-ms 250` and consider the long-stability script. The runner reports CPU preprocessing, CPU sort, encode/submit CPU wall, GPU wait, GPU-complete, nearest-rank frame distributions, missed-frame counts, and structured resident-resource preflight together with adapter/backend/driver metadata. Use `--storage-profile quantized` for the explicit quantized resident layout, `--order-backend gpu` to force the experimental GPU ordering path for paired offscreen comparisons (CPU stays the default; GPU runs report the resident source count as visible/drawn). Use the artifact route above when the result will be retained or compared. Surface/WASM output additionally reports render/submit and frame-wall phases; compatibility CPU-geometry fields stay zero on the resident path.
 - If you touch `examples/web/`, run `node --check examples/web/src/main.js`
   and the Web Example smoke above. If you touch

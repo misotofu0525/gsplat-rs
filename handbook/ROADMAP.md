@@ -66,14 +66,20 @@ transient research belong under `docs/plans/`.
   uploads, fallback behavior, presentation, and frame telemetry.
 - Scene attributes stay GPU-resident. CPU refreshes upload compact
   sorted source IDs. A per-splat compute preprocess writes compact projected
-  records once per presented frame; the vertex/fragment stages only emit and
+  records whenever the camera, surface size, or order changed and skips SH
+  evaluation for culled records; the vertex/fragment stages only emit and
   shade quads. Default resident storage remains full-f32; an explicit
   `ResidentStorageProfile::Quantized` option packs a 32-byte SPZ-aligned hot
   record plus per-degree u8 SH sidecars. The stable C ABI does not expose the
   profile.
 - Mobile keeps the default CPU sort interval of 2. Identical redraws reuse the
-  existing order, and native CPU ordering can use the bounded `AsyncLatest`
-  schedule.
+  existing order and projected records, and a frame with no camera command
+  and nothing changed is not presented at all
+  (`SurfaceRenderSession::needs_frame` / `SurfaceFrameOutput::presented`;
+  any camera command requests a frame). Native CPU ordering can use the bounded
+  `AsyncLatest` schedule; its worker keeps one sort workspace and recycles
+  the displayed index buffer. The CPU retains one `SceneBuffers` per
+  renderer and no derived per-splat arrays.
 
 ### Experimental GPU and Adaptive ordering
 
@@ -155,8 +161,9 @@ Compute preprocess and an explicit quantized resident profile landed on
 
 In tree today:
 
-- every presented frame runs a per-splat compute preprocess that writes
-  compact projected records; the vertex/fragment stages only emit quads
+- a per-splat compute preprocess writes compact projected records whenever
+  the camera, surface size, or order changed (stationary frames reuse them);
+  the vertex/fragment stages only emit quads
 - `ResidentStorageProfile::FullF32` remains the default quality reference
 - `ResidentStorageProfile::Quantized` packs a 32-byte SPZ-aligned hot record
   (f16 positions, smallest-three rotation, log-u8 scale, u8 DC/opacity) plus

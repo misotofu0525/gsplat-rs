@@ -3,7 +3,7 @@
 use bytemuck::{Pod, Zeroable};
 use gsplat_core::SceneBuffers;
 
-use crate::math::quat_normalize;
+use crate::math::{alpha_value, quat_normalize};
 
 const COLOR_SCALE: f32 = 0.15;
 const SQRT_ONE_HALF: f32 = std::f32::consts::FRAC_1_SQRT_2;
@@ -103,59 +103,56 @@ pub(crate) fn quantized_sh_max_sidecar_stride(scene_degree: u8) -> u64 {
     }
 }
 
-pub(crate) fn pack_quantized_sources(
-    scene: &SceneBuffers,
-    alpha_values: &[f32],
-) -> Vec<GpuQuantizedSource> {
-    if scene.positions.is_empty() {
-        return vec![GpuQuantizedSource::zeroed()];
+/// Packs one validated splat into the 32-byte hot record.
+pub(crate) fn pack_quantized_source(scene: &SceneBuffers, index: usize) -> GpuQuantizedSource {
+    let p = scene.positions[index];
+    let alpha = alpha_value(scene.opacity[index]);
+    let scale = scene.scale_xyz[index];
+    let dc = scene.color_dc[index];
+    GpuQuantizedSource {
+        pos_xy: pack2x16float(p.x, p.y),
+        pos_z_alpha: pack2x16float(p.z, alpha),
+        rotation: encode_smallest_three(quat_normalize(scene.rotation_xyzw[index])),
+        scale_rgb: pack_u8x4(
+            quantize_log_scale(scale[0]),
+            quantize_log_scale(scale[1]),
+            quantize_log_scale(scale[2]),
+            0,
+        ),
+        color_dc: pack_u8x4(
+            quantize_color_dc(dc[0]),
+            quantize_color_dc(dc[1]),
+            quantize_color_dc(dc[2]),
+            0,
+        ),
+        _pad: [0; 3],
     }
-    (0..scene.positions.len())
-        .map(|i| {
-            let p = scene.positions[i];
-            let alpha = alpha_values.get(i).copied().unwrap_or(0.0);
-            let scale = scene.scale_xyz.get(i).copied().unwrap_or([0.0; 3]);
-            let rotation = scene
-                .rotation_xyzw
-                .get(i)
-                .copied()
-                .unwrap_or([0.0, 0.0, 0.0, 1.0]);
-            let dc = scene.color_dc.get(i).copied().unwrap_or([0.0; 3]);
-            GpuQuantizedSource {
-                pos_xy: pack2x16float(p.x, p.y),
-                pos_z_alpha: pack2x16float(p.z, alpha.clamp(0.0, 1.0)),
-                rotation: encode_smallest_three(quat_normalize(rotation)),
-                scale_rgb: pack_u8x4(
-                    quantize_log_scale(scale[0]),
-                    quantize_log_scale(scale[1]),
-                    quantize_log_scale(scale[2]),
-                    0,
-                ),
-                color_dc: pack_u8x4(
-                    quantize_color_dc(dc[0]),
-                    quantize_color_dc(dc[1]),
-                    quantize_color_dc(dc[2]),
-                    0,
-                ),
-                _pad: [0; 3],
-            }
-        })
-        .collect()
 }
 
-pub(crate) fn pack_quantized_sh_sidecar(scene: &SceneBuffers, sidecar_degree: u8) -> Vec<u32> {
+/// `u32` word count of the sidecar buffer for `sidecar_degree`.
+pub(crate) fn quantized_sh_sidecar_words(scene: &SceneBuffers, sidecar_degree: u8) -> usize {
     let total_bytes = quantized_sh_sidecar_buffer_bytes(
         scene.len().max(1) as u64,
         sidecar_degree,
         scene.sh_degree,
     )
     .unwrap_or(4) as usize;
-    let mut out = vec![0_u32; (total_bytes / 4).max(1)];
+    (total_bytes / 4).max(1)
+}
+
+/// Writes the u8 SH sidecar for `sidecar_degree` into `out`, sized by
+/// [`quantized_sh_sidecar_words`]. Degrees the scene lacks leave zeros.
+pub(crate) fn pack_quantized_sh_sidecar_into(
+    scene: &SceneBuffers,
+    sidecar_degree: u8,
+    out: &mut [u32],
+) {
+    out.fill(0);
     if sidecar_degree == 0 || scene.sh_degree < sidecar_degree {
-        return out;
+        return;
     }
     let Some(rest) = scene.sh_rest.as_deref() else {
-        return out;
+        return;
     };
     let rest_coeffs = ((u64::from(scene.sh_degree) + 1).pow(2) - 1) as usize;
     let first = quantized_sh_first_coeff(sidecar_degree) as usize;
@@ -173,6 +170,12 @@ pub(crate) fn pack_quantized_sh_sidecar(scene: &SceneBuffers, sidecar_degree: u8
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn pack_quantized_sh_sidecar(scene: &SceneBuffers, sidecar_degree: u8) -> Vec<u32> {
+    let mut out = vec![0_u32; quantized_sh_sidecar_words(scene, sidecar_degree)];
+    pack_quantized_sh_sidecar_into(scene, sidecar_degree, &mut out);
     out
 }
 
@@ -223,6 +226,14 @@ pub(crate) fn encode_smallest_three(q: [f32; 4]) -> u32 {
             largest_abs = abs;
         }
     }
+    // Decoders reconstruct the dropped component as +sqrt(1 - sum), so the
+    // packed representative must have a non-negative largest component.
+    // `q` and `-q` are the same rotation.
+    let q = if q[largest] < 0.0 {
+        [-q[0], -q[1], -q[2], -q[3]]
+    } else {
+        q
+    };
     let mut packed = (largest as u32) << 30;
     let mut shift = 0_u32;
     for index in (0..4).rev() {
@@ -332,6 +343,7 @@ pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::quat_to_mat3;
     use gsplat_core::{SceneBuffers, Vec3f};
 
     #[test]
@@ -346,6 +358,38 @@ mod tests {
         let decoded = decode_smallest_three(encode_smallest_three(q));
         for i in 0..4 {
             assert!((q[i] - decoded[i]).abs() < 2.0e-3, "{q:?} vs {decoded:?}");
+        }
+    }
+
+    #[test]
+    fn smallest_three_preserves_rotation_when_largest_component_is_negative() {
+        // The decoder always reconstructs the dropped component as positive, so
+        // `q` and `-q` must encode to the same rotation. One case per largest index.
+        let cases = [
+            [-0.9, 0.1, -0.2, 0.3],
+            [0.2, -0.85, 0.3, -0.1],
+            [0.1, 0.3, -0.9, 0.2],
+            [0.2, 0.3, 0.1, -0.9],
+        ];
+        for raw in cases {
+            let q = quat_normalize(raw);
+            let decoded = decode_smallest_three(encode_smallest_three(q));
+            let expected = quat_to_mat3(q);
+            let actual = quat_to_mat3(decoded);
+            for (row, expected_row) in expected.iter().enumerate() {
+                for (col, expected_value) in expected_row.iter().enumerate() {
+                    assert!(
+                        (expected_value - actual[row][col]).abs() < 4.0e-3,
+                        "{q:?} decoded as {decoded:?}: rotation matrix differs at [{row}][{col}]"
+                    );
+                }
+            }
+            for i in 0..4 {
+                assert!(
+                    (decoded[i] + q[i]).abs() < 2.0e-3,
+                    "{q:?} should decode to its largest-positive representative, got {decoded:?}"
+                );
+            }
         }
     }
 

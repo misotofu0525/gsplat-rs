@@ -1,13 +1,14 @@
 //! WGPU Surface presentation and geometry-resource ownership.
 
-use gsplat_core::Camera;
+use gsplat_core::{Camera, SceneBuffers};
 
 use crate::draw_pass::{SplatDraw, encode_splat_draw_into};
+use crate::resident::validate_resident_scene_for_limits;
 use crate::{
     Renderer, ResidentSceneError, ResidentScenePath, ResidentScenePreflight,
-    ResidentSceneResources, SurfacePresenterError, create_resident_bind_group_layout,
-    create_resident_pipeline, create_surface_instance, fit_surface_size, select_present_mode,
-    surface_error_to_presenter, wgpu_label,
+    ResidentSceneResources, ResidentStorageProfile, SurfacePresenterError,
+    create_resident_bind_group_layout, create_resident_pipeline, create_surface_instance,
+    fit_surface_size, select_present_mode, surface_error_to_presenter, wgpu_label,
 };
 
 struct SurfaceAdapterContext {
@@ -34,20 +35,10 @@ fn create_resident_scene_resources(
     let scene = renderer
         .scene()
         .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-    let world_covariance_terms = renderer
-        .world_covariance_terms
-        .as_deref()
-        .ok_or(SurfacePresenterError::SceneNotLoaded)?;
-    let alpha_values = renderer
-        .alpha_values
-        .as_deref()
-        .ok_or(SurfacePresenterError::SceneNotLoaded)?;
     ResidentSceneResources::new(
         device,
         resident_bind_group_layout,
         scene,
-        world_covariance_terms,
-        alpha_values,
         renderer.storage_profile(),
     )
     .map_err(SurfacePresenterError::from)
@@ -383,12 +374,15 @@ impl SurfacePresenter {
         self.surface.configure(&self.device, &self.surface_config);
     }
 
+    /// Uploads a changed order / params, re-projects only when the projected
+    /// buffer is stale, and draws. Returns `false` when no swapchain image
+    /// could be acquired, so the caller keeps the frame pending.
     pub fn render_sorted_indices(
         &mut self,
         sorted_indices: &[u32],
         camera: &Camera,
         refresh_indices: bool,
-    ) -> Result<(), SurfacePresenterError> {
+    ) -> Result<bool, SurfacePresenterError> {
         self.instance_count = self.resident_scene.prepare_cpu(
             &self.queue,
             sorted_indices,
@@ -398,6 +392,23 @@ impl SurfacePresenter {
             refresh_indices,
         )?;
         self.present_resident_scene()
+    }
+
+    /// Checks that `scene` fits this presenter's device under `profile` without
+    /// touching the current resident scene. Run before a scene or profile swap
+    /// so a rejected switch leaves renderer and presenter consistent.
+    pub(crate) fn preflight_resident_scene(
+        &self,
+        scene: &SceneBuffers,
+        profile: ResidentStorageProfile,
+    ) -> Result<(), SurfacePresenterError> {
+        validate_resident_scene_for_limits(
+            &self.device.limits(),
+            scene.len(),
+            scene.sh_degree,
+            profile,
+        )
+        .map_err(SurfacePresenterError::from)
     }
 
     /// Recreates resident GPU buffers for the renderer's current storage
@@ -427,11 +438,12 @@ impl SurfacePresenter {
 
     /// Generates and stably sorts depth pairs on this presenter's GPU,
     /// then draws from the resident pair buffer in the same submission.
+    /// Returns `false` when no swapchain image could be acquired.
     pub(crate) fn render_resident_gpu_order(
         &mut self,
         camera: &Camera,
         refresh_order: bool,
-    ) -> Result<(), SurfacePresenterError> {
+    ) -> Result<bool, SurfacePresenterError> {
         self.instance_count = self.resident_scene.prepare_gpu(
             &self.device,
             &self.queue,
@@ -453,6 +465,7 @@ impl SurfacePresenter {
             })?;
             if refresh_order {
                 gpu_order.sorter.encode(&mut encoder);
+                self.resident_scene.invalidate_projection();
             }
         }
         self.resident_scene
@@ -464,8 +477,9 @@ impl SurfacePresenter {
             // an uninitialized pair buffer.
             if refresh_order {
                 self.queue.submit(Some(encoder.finish()));
+                self.resident_scene.mark_projection_current();
             }
-            return Ok(());
+            return Ok(false);
         };
         let view = frame
             .texture
@@ -492,13 +506,14 @@ impl SurfacePresenter {
             },
         );
         self.queue.submit(Some(encoder.finish()));
+        self.resident_scene.mark_projection_current();
         frame.present();
-        Ok(())
+        Ok(true)
     }
 
-    fn present_resident_scene(&mut self) -> Result<(), SurfacePresenterError> {
+    fn present_resident_scene(&mut self) -> Result<bool, SurfacePresenterError> {
         let Some(frame) = self.acquire_surface_texture()? else {
-            return Ok(());
+            return Ok(false);
         };
         let view = frame
             .texture
@@ -524,8 +539,9 @@ impl SurfacePresenter {
             },
         );
         self.queue.submit(Some(encoder.finish()));
+        self.resident_scene.mark_projection_current();
         frame.present();
-        Ok(())
+        Ok(true)
     }
 
     fn acquire_surface_texture(

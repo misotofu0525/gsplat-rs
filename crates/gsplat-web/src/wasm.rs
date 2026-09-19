@@ -237,6 +237,7 @@ impl GsplatWebRenderer {
             output.stats,
             output.timings,
             output.sort_refreshed,
+            output.presented,
             self.session.surface_size(),
         )
     }
@@ -449,6 +450,7 @@ fn frame_stats_object(
     stats: FrameStats,
     timings: SurfaceFrameTimings,
     refresh_sort: bool,
+    presented: bool,
     surface_size: (u32, u32),
 ) -> Result<JsValue, JsValue> {
     let object = Object::new();
@@ -462,6 +464,7 @@ fn frame_stats_object(
     set_u32(&object, "visibleCount", stats.visible_count)?;
     set_u32(&object, "drawnCount", stats.drawn_count)?;
     set_bool(&object, "refreshSort", refresh_sort)?;
+    set_bool(&object, "presented", presented)?;
     set_u32(&object, "surfaceWidth", surface_size.0)?;
     set_u32(&object, "surfaceHeight", surface_size.1)?;
     Ok(object.into())

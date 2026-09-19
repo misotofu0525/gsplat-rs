@@ -80,10 +80,16 @@ For the broader command matrix, use `VERIFICATION.md`.
   iPhone Surface. The GPU path stays experimental, image-exact, and
   fallback-free. A PlayCanvas-style 16-bit weighted depth key was
   measured and demoted the same day; production keys stay 32-bit IEEE.
-  Per-splat compute preprocess is on the default path; quantized resident
-  storage is an explicit Rust-only profile with per-degree SH sidecars and
-  sample/collector extras on Android and Web. Mobile sort cadence remains
-  interval 2 with async sort off (both already on the C ABI / wrappers).
+  Per-splat compute preprocess is on the default path; it re-runs only when
+  the camera, surface size, or order changed, culled records skip SH
+  evaluation, and Surface sessions present on demand (stationary frames do
+  no GPU work and `needs_frame` lets event-loop clients idle). Quantized
+  resident storage is an explicit Rust-only profile with per-degree SH
+  sidecars and sample/collector extras on Android and Web. Mobile sort
+  cadence remains interval 2 with async sort off (both already on the C ABI /
+  wrappers); the async worker reuses its sort workspace and index buffers.
+  The CPU keeps one `SceneBuffers` per renderer; resident GPU records are
+  derived while writing the upload buffer.
   Item 4 slice 1 promotes whole-scene SPZ v4 import through `gsplat-io`
   (desktop, C path load, wasm, mobile path-create). Packed on-disk SPZ is
   still one resident `SceneBuffers` after decode; it is not streaming.
@@ -130,6 +136,10 @@ For the broader command matrix, use `VERIFICATION.md`.
   cadence, CPU sort refreshes, compact order uploads, and presentation to the
   shared `SurfaceRenderSession`. All clients use the same resident scene and
   sorted-index draw path. Mobile keeps the default CPU sort interval of 2.
+  A `render_frame` call with no camera command and nothing changed presents
+  nothing and reports `presented == false`; the previously presented image
+  stays on screen. Camera commands always request a frame, so static
+  benchmark loops that orbit by zero still measure presented frames.
 - Resident capacity is checked before GPU allocation. A scene that exceeds the
   adapter's binding or buffer limits returns a structured error; there is no
   hidden storage-mode or paging fallback.

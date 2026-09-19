@@ -33,9 +33,11 @@
   (visibility compact, hierarchical 4-bit radix, indirect sort/draw).
   Depth keys stay full 32-bit IEEE `f32` bits on both CPU and GPU radix.
   CPU-projected `GpuInstance` expansion lives in `cpu_geometry.rs` as a
-  test-only conformance oracle. Each presented frame runs a compute
-  preprocess that writes compact projected records; the vertex stage only
-  emits quads. `ResidentStorageProfile::FullF32` is the default quality
+  test-only conformance oracle. A compute preprocess writes compact
+  projected records whenever the camera, surface size, or order buffer
+  changed; stationary frames reuse the resident projected buffer and the
+  vertex stage only emits quads. Culled records skip SH evaluation.
+  `ResidentStorageProfile::FullF32` is the default quality
   reference; `Quantized` is an explicit Rust-only SPZ-aligned GPU layout
   with per-degree SH sidecars. Android and Web samples can select it
   through collector extras; the stable C ABI stays on full-f32.
@@ -123,10 +125,20 @@
   state, and frame statistics
   changed-camera frames advance the default interval schedule; identical
   redraws do not repeatedly sort
+  frames are presented on demand: `render_frame` returns `presented ==
+  false` with no GPU work while nothing changed since the last presented
+  image; every `set_camera` call (any orbit/zoom/pan/reset command through
+  the C ABI or wasm, even with an unchanged pose) requests a frame,
+  `needs_frame` lets event-loop clients idle, and `request_present` forces
+  a redraw after the platform exposes or recreates a window; a swapchain
+  timeout keeps the frame pending instead of dropping it
   scene-derived positions, covariance terms, opacity, DC color, and SH data stay
-  GPU-resident; CPU sort refreshes upload only sorted `u32` source IDs
+  GPU-resident; CPU sort refreshes upload only sorted `u32` source IDs; the
+  CPU retains one `SceneBuffers` (shared by `Arc` with the native async sort
+  worker) and derives resident records while writing the mapped upload buffer
   every acquired swapchain image is rendered by the resident vertex/fragment
-  pipeline even when the scene and order buffers are already current
+  pipeline even when the scene and order buffers are already current; the
+  compute preprocess re-runs only when the projected buffer is stale
   Surface construction runs one shared metadata-only resource plan before
   device allocation and returns a structured capacity error when the resident
   source, SH, or order buffers exceed adapter limits
@@ -213,7 +225,9 @@
 - An offscreen renderer must not report successful rendering without a real GPU
   raster path; Surface-only construction is explicit.
 - Surface frame scheduling belongs in `SurfaceRenderSession`, not in Web, FFI,
-  desktop, Android, or Apple wrapper-specific state machines.
+  desktop, Android, or Apple wrapper-specific state machines. That includes
+  on-demand presentation: wrappers may tick every refresh, and the session
+  decides whether a frame has work.
 - CPU depth sorting is shared by the release-gated resident geometry pipeline
   across Web, desktop, Android, and Apple. Projection and SH evaluation stay on
   the GPU.
@@ -235,12 +249,14 @@
   frame orchestration
 - `crates/gsplat-render-wgpu/src/project.rs`: per-splat compute projection
 - `crates/gsplat-render-wgpu/src/resident.rs`: resident-scene buffers, preflight,
-  and bind-group/pipeline setup
+  bind-group/pipeline setup, and the stationary projection cache
 - `crates/gsplat-render-wgpu/src/surface_session.rs`: shared Surface lifecycle,
-  CPU sort cadence, compact order-upload state, and frame telemetry
+  CPU sort cadence, compact order-upload state, on-demand presentation, and
+  frame telemetry
 - `crates/gsplat-render-wgpu/src/surface_adaptive.rs`: experimental Adaptive
   CPU/GPU order policy
 - `crates/gsplat-render-wgpu/src/surface_async.rs`: native async CPU sort worker
+  with a persistent workspace and recycled index buffers
 - `crates/gsplat-sort/src/lib.rs`: ordering correctness and performance
 - `crates/gsplat-io/src/lib.rs`: PLY / SPZ v4 / SOG whole-scene import facade
 - `crates/gsplat-io-spz/src/lib.rs`: bounded/cancellable SPZ v4 parsing, coordinate conversion, and source caches
