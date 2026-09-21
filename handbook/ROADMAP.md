@@ -30,8 +30,10 @@ transient research belong under `docs/plans/`.
 - The stable contract is bounded PLY, SPZ v4, unbundled SOG, or bundled `.sog`
   whole-scene import into validated in-memory `SceneBuffers`, resident `SortedAlpha`
   rendering, structured errors, and the small C ABI. Streamed SOG is a
-  metadata-first subset assembler used by Rust/desktop/bench-runner, not a
-  C ABI scene type.
+  metadata-first subset assembler. `gsplat_context_load_scene_path` and the
+  Surface create functions accept its `lod-meta.json` index and load one
+  coarsest-first subset under the renderer's GPU-resident cap; camera-driven
+  refinement stays a Rust/desktop session feature.
 - One resident-scene representation serves every platform. Capacity preflight
   fails explicitly instead of selecting another storage or residency mode.
 - CPU radix ordering is the default production ordering backend. GPU and
@@ -51,7 +53,8 @@ transient research belong under `docs/plans/`.
   - Android and iOS Surface create/resize/camera-control/render/stats/destroy
     functions used by the validation integrations
 - The stable C ABI does not cover runtime render-mode switching, raw `wgpu`
-  resources, experimental ordering/storage controls, or Streamed SOG.
+  resources, experimental ordering/storage controls, or camera-driven
+  Streamed SOG refinement.
 - Mobile Surface convenience wrappers, Web package APIs, and benchmark artifact
   schemas remain experimental.
 - Whole-scene SPZ v4, unbundled SOG, and bundled `.sog` import are consumed
@@ -259,9 +262,25 @@ limits when an offscreen rasterizer exists; portable `downlevel_defaults`
 otherwise) before assemble. The renderer still uploads one selected
 `SceneBuffers` and runs resident preflight. This is not a page pool.
 
+Slice 7 (landed 2026-09-21): first Streamed SOG C ABI slice.
+`gsplat_context_load_scene_path` and the Android/iOS Surface create functions
+accept `lod-meta.json` through the existing path symbol (no new symbols, API
+version stays 0.1). The FFI reuses `StreamedSogSession`, peeks the SH degree,
+caps `max_resident_gaussians` at `Renderer::max_resident_gaussians` (real
+device limits offscreen, portable downlevel limits before a Surface device
+exists), assembles one subset, and drops the session. `assemble(None)` is now
+coarsest-first everywhere: every leaf starts at its coarsest LOD, that layer
+must fit every budget or the call returns a structured `ResourceLimit` naming
+a `coarsest layer` resource (`GSPLAT_ERROR_UNSUPPORTED` at the C boundary),
+and finer layers are taken uniformly while the budgets still hold. Unselected
+chunk ranges are never decoded. The bytes ABI still rejects the index because
+its chunks are sibling files. This is still one selected `SceneBuffers`, not
+a page pool.
+
 Remaining in this item:
 
-- A C ABI for streaming/LOD. Do not invent a proprietary scene format. Track
+- Camera-driven refinement, asynchronous decode, and a decoded-chunk cache
+  policy behind the C ABI. Do not invent a proprietary scene format. Track
   the Khronos `KHR_gaussian_splatting` glTF extension and its planned SPZ
   streaming extension as they ratify.
 
@@ -382,9 +401,10 @@ stability gates are documented in `handbook/VERIFICATION.md` and promoted here.
 - Web distribution: npm publication waits for target-browser Surface smoke and
   explicit promotion of the package API.
 - SPZ / SOG product integration: whole-scene path and memory load cover PLY,
-  SPZ v4, and bundled `.sog`; path load also covers unbundled SOG. Streamed
-  SOG already applies an independent GPU-resident gaussian budget before
-  assemble. A C streaming ABI remains later work.
+  SPZ v4, and bundled `.sog`; path load also covers unbundled SOG and a
+  coarsest-first Streamed SOG subset under the GPU-resident gaussian budget.
+  Camera-driven refinement and asynchronous decode behind the C ABI remain
+  later work.
 
 ## Explicitly Not Active Right Now
 
