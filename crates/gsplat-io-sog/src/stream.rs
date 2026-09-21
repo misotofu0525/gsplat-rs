@@ -119,11 +119,15 @@ impl StreamedSogSession {
 
     /// Select leaves for `camera` and decode only that subset.
     ///
-    /// Without a camera, every leaf's LOD 0 range is required to fit. With a
-    /// camera, farther leaves are dropped until the budgets fit. A single
-    /// environment or nearest leaf that exceeds the full budget — including
-    /// the optional GPU-resident gaussian cap — is a structured
-    /// [`SogError::ResourceLimit`].
+    /// Without a camera, selection is coarsest-first: every leaf starts at
+    /// its coarsest available LOD, and that layer must fit every budget —
+    /// including the optional GPU-resident gaussian cap — or the result is a
+    /// structured [`SogError::ResourceLimit`] naming a `coarsest layer`
+    /// resource. Finer layers are then taken uniformly while all budgets
+    /// still hold, so a scene that fits at LOD 0 still assembles at LOD 0.
+    /// With a camera, nearer leaves keep distance-picked LODs and farther
+    /// leaves are dropped until the budgets fit; a single environment or
+    /// nearest leaf that exceeds the full budget is also `ResourceLimit`.
     pub fn assemble(&mut self, camera: Option<&Camera>) -> Result<StreamAssembleResult, SogError> {
         let plan = plan_selection(&self.index, camera, self.budgets)?;
         self.retain_plan(&plan);
@@ -243,11 +247,6 @@ fn plan_selection(
 ) -> Result<SelectionPlan, SogError> {
     let mut leaves = Vec::new();
     index.tree.walk_leaves(&mut leaves);
-    let mut ranked: Vec<RankedLeaf> = leaves
-        .into_iter()
-        .filter_map(|leaf| rank_leaf(leaf, camera, index.lod_levels))
-        .collect();
-    ranked.sort_by(|left, right| left.distance.total_cmp(&right.distance));
 
     let mut meta_cache: HashMap<usize, CachedChunk> = HashMap::new();
     let mut env_cost = ChunkCost::default();
@@ -275,46 +274,46 @@ fn plan_selection(
         }
     }
 
-    if camera.is_none() {
-        return plan_without_camera(index, &ranked, env_cost, budgets, &mut meta_cache);
+    match camera {
+        None => plan_coarsest_first(index, &leaves, env_cost, budgets, &mut meta_cache),
+        Some(camera) => {
+            let mut ranked: Vec<RankedLeaf> = leaves
+                .into_iter()
+                .map(|leaf| rank_leaf(leaf, camera, index.lod_levels))
+                .collect();
+            ranked.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+            plan_with_camera(index, &ranked, env_cost, budgets, &mut meta_cache)
+        }
     }
-    plan_with_camera(index, &ranked, env_cost, budgets, &mut meta_cache)
 }
 
-fn plan_without_camera(
+/// Coarsest-first selection for a load without a camera.
+///
+/// The baseline is every leaf at its coarsest available LOD plus the
+/// environment; it must fit every budget or the scene is too large for this
+/// device at any level. Finer layers are then taken uniformly, one level at a
+/// time, while all budgets still hold. Only metadata is read here.
+fn plan_coarsest_first(
     index: &LodMeta,
-    ranked: &[RankedLeaf],
+    leaves: &[&LodNode],
     env_cost: ChunkCost,
     budgets: StreamingBudgets,
     meta_cache: &mut HashMap<usize, CachedChunk>,
 ) -> Result<SelectionPlan, SogError> {
-    let mut ranges = Vec::new();
-    let mut gaussians = env_cost.gaussians;
-    let mut decoded_bytes = env_cost.decoded_bytes;
-    let mut unique_files: HashSet<usize> = HashSet::new();
-    let mut dropped_leaves = 0_usize;
-    for leaf in ranked {
-        let Some(range) = leaf.range else {
-            dropped_leaves += 1;
-            continue;
-        };
-        gaussians = gaussians.saturating_add(range.count);
-        decoded_bytes =
-            decoded_bytes.saturating_add(range_decoded_bytes(index, range, meta_cache)?);
-        unique_files.insert(range.file);
-        ranges.push(range);
+    let coarsest = index.lod_levels.saturating_sub(1);
+    let mut selected = layer_ranges(leaves, coarsest);
+    let mut cost = layer_cost(index, &selected, env_cost, meta_cache)?;
+    ensure_coarsest_layer_fits(cost, budgets)?;
+    for level in (0..coarsest).rev() {
+        let candidate = layer_ranges(leaves, level);
+        let candidate_cost = layer_cost(index, &candidate, env_cost, meta_cache)?;
+        if !cost_fits(candidate_cost, budgets) {
+            break;
+        }
+        selected = candidate;
+        cost = candidate_cost;
     }
-    let source_bytes = env_cost.source_bytes.saturating_add(unique_source_bytes(
-        index,
-        &unique_files,
-        meta_cache,
-    )?);
-    ensure_total_fits("gaussians", gaussians, budgets.max_gaussians)?;
-    ensure_total_fits("source bytes", source_bytes, budgets.max_source_bytes)?;
-    ensure_total_fits("decoded bytes", decoded_bytes, budgets.max_decoded_bytes)?;
-    if let Some(limit) = budgets.max_resident_gaussians {
-        ensure_total_fits("resident gaussians", gaussians, limit)?;
-    }
+    let ranges: Vec<LodRange> = selected.iter().flatten().copied().collect();
     if ranges.is_empty() && index.environment.is_none() {
         return Err(SogError::ResourceLimit {
             resource: "gaussians",
@@ -323,10 +322,66 @@ fn plan_without_camera(
         });
     }
     Ok(SelectionPlan {
+        dropped_leaves: selected.len() - ranges.len(),
         ranges,
-        dropped_leaves,
-        source_bytes,
+        source_bytes: cost.source_bytes,
     })
+}
+
+fn layer_ranges(leaves: &[&LodNode], level: u32) -> Vec<Option<LodRange>> {
+    leaves.iter().map(|leaf| pick_range(leaf, level)).collect()
+}
+
+fn layer_cost(
+    index: &LodMeta,
+    ranges: &[Option<LodRange>],
+    env_cost: ChunkCost,
+    meta_cache: &mut HashMap<usize, CachedChunk>,
+) -> Result<ChunkCost, SogError> {
+    let mut cost = env_cost;
+    let mut unique_files: HashSet<usize> = HashSet::new();
+    for range in ranges.iter().flatten() {
+        cost.gaussians = cost.gaussians.saturating_add(range.count);
+        cost.decoded_bytes = cost
+            .decoded_bytes
+            .saturating_add(range_decoded_bytes(index, *range, meta_cache)?);
+        unique_files.insert(range.file);
+    }
+    cost.source_bytes =
+        cost.source_bytes
+            .saturating_add(unique_source_bytes(index, &unique_files, meta_cache)?);
+    Ok(cost)
+}
+
+fn cost_fits(cost: ChunkCost, budgets: StreamingBudgets) -> bool {
+    cost.gaussians <= budgets.max_gaussians
+        && cost.source_bytes <= budgets.max_source_bytes
+        && cost.decoded_bytes <= budgets.max_decoded_bytes
+        && budgets
+            .max_resident_gaussians
+            .is_none_or(|limit| cost.gaussians <= limit)
+}
+
+fn ensure_coarsest_layer_fits(cost: ChunkCost, budgets: StreamingBudgets) -> Result<(), SogError> {
+    ensure_single_fits(
+        "coarsest layer gaussians",
+        cost.gaussians,
+        budgets.max_gaussians,
+    )?;
+    ensure_single_fits(
+        "coarsest layer source bytes",
+        cost.source_bytes,
+        budgets.max_source_bytes,
+    )?;
+    ensure_single_fits(
+        "coarsest layer decoded bytes",
+        cost.decoded_bytes,
+        budgets.max_decoded_bytes,
+    )?;
+    if let Some(limit) = budgets.max_resident_gaussians {
+        ensure_single_fits("coarsest layer resident gaussians", cost.gaussians, limit)?;
+    }
+    Ok(())
 }
 
 fn plan_with_camera(
@@ -444,22 +499,16 @@ struct ChunkCost {
     decoded_bytes: usize,
 }
 
-fn rank_leaf(leaf: &LodNode, camera: Option<&Camera>, lod_levels: u32) -> Option<RankedLeaf> {
+fn rank_leaf(leaf: &LodNode, camera: &Camera, lod_levels: u32) -> RankedLeaf {
     let center = rub_to_ruf(leaf.center());
-    let (distance, lod) = match camera {
-        Some(camera) => {
-            let dx = center[0] - camera.pose.position.x;
-            let dy = center[1] - camera.pose.position.y;
-            let dz = center[2] - camera.pose.position.z;
-            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-            (distance, pick_lod(distance, lod_levels))
-        }
-        None => (0.0, 0),
-    };
-    Some(RankedLeaf {
+    let dx = center[0] - camera.pose.position.x;
+    let dy = center[1] - camera.pose.position.y;
+    let dz = center[2] - camera.pose.position.z;
+    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+    RankedLeaf {
         distance,
-        range: pick_range(leaf, lod),
-    })
+        range: pick_range(leaf, pick_lod(distance, lod_levels)),
+    }
 }
 
 fn pick_range(leaf: &LodNode, lod: u32) -> Option<LodRange> {
@@ -593,14 +642,6 @@ fn ensure_single_fits(
     } else {
         Ok(())
     }
-}
-
-fn ensure_total_fits(
-    resource: &'static str,
-    requested: usize,
-    limit: usize,
-) -> Result<(), SogError> {
-    ensure_single_fits(resource, requested, limit)
 }
 
 pub(crate) fn estimated_scene_bytes(scene: &SceneBuffers) -> usize {

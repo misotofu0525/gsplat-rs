@@ -26,6 +26,18 @@ and this project adheres to
   changes. Desktop and bench-runner apply an independent GPU-resident
   gaussian budget from `Renderer::max_resident_gaussians` before assemble;
   this is still one selected `SceneBuffers`, not a page pool.
+- `gsplat_context_load_scene_path` and the Android/iOS Surface create
+  functions accept a PlayCanvas Streamed SOG `lod-meta.json` index through
+  the existing path symbol (API version stays 0.1). The FFI reuses
+  `StreamedSogSession`, caps `max_resident_gaussians` at
+  `Renderer::max_resident_gaussians`, assembles one coarsest-first subset,
+  and drops the session. `StreamedSogSession::assemble(None)` is now
+  coarsest-first: the coarsest layer must fit every budget or the call
+  returns a structured `ResourceLimit` naming a `coarsest layer` resource
+  (`GSPLAT_ERROR_UNSUPPORTED` at the C boundary), and finer layers are taken
+  uniformly while the budgets still hold; unselected chunks are never
+  decoded. The bytes ABI still rejects the index because its chunks are
+  sibling files.
 - Added versioned benchmark artifacts, dataset manifests, a shared camera
   trace contract, extraction tools for Web/Android/iOS, and a pinned
   PlayCanvas comparison harness with paired statistics and SSIM checks.

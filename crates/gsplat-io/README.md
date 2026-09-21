@@ -21,15 +21,19 @@ Unbundled SOG is a directory of images, so it is path-only.
 
 Streamed SOG (`lod-meta.json`) is **not** whole-scene import. `load_scene_path`
 returns a structured `StreamingRequired` error. Use `assemble_streamed_sog` or
-`StreamedSogSession` to select a budgeted subset from spatial metadata. Desktop
-and bench-runner set `max_resident_gaussians` from the renderer before
-assemble, then hand that subset to the existing resident renderer.
+`StreamedSogSession` to select a budgeted subset from spatial metadata. Without
+a camera the selection is coarsest-first: the coarsest layer must fit every
+budget or the result is `ResourceLimit`, and finer layers are taken uniformly
+while the budgets hold. Desktop, bench-runner, and the C ABI path load set
+`max_resident_gaussians` from the renderer before assemble, then hand that
+subset to the existing resident renderer.
 
 ## Position in the workspace
 
 Product loaders (desktop example, bench-runner, C ABI path/bytes load, wasm
-`createRenderer`) go through this crate. Packed on-disk SPZ and whole-scene SOG
-are still one resident scene after decode.
+`createRenderer`) go through this crate for whole-scene formats and dispatch
+`lod-meta.json` to `StreamedSogSession` themselves. Packed on-disk SPZ and
+whole-scene SOG are still one resident scene after decode.
 
 ## License
 

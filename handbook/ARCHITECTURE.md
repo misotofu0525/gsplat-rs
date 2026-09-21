@@ -99,9 +99,16 @@
   `StreamedSogSession` reads the spatial tree first, selects leaves under
   independent source / decoded / gaussian / GPU-resident budgets, then
   decodes only that subset (native builds decode missing chunks in parallel)
-  `gsplat_context_load_scene_path` / `_bytes` reject `lod-meta.json`
-  desktop and bench-runner create the renderer first, peek SH degree, set
-  `max_resident_gaussians` from `Renderer::max_resident_gaussians`, then assemble
+  without a camera the selection is coarsest-first: every leaf starts at its
+  coarsest LOD, that layer must fit or the result is a structured
+  `ResourceLimit`, and finer layers are taken uniformly while the budgets hold
+  desktop, bench-runner, `gsplat_context_load_scene_path`, and the Android/iOS
+  Surface create functions create the renderer first, peek SH degree, set
+  `max_resident_gaussians` from `Renderer::max_resident_gaussians` (device
+  limits offscreen, portable downlevel limits before a Surface device exists),
+  then assemble; the C ABI drops the session after the one assemble
+  `gsplat_context_load_scene_bytes` rejects the index because its chunks are
+  sibling files
   desktop still optionally reassembles for `--auto-camera` and interactive
   camera motion via `SurfaceRenderSession::reload_scene`
   this never materializes a hidden full-scene `SceneBuffers` and is not a

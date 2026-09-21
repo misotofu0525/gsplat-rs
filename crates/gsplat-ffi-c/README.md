@@ -16,7 +16,16 @@ boundary used by the Android JNI bridge and the iOS `GsplatKit` wrapper.
 - Load whole-scene PLY, SPZ v4, unbundled SOG, or bundled `.sog` ZIP through
   `gsplat_context_load_scene_path`. `gsplat_context_load_scene_bytes` sniffs
   PLY / SPZ / ZIP magic. Both produce one resident scene; they are not
-  streaming. Streamed SOG (`lod-meta.json`) is rejected.
+  streaming.
+- Pass a PlayCanvas Streamed SOG index (`lod-meta.json`) to
+  `gsplat_context_load_scene_path` or a Surface create function. The index is
+  read first; every leaf starts at its coarsest LOD, that layer must fit the
+  renderer's GPU-resident gaussian cap plus the default budgets, and finer
+  layers are taken uniformly while the budgets hold. Only the selected chunk
+  ranges are decoded into one resident subset. A coarsest layer that does not
+  fit returns `GSPLAT_ERROR_UNSUPPORTED` with the requested and limit counts
+  in `gsplat_last_error_message()`. The bytes API rejects the index because
+  its chunks are sibling files. Camera-driven refinement is not on the C ABI.
 - Treat non-zero returns as `GsplatErrorCode` values and pass them to
   `gsplat_error_message()`; use `gsplat_last_error_message()` for the most
   recent operation detail.

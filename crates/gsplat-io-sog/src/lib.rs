@@ -130,7 +130,7 @@ mod tests {
         assert!(matches!(
             without_camera,
             Err(SogError::ResourceLimit {
-                resource: "gaussians",
+                resource: "coarsest layer gaussians",
                 requested: 2,
                 limit: 1
             })
@@ -179,7 +179,7 @@ mod tests {
         assert!(matches!(
             session.assemble(None),
             Err(SogError::ResourceLimit {
-                resource: "resident gaussians",
+                resource: "coarsest layer resident gaussians",
                 requested: 2,
                 limit: 1
             })
@@ -198,6 +198,93 @@ mod tests {
         assert_eq!(assembled.gaussians, 1);
         assert_eq!(assembled.selected_leaves, 1);
         assert_eq!(assembled.dropped_leaves, 1);
+    }
+
+    #[test]
+    fn coarsest_first_takes_the_finest_uniform_layer_that_fits() {
+        let dir = temp_dir("sog-coarsest-first");
+        write_streamed_sog_two_levels(&dir);
+        let open = |max_gaussians: usize| {
+            StreamedSogSession::open(
+                &dir.join("lod-meta.json"),
+                StreamingBudgets {
+                    max_gaussians,
+                    ..StreamingBudgets::default()
+                },
+            )
+            .expect("open two-level streamed SOG")
+        };
+
+        let full = open(4).assemble(None).expect("LOD 0 fits");
+        assert_eq!(full.gaussians, 4);
+        assert_eq!(full.selected_leaves, 2);
+        assert_eq!(full.dropped_leaves, 0);
+
+        let coarse = open(3).assemble(None).expect("coarsest layer fits");
+        assert_eq!(coarse.gaussians, 2);
+        assert_eq!(coarse.selected_leaves, 2);
+        assert_eq!(coarse.dropped_leaves, 0);
+        assert_ne!(coarse.fingerprint, full.fingerprint);
+        let mut xs: Vec<f32> = coarse.scene.positions.iter().map(|p| p.x).collect();
+        xs.sort_by(f32::total_cmp);
+        assert!((xs[0] + 1.0).abs() < 1.0e-2 && (xs[1] - 1.0).abs() < 1.0e-2);
+
+        assert!(matches!(
+            open(1).assemble(None),
+            Err(SogError::ResourceLimit {
+                resource: "coarsest layer gaussians",
+                requested: 2,
+                limit: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn coarsest_first_applies_the_resident_cap_before_decoding() {
+        let dir = temp_dir("sog-coarsest-resident");
+        write_streamed_sog_two_levels(&dir);
+        // Corrupt the LOD 0 images: a plan that only needs the coarsest layer
+        // must never touch them, while a plan that refines to LOD 0 must fail
+        // on decode rather than silently drop the layer.
+        for name in [
+            "means_l.png",
+            "means_u.png",
+            "scales.png",
+            "quats.png",
+            "sh0.png",
+        ] {
+            fs::write(dir.join("0_0").join(name), b"not an image").unwrap();
+        }
+        let open = |max_resident_gaussians: usize| {
+            StreamedSogSession::open(
+                &dir.join("lod-meta.json"),
+                StreamingBudgets {
+                    max_resident_gaussians: Some(max_resident_gaussians),
+                    ..StreamingBudgets::default()
+                },
+            )
+            .expect("open two-level streamed SOG")
+        };
+
+        let coarse = open(3)
+            .assemble(None)
+            .expect("coarsest layer under GPU cap");
+        assert_eq!(coarse.gaussians, 2);
+        assert!(coarse.scene.validate().is_ok());
+
+        assert!(matches!(
+            open(1).assemble(None),
+            Err(SogError::ResourceLimit {
+                resource: "coarsest layer resident gaussians",
+                requested: 2,
+                limit: 1
+            })
+        ));
+
+        assert!(matches!(
+            open(4).assemble(None),
+            Err(SogError::Image(_) | SogError::Malformed(_))
+        ));
     }
 
     #[test]
@@ -292,6 +379,55 @@ mod tests {
                     {
                         "bound": { "min": [0.0, -1.0, -2.0], "max": [2.0, 1.0, 2.0] },
                         "lods": { "0": { "file": 1, "offset": 0, "count": 1 } }
+                    }
+                ]
+            }
+        });
+        fs::write(
+            root.join("lod-meta.json"),
+            serde_json::to_string_pretty(&lod).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Two leaves, two LOD levels. Each chunk file holds one level, like the
+    /// PlayCanvas writer: LOD 0 has two splats per leaf, LOD 1 has one.
+    fn write_streamed_sog_two_levels(root: &Path) {
+        write_unbundled_sog(
+            &root.join("0_0"),
+            &[
+                test_splat(-1.5, 0.0, 1.0),
+                test_splat(-0.5, 0.0, 1.0),
+                test_splat(0.5, 0.0, 1.0),
+                test_splat(1.5, 0.0, 1.0),
+            ],
+        );
+        write_unbundled_sog(
+            &root.join("1_0"),
+            &[test_splat(-1.0, 0.0, 1.0), test_splat(1.0, 0.0, 1.0)],
+        );
+        let lod = json!({
+            "version": 1,
+            "count": 6,
+            "counts": [4, 2],
+            "lodLevels": 2,
+            "filenames": ["0_0/meta.json", "1_0/meta.json"],
+            "tree": {
+                "bound": { "min": [-2.0, -1.0, -2.0], "max": [2.0, 1.0, 2.0] },
+                "children": [
+                    {
+                        "bound": { "min": [-2.0, -1.0, -2.0], "max": [0.0, 1.0, 2.0] },
+                        "lods": {
+                            "0": { "file": 0, "offset": 0, "count": 2 },
+                            "1": { "file": 1, "offset": 0, "count": 1 }
+                        }
+                    },
+                    {
+                        "bound": { "min": [0.0, -1.0, -2.0], "max": [2.0, 1.0, 2.0] },
+                        "lods": {
+                            "0": { "file": 0, "offset": 2, "count": 2 },
+                            "1": { "file": 1, "offset": 1, "count": 1 }
+                        }
                     }
                 ]
             }

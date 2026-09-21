@@ -97,19 +97,31 @@ void gsplat_context_destroy(GsplatContext *ctx);
 int32_t gsplat_context_set_camera(GsplatContext *ctx, GsplatCamera camera);
 int32_t gsplat_context_set_auto_camera(GsplatContext *ctx);
 /*
- * Load a whole-scene 3DGS PLY, Niantic SPZ v4, unbundled SOG (`meta.json`),
- * or bundled `.sog` ZIP file. Format comes from the extension (`.ply`, `.spz`,
- * `.sog`) or, if the extension is absent or unknown, from file magic. Decode
- * produces one resident scene; this is not streaming. Streamed SOG
- * (`lod-meta.json`) is rejected here.
+ * Load a scene from a filesystem path.
+ *
+ * Whole-scene 3DGS PLY, Niantic SPZ v4, unbundled SOG (`meta.json`), or
+ * bundled `.sog` ZIP decode to one resident scene. Format comes from the
+ * extension (`.ply`, `.spz`, `.sog`) or, if the extension is absent or
+ * unknown, from file magic.
+ *
+ * A PlayCanvas Streamed SOG index (`lod-meta.json`) is read metadata-first:
+ * every spatial leaf starts at its coarsest LOD, that layer must fit this
+ * context's GPU-resident gaussian cap and the default source / decoded /
+ * gaussian budgets, and finer layers are taken uniformly while the budgets
+ * still hold. Only the selected chunk ranges are decoded into one resident
+ * subset; there is no page pool and no camera-driven refinement through this
+ * ABI yet. If even the coarsest layer does not fit, the call returns
+ * GSPLAT_ERROR_UNSUPPORTED and gsplat_last_error_message() names the budget
+ * with the requested and limit counts.
  */
 int32_t gsplat_context_load_scene_path(GsplatContext *ctx, const char *path);
 /*
  * Load a whole-scene 3DGS PLY, Niantic SPZ v4, or bundled `.sog` ZIP payload
  * from memory. Format comes from file magic (`ply` / `NGSP` / ZIP `PK`).
  * `bytes` must be non-null and `byte_count` must be positive. Decode produces
- * one resident scene; this is not streaming. Streamed SOG (`lod-meta.json`)
- * is rejected here.
+ * one resident scene; this is not streaming. A Streamed SOG index is rejected
+ * here because its chunks are sibling files; pass its path to
+ * gsplat_context_load_scene_path instead.
  */
 int32_t gsplat_context_load_scene_bytes(
     GsplatContext *ctx,
@@ -118,6 +130,11 @@ int32_t gsplat_context_load_scene_bytes(
 int32_t gsplat_context_render_frame(GsplatContext *ctx);
 int32_t gsplat_context_get_stats(const GsplatContext *ctx, GsplatStats *out_stats);
 
+/*
+ * Surface create functions accept the same `path` formats as
+ * gsplat_context_load_scene_path. A Streamed SOG index is selected under the
+ * portable pre-device GPU cap because the Surface device does not exist yet.
+ */
 int32_t gsplat_surface_renderer_create_android(
     void *native_window,
     const char *path,

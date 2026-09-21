@@ -35,11 +35,20 @@ static int32_t load_scene_bytes_from_path(GsplatContext *ctx, const char *path) 
   return rc;
 }
 
+/* A Streamed SOG index is path-only: its chunks are sibling files. */
+static int is_streamed_sog_index(const char *path) {
+  const char *name = "lod-meta.json";
+  size_t path_len = strlen(path);
+  size_t name_len = strlen(name);
+  return path_len >= name_len && strcmp(path + path_len - name_len, name) == 0;
+}
+
 int main(int argc, char **argv) {
   const char *dataset = "tests/datasets/minimal_ascii.ply";
   if (argc > 1) {
     dataset = argv[1];
   }
+  int streamed = is_streamed_sog_index(dataset);
 
   if (gsplat_version_major() != GSPLAT_API_VERSION_MAJOR_VALUE ||
       gsplat_version_minor() != GSPLAT_API_VERSION_MINOR_VALUE) {
@@ -95,7 +104,20 @@ int main(int argc, char **argv) {
   }
 
   rc = load_scene_bytes_from_path(ctx, dataset);
-  if (rc != 0) {
+  if (streamed) {
+    if (rc != GSPLAT_ERROR_UNSUPPORTED) {
+      fprintf(stderr, "expected gsplat_context_load_scene_bytes to reject a Streamed SOG index with Unsupported, got: %d\n", rc);
+      gsplat_context_destroy(ctx);
+      return 10;
+    }
+    /* The rejected bytes load must leave the path-loaded subset in place. */
+    rc = gsplat_context_set_auto_camera(ctx);
+    if (rc != 0) {
+      fprintf(stderr, "gsplat_context_set_auto_camera failed after streamed load: %s (%d)\n", gsplat_error_message(rc), rc);
+      gsplat_context_destroy(ctx);
+      return 11;
+    }
+  } else if (rc != 0) {
     fprintf(stderr, "gsplat_context_load_scene_bytes failed (%s): %s (%d)\n", dataset, gsplat_error_message(rc), rc);
     gsplat_context_destroy(ctx);
     return 10;

@@ -100,8 +100,11 @@ For the broader command matrix, use `VERIFICATION.md`.
   ZIP whole-scene import, native parallel chunk decode, and a camera-driven
   desktop Streamed SOG session. Slice 6 applies an independent GPU-resident
   gaussian budget (`Renderer::max_resident_gaussians`) while selecting
-  leaves; the renderer still uploads one selected `SceneBuffers`. This is
-  not a revival of Packed/Paged.
+  leaves; the renderer still uploads one selected `SceneBuffers`. Slice 7
+  routes `lod-meta.json` through the existing C ABI path load and Surface
+  create functions as a coarsest-first subset under the same budget, with a
+  structured error when even the coarsest layer does not fit. This is not a
+  revival of Packed/Paged.
 - Improve mobile integration only while the shared C ABI stays simple and stable.
 - Turn Android integration into a local AAR/module shape before widening it into a published SDK.
 - Harden the local iOS `GsplatKit`/XCFramework slice before treating it as a published SwiftPM binary SDK.
@@ -122,8 +125,9 @@ For the broader command matrix, use `VERIFICATION.md`.
 - Default PLY loading is bounded by `PlyLoadLimits`; callers that intentionally
   need a different budget must opt into the limit-aware APIs.
 - The current C ABI stays small. Offscreen scene loading covers a filesystem
-  path and an in-memory PLY / SPZ v4 / bundled `.sog` payload. It does not cover
-  runtime render-mode switching.
+  path (whole-scene formats or a Streamed SOG `lod-meta.json` index) and an
+  in-memory PLY / SPZ v4 / bundled `.sog` payload. It does not cover runtime
+  render-mode switching or camera-driven Streamed SOG refinement.
 - Android Surface integration now has a local `gsplat-android` library module
   that builds an AAR, but it is not Maven-published or a broad Android product
   API yet. iOS integration now has a local `GsplatKit` Swift package wrapper
@@ -150,7 +154,9 @@ For the broader command matrix, use `VERIFICATION.md`.
 - The bounded SPZ v4 loader is consumed through `gsplat-io` as whole-scene
   import (path or bytes). Unbundled SOG (`meta.json`) and bundled `.sog` ZIP
   are the same resident import. Streamed SOG uses `assemble_streamed_sog` /
-  `StreamedSogSession` and is not on the C ABI.
+  `StreamedSogSession`; the C ABI path load and Surface create functions run
+  one coarsest-first assemble under the renderer's GPU-resident cap and keep
+  one resident subset, while the bytes API rejects the multi-file index.
 - Input PLY quaternion fields `rot_0..3` are interpreted as `w,x,y,z` and remapped internally to `x,y,z,w`.
 - Input 3DGS coordinates are treated as `RDF` and converted at load time to runtime `RUF`, including quaternion and SH sign transforms.
 
@@ -164,9 +170,10 @@ For the broader command matrix, use `VERIFICATION.md`.
   tarball, but `@gsplat-rs/web` is not published to npm or treated as a stable
   v0.1 public API.
 - SPZ / SOG product integration: whole-scene path and memory load cover PLY,
-  SPZ v4, and bundled `.sog`; path load also covers unbundled `meta.json`.
-  Streamed SOG already applies an independent GPU-resident gaussian budget
-  before assemble. A C streaming ABI remains later work.
+  SPZ v4, and bundled `.sog`; path load also covers unbundled `meta.json` and
+  a coarsest-first Streamed SOG subset under the GPU-resident gaussian
+  budget. Camera-driven refinement and asynchronous decode behind the C ABI
+  remain later work.
 - Device runtime evidence: the latest validation covered Android APK/AAR build,
   Android true-device launch and benchmark (an Android test device, flowers
   dataset), iOS simulator app launch, iOS simulator smoke, iOS device app

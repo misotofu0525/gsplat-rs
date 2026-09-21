@@ -54,8 +54,10 @@ Current limits:
 - local binary package only; no remote SwiftPM release artifact
 - iOS 17+ in this validation slice
 - scene loading accepts a filesystem path or an in-memory PLY / SPZ v4 /
-  bundled `.sog` payload (`loadScene(path:)` / `loadScene(bytes:)`). Streamed
-  SOG is not part of the C ABI.
+  bundled `.sog` payload (`loadScene(path:)` / `loadScene(bytes:)`). A
+  Streamed SOG `lod-meta.json` path loads one coarsest-first subset under the
+  device budget; `loadScene(bytes:)` rejects it because chunks are sibling
+  files.
 - `SortedAlpha` is the only release-gated render path
 - simulator slice builds `aarch64-apple-ios-sim x86_64-apple-ios` by default
   unless `IOS_XCFRAMEWORK_SIM_TARGETS` is overridden

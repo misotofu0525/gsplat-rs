@@ -9,16 +9,18 @@ use std::ptr::NonNull;
 
 use gsplat_core::{
     Camera, CameraIntrinsics, CameraPose, ErrorCode, FrameStats, GSPLAT_API_VERSION_MAJOR,
-    GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, Vec3f,
+    GSPLAT_API_VERSION_MINOR, RenderMode, RendererConfig, SceneBuffers, Vec3f,
 };
-use gsplat_io::{load_scene_path, parse_scene_bytes};
+use gsplat_io::{
+    StreamedSogSession, StreamingBudgets, is_streamed_sog_path, load_scene_path, parse_scene_bytes,
+};
 #[cfg(target_os = "android")]
 use gsplat_render_wgpu::ResidentStorageProfile;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use gsplat_render_wgpu::SurfaceOrderBackend;
 use gsplat_render_wgpu::{
-    Renderer, RendererError, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed,
-    SurfacePresenter, SurfaceRenderSession,
+    Renderer, SurfaceAdaptiveState, SurfaceFrameOutput, SurfaceOrderBackendUsed, SurfacePresenter,
+    SurfaceRenderSession,
 };
 
 const SURFACE_CAMERA_MAX_PITCH: f32 = 1.45;
@@ -456,12 +458,17 @@ pub unsafe extern "C" fn gsplat_context_set_auto_camera(ctx: *mut GsplatContext)
     })
 }
 
-/// Load a whole-scene PLY, SPZ v4, unbundled SOG, or bundled `.sog` ZIP from a
-/// filesystem path.
+/// Load a scene from a filesystem path.
 ///
-/// Format comes from the extension (`.ply`, `.spz`, `.sog`) or, if the
-/// extension is absent or unknown, from file magic. This is resident import,
-/// not streaming. Streamed SOG (`lod-meta.json`) is rejected.
+/// Whole-scene PLY, SPZ v4, unbundled SOG (`meta.json`), or bundled `.sog`
+/// ZIP decode to one resident scene; format comes from the extension
+/// (`.ply`, `.spz`, `.sog`) or, if the extension is absent or unknown, from
+/// file magic. A Streamed SOG index (`lod-meta.json`) reads the spatial tree
+/// first and assembles one coarsest-first subset under this context's
+/// GPU-resident gaussian cap plus the default source / decoded / gaussian
+/// budgets; chunks outside that subset are never decoded. A scene whose
+/// coarsest layer does not fit returns `GSPLAT_ERROR_UNSUPPORTED` with the
+/// requested and limit counts in `gsplat_last_error_message()`.
 ///
 /// # Safety
 ///
@@ -500,14 +507,16 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
             }
         };
 
-        let loaded = match load_scene_path(Path::new(path_str)) {
-            Ok(result) => result,
-            Err(err) => {
-                return ffi_error_display(err.code(), "gsplat_context_load_scene_path", err);
-            }
+        let scene = match load_scene_for_renderer(
+            Path::new(path_str),
+            &ctx.renderer,
+            "gsplat_context_load_scene_path",
+        ) {
+            Ok(scene) => scene,
+            Err(rc) => return rc,
         };
 
-        match install_loaded_scene(ctx, loaded) {
+        match ctx.renderer.load_scene(scene) {
             Ok(()) => ffi_ok(),
             Err(err) => ffi_error_display(err.code(), "gsplat_context_load_scene_path", err),
         }
@@ -517,8 +526,9 @@ pub unsafe extern "C" fn gsplat_context_load_scene_path(
 /// Load a whole-scene PLY, SPZ v4, or bundled `.sog` ZIP payload from memory.
 ///
 /// Format comes from file magic (`ply` / `NGSP` / ZIP `PK`). This is resident
-/// import, not streaming. Streamed SOG JSON is rejected. Unbundled SOG JSON
-/// without sibling images is rejected.
+/// import, not streaming. Streamed SOG JSON is rejected because its chunks
+/// are sibling files; use `gsplat_context_load_scene_path` on `lod-meta.json`.
+/// Unbundled SOG JSON without sibling images is rejected.
 ///
 /// # Safety
 ///
@@ -567,7 +577,7 @@ pub unsafe extern "C" fn gsplat_context_load_scene_bytes(
             }
         };
 
-        match install_loaded_scene(ctx, loaded) {
+        match ctx.renderer.load_scene(loaded.scene) {
             Ok(()) => ffi_ok(),
             Err(err) => ffi_error_display(err.code(), "gsplat_context_load_scene_bytes", err),
         }
@@ -638,6 +648,10 @@ pub unsafe extern "C" fn gsplat_context_get_stats(
 
 /// Create an Android Surface renderer from an `ANativeWindow`.
 ///
+/// `path` accepts the same formats as `gsplat_context_load_scene_path`. A
+/// Streamed SOG index is selected under the portable pre-device GPU cap
+/// because the Surface device does not exist yet.
+///
 /// # Safety
 ///
 /// `native_window` must be a valid `ANativeWindow` for the lifetime required
@@ -704,13 +718,11 @@ unsafe fn create_android_surface_renderer(
                 return ffi_error_display(err.code(), operation, err);
             }
         };
-        let loaded = match load_scene_path(Path::new(path_str)) {
-            Ok(result) => result,
-            Err(err) => {
-                return ffi_error_display(err.code(), operation, err);
-            }
+        let scene = match load_scene_for_renderer(Path::new(path_str), &renderer, operation) {
+            Ok(scene) => scene,
+            Err(rc) => return rc,
         };
-        if let Err(err) = renderer.load_scene(loaded.scene) {
+        if let Err(err) = renderer.load_scene(scene) {
             return ffi_error_display(err.code(), operation, err);
         };
 
@@ -740,6 +752,10 @@ unsafe fn create_android_surface_renderer(
 }
 
 /// Create a UIKit Surface renderer from a view backed by `CAMetalLayer`.
+///
+/// `path` accepts the same formats as `gsplat_context_load_scene_path`. A
+/// Streamed SOG index is selected under the portable pre-device GPU cap
+/// because the Surface device does not exist yet.
 ///
 /// # Safety
 ///
@@ -810,13 +826,11 @@ unsafe fn create_uikit_surface_renderer(
                 return ffi_error_display(err.code(), operation, err);
             }
         };
-        let loaded = match load_scene_path(Path::new(path_str)) {
-            Ok(result) => result,
-            Err(err) => {
-                return ffi_error_display(err.code(), operation, err);
-            }
+        let scene = match load_scene_for_renderer(Path::new(path_str), &renderer, operation) {
+            Ok(scene) => scene,
+            Err(rc) => return rc,
         };
-        if let Err(err) = renderer.load_scene(loaded.scene) {
+        if let Err(err) = renderer.load_scene(scene) {
             return ffi_error_display(err.code(), operation, err);
         };
 
@@ -1633,11 +1647,42 @@ fn vec3_normalize(v: Vec3f) -> Option<Vec3f> {
     Some(vec3_scale(v, 1.0 / len))
 }
 
-fn install_loaded_scene(
-    ctx: &mut GsplatContext,
-    loaded: gsplat_io::SceneLoadResult,
-) -> Result<(), RendererError> {
-    ctx.renderer.load_scene(loaded.scene)
+/// Resolve `path` into the one `SceneBuffers` this renderer will hold.
+///
+/// Whole-scene formats go through `gsplat_io::load_scene_path`. A Streamed SOG
+/// index opens a `StreamedSogSession`, peeks the SH degree from chunk metadata,
+/// caps `max_resident_gaussians` at `Renderer::max_resident_gaussians` (real
+/// device limits for an offscreen context, portable downlevel limits for a
+/// Surface renderer that has no device yet), and assembles the coarsest-first
+/// subset. The session and its decoded-chunk cache are dropped here: the C ABI
+/// keeps one resident subset, not a page pool. `Err` carries the already
+/// recorded FFI return code.
+fn load_scene_for_renderer(
+    path: &Path,
+    renderer: &Renderer,
+    operation: &str,
+) -> Result<SceneBuffers, i32> {
+    if !is_streamed_sog_path(path) {
+        return load_scene_path(path)
+            .map(|loaded| loaded.scene)
+            .map_err(|err| ffi_error_display(err.code(), operation, err));
+    }
+
+    let mut session = StreamedSogSession::open(path, StreamingBudgets::default())
+        .map_err(|err| ffi_error_display(err.code(), operation, err))?;
+    let sh_degree = session
+        .peek_sh_degree()
+        .map_err(|err| ffi_error_display(err.code(), operation, err))?;
+    let cap = renderer
+        .max_resident_gaussians(sh_degree)
+        .map_err(|err| ffi_error_display(err.code(), operation, err))?;
+    let mut budgets = session.budgets();
+    budgets.max_resident_gaussians = Some(usize::try_from(cap).unwrap_or(usize::MAX));
+    session.set_budgets(budgets);
+    session
+        .assemble(None)
+        .map(|assembled| assembled.scene)
+        .map_err(|err| ffi_error_display(err.code(), operation, err))
 }
 
 fn scene_bounds(scene: &gsplat_core::SceneBuffers) -> Option<(Vec3f, Vec3f)> {
@@ -1899,10 +1944,14 @@ mod tests {
         unsafe { gsplat_context_destroy(ctx) };
     }
 
+    fn streamed_fixture() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/minimal_streamed_sog/lod-meta.json")
+    }
+
     #[test]
-    fn context_load_rejects_streamed_sog_index() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/datasets/minimal_streamed_sog/lod-meta.json");
+    fn context_load_scene_path_assembles_streamed_sog_subset_and_renders() {
+        let path = streamed_fixture();
         if !path.is_file() {
             return;
         }
@@ -1913,13 +1962,95 @@ mod tests {
 
         let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
         let rc = unsafe { gsplat_context_load_scene_path(ctx, c_path.as_ptr()) };
-        assert_eq!(rc, ErrorCode::Unsupported.as_i32());
+        assert_eq!(rc, ErrorCode::Ok.as_i32());
+        assert_eq!(
+            unsafe { gsplat_context_set_auto_camera(ctx) },
+            ErrorCode::Ok.as_i32()
+        );
+        assert_eq!(
+            unsafe { gsplat_context_render_frame(ctx) },
+            ErrorCode::Ok.as_i32()
+        );
+        let mut stats = super::GsplatStats::from(gsplat_core::FrameStats::zero());
+        assert_eq!(
+            unsafe { gsplat_context_get_stats(ctx, &mut stats) },
+            ErrorCode::Ok.as_i32()
+        );
+        assert_eq!(stats.drawn_count, 2);
 
+        // The index alone cannot be streamed from memory: chunks are sibling files.
         let bytes = std::fs::read(&path).expect("lod-meta.json");
         let rc =
             unsafe { gsplat_context_load_scene_bytes(ctx, bytes.as_ptr(), bytes.len() as u64) };
         assert_eq!(rc, ErrorCode::Unsupported.as_i32());
         unsafe { gsplat_context_destroy(ctx) };
+    }
+
+    #[test]
+    fn context_load_scene_path_reports_oversized_coarsest_layer_without_decoding() {
+        let fixture = streamed_fixture();
+        if !fixture.is_file() {
+            return;
+        }
+        // Same chunk files as the committed fixture, but the index claims a
+        // coarsest layer far above the default gaussian budget. Selection is
+        // metadata-first, so the images are never read.
+        let root = std::env::temp_dir().join(format!(
+            "gsplat-ffi-oversized-streamed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for chunk in ["0_0", "0_1"] {
+            let src = fixture.parent().unwrap().join(chunk);
+            let dst = root.join(chunk);
+            std::fs::create_dir_all(&dst).unwrap();
+            for entry in std::fs::read_dir(&src).unwrap() {
+                let entry = entry.unwrap();
+                std::fs::copy(entry.path(), dst.join(entry.file_name())).unwrap();
+            }
+        }
+        let index = std::fs::read_to_string(&fixture)
+            .unwrap()
+            .replace("\"count\": 1", "\"count\": 5000000");
+        assert!(index.contains("5000000"));
+        std::fs::write(root.join("lod-meta.json"), index).unwrap();
+
+        let mut ctx: *mut GsplatContext = ptr::null_mut();
+        let create_rc = unsafe { gsplat_context_create(GsplatConfig::default(), &mut ctx) };
+        assert_eq!(create_rc, ErrorCode::Ok.as_i32());
+        assert!(!ctx.is_null());
+
+        let c_path = std::ffi::CString::new(root.join("lod-meta.json").to_str().unwrap()).unwrap();
+        let rc = unsafe { gsplat_context_load_scene_path(ctx, c_path.as_ptr()) };
+        assert_eq!(rc, ErrorCode::Unsupported.as_i32());
+        let detail = unsafe { std::ffi::CStr::from_ptr(gsplat_last_error_message()) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(detail.contains("coarsest layer gaussians"), "{detail}");
+        assert!(
+            detail.contains("requested 10000000, limit 1000000"),
+            "{detail}"
+        );
+        assert_eq!(
+            unsafe { gsplat_context_render_frame(ctx) },
+            ErrorCode::SceneNotLoaded.as_i32()
+        );
+
+        // The context survives and still loads a whole-scene file afterwards.
+        let ply = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/datasets/minimal_ascii.ply");
+        let c_ply = std::ffi::CString::new(ply.to_str().unwrap()).unwrap();
+        assert_eq!(
+            unsafe { gsplat_context_load_scene_path(ctx, c_ply.as_ptr()) },
+            ErrorCode::Ok.as_i32()
+        );
+        assert_eq!(
+            unsafe { gsplat_context_render_frame(ctx) },
+            ErrorCode::Ok.as_i32()
+        );
+        unsafe { gsplat_context_destroy(ctx) };
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

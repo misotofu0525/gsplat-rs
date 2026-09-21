@@ -75,9 +75,38 @@ PlayCanvas Streamed SOG v1 (https://developer.playcanvas.com/user-manual/gaussia
 
 Kill criterion: do not load every chunk into one `SceneBuffers` and then pick slots. That is the retired Paged lesson.
 
+## Slice 7 contract (2026-09-21)
+
+- `gsplat_context_load_scene_path`, `gsplat_surface_renderer_create_android`,
+  and `gsplat_surface_renderer_create_uikit` dispatch `lod-meta.json` to
+  `StreamedSogSession` before the whole-scene facade. No new symbols; API 0.1.
+- Budget: `StreamingBudgets::default()` plus `max_resident_gaussians =
+  Renderer::max_resident_gaussians(peek_sh_degree())`. Offscreen contexts use
+  real device limits; Surface renderers have no device yet and use portable
+  `downlevel_defaults`, which the later Surface device request can only meet
+  or exceed.
+- `assemble(None)` is coarsest-first: baseline = environment + every leaf at
+  its coarsest available LOD (`pick_range(leaf, lod_levels - 1)`). The
+  baseline must fit `max_gaussians`, `max_source_bytes`, `max_decoded_bytes`,
+  and the resident cap, or the result is `ResourceLimit { resource: "coarsest
+  layer <budget>" }` → `GSPLAT_ERROR_UNSUPPORTED` with requested/limit counts in
+  `gsplat_last_error_message()`. Then levels `lod_levels - 2 ..= 0` are tried
+  uniformly; the first level that violates any budget stops refinement.
+- Metadata-first: planning reads `lod-meta.json` and each chunk `meta.json`
+  and stats payload files; chunk images outside the selected layer are never
+  read (`coarsest_first_applies_the_resident_cap_before_decoding` corrupts LOD 0
+  images and still assembles LOD 1).
+- The FFI drops the session after assemble, so the C ABI holds one resident
+  `SceneBuffers` and no decoded-chunk cache. Camera-driven reassembly is not
+  exposed; `gsplat_context_set_auto_camera` frames whatever subset loaded.
+- `gsplat_context_load_scene_bytes` still returns `Unsupported`
+  (`StreamingRequired`) for the index; chunks are sibling files.
+- Camera-driven `assemble(Some(camera))` is unchanged (distance-picked LODs,
+  farther leaves drop).
+
 ## Explicitly later
 
 - Replacing Android/iOS bundled `showcase.ply`
-- C ABI streaming/LOD
+- Camera-driven refinement, asynchronous decode, and a decoded-chunk cache policy behind the C ABI
 - Custom internal cache format
 - Khronos `KHR_gaussian_splatting` + planned SPZ streaming extension (watch-only)
